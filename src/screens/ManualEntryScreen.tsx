@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -23,6 +23,9 @@ const ManualEntryScreen: React.FC<ManualEntryScreenProps> = ({ onSubmit, onClose
   const [petId, setPetId] = useState('');
   const [vetId, setVetId] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const petIdRef = useRef<TextInput>(null);
+  const vetIdRef = useRef<TextInput>(null);
 
   const handleSubmit = async () => {
     if (!recordId.trim() && !petId.trim() && !vetId.trim()) {
@@ -87,12 +90,16 @@ const ManualEntryScreen: React.FC<ManualEntryScreenProps> = ({ onSubmit, onClose
             placeholderTextColor="#9CA3AF"
             autoCapitalize="none"
             autoCorrect={false}
+            returnKeyType="next"
+            onSubmitEditing={() => petIdRef.current?.focus()}
+            blurOnSubmit={false}
           />
         </View>
 
         <View style={styles.inputContainer}>
           <Text style={styles.inputLabel}>Pet ID</Text>
           <TextInput
+            ref={petIdRef}
             style={styles.textInput}
             value={petId}
             onChangeText={setPetId}
@@ -100,12 +107,16 @@ const ManualEntryScreen: React.FC<ManualEntryScreenProps> = ({ onSubmit, onClose
             placeholderTextColor="#9CA3AF"
             autoCapitalize="none"
             autoCorrect={false}
+            returnKeyType="next"
+            onSubmitEditing={() => vetIdRef.current?.focus()}
+            blurOnSubmit={false}
           />
         </View>
 
         <View style={styles.inputContainer}>
           <Text style={styles.inputLabel}>Veterinarian ID</Text>
           <TextInput
+            ref={vetIdRef}
             style={styles.textInput}
             value={vetId}
             onChangeText={setVetId}
@@ -113,6 +124,8 @@ const ManualEntryScreen: React.FC<ManualEntryScreenProps> = ({ onSubmit, onClose
             placeholderTextColor="#9CA3AF"
             autoCapitalize="none"
             autoCorrect={false}
+            returnKeyType="search"
+            onSubmitEditing={() => void handleSubmit()}
           />
         </View>
 

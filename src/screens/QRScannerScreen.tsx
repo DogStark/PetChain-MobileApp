@@ -18,12 +18,6 @@ interface QRScannerScreenProps {
   onManualEntry: () => void;
 }
 
-/** Shape of the bar-code read event from a camera library (e.g. react-native-camera). */
-interface BarCodeReadEvent {
-  data: string;
-  type: string;
-}
-
 const QRScannerScreen: React.FC<QRScannerScreenProps> = ({
   onScanSuccess,
   onClose,

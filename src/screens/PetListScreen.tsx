@@ -5,13 +5,14 @@ import {
   FlatList,
   Image,
   StyleSheet,
-  Text,
   TouchableOpacity,
   View,
 } from 'react-native';
 
+import AppText from '../components/AppText';
 import petService, { type Pet } from '../services/petService';
 import { getPhoto } from '../utils/petPhotoStore';
+import { scale, scaleFont } from '../utils/scaling';
 
 interface Props {
   onSelectPet: (pet: Pet) => void;
@@ -53,31 +54,31 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet }) => {
         <Image source={{ uri: photos[item.id] }} style={styles.avatar} />
       ) : (
         <View style={[styles.avatar, styles.avatarPlaceholder]}>
-          <Text style={styles.avatarEmoji}>🐾</Text>
+          <AppText style={styles.avatarEmoji}>🐾</AppText>
         </View>
       )}
       <View style={styles.cardInfo}>
-        <Text style={styles.petName}>{item.name}</Text>
-        <Text style={styles.petMeta}>
+        <AppText style={styles.petName}>{item.name}</AppText>
+        <AppText style={styles.petMeta}>
           {item.species}
           {item.breed ? ` · ${item.breed}` : ''}
-        </Text>
+        </AppText>
         {item.dateOfBirth && (
-          <Text style={styles.petMeta}>
+          <AppText style={styles.petMeta}>
             Born: {new Date(item.dateOfBirth).toLocaleDateString()}
-          </Text>
+          </AppText>
         )}
       </View>
-      <Text style={styles.chevron}>›</Text>
+      <AppText style={styles.chevron}>›</AppText>
     </TouchableOpacity>
   );
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>My Pets</Text>
+        <AppText style={styles.title}>My Pets</AppText>
         <TouchableOpacity style={styles.addBtn} onPress={onAddPet}>
-          <Text style={styles.addBtnText}>+ Add</Text>
+          <AppText style={styles.addBtnText}>+ Add</AppText>
         </TouchableOpacity>
       </View>
 
@@ -89,7 +90,7 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet }) => {
           keyExtractor={(p) => p.id}
           renderItem={renderItem}
           contentContainerStyle={styles.list}
-          ListEmptyComponent={<Text style={styles.empty}>No pets yet. Add one!</Text>}
+          ListEmptyComponent={<AppText style={styles.empty}>No pets yet. Add one!</AppText>}
           onRefresh={load}
           refreshing={loading}
         />
@@ -104,41 +105,41 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
+    padding: scale(16),
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#e0e0e0',
   },
-  title: { fontSize: 20, fontWeight: '700', color: '#1a1a1a' },
+  title: { fontSize: scaleFont(20), fontWeight: '700', color: '#1a1a1a' },
   addBtn: {
     backgroundColor: '#4CAF50',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 8,
+    paddingHorizontal: scale(14),
+    paddingVertical: scale(8),
+    borderRadius: scale(8),
   },
-  addBtnText: { color: '#fff', fontWeight: '600' },
-  loader: { marginTop: 40 },
-  list: { padding: 12 },
+  addBtnText: { color: '#fff', fontWeight: '600', fontSize: scaleFont(14) },
+  loader: { marginTop: scale(40) },
+  list: { padding: scale(12) },
   card: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
+    borderRadius: scale(10),
+    padding: scale(12),
+    marginBottom: scale(10),
     shadowColor: '#000',
     shadowOpacity: 0.06,
-    shadowRadius: 4,
+    shadowRadius: scale(4),
     elevation: 2,
   },
-  avatar: { width: 56, height: 56, borderRadius: 28, marginRight: 12 },
+  avatar: { width: scale(56), height: scale(56), borderRadius: scale(28), marginRight: scale(12) },
   avatarPlaceholder: { backgroundColor: '#e8f5e9', justifyContent: 'center', alignItems: 'center' },
-  avatarEmoji: { fontSize: 24 },
+  avatarEmoji: { fontSize: scaleFont(24) },
   cardInfo: { flex: 1 },
-  petName: { fontSize: 16, fontWeight: '700', color: '#1a1a1a' },
-  petMeta: { fontSize: 13, color: '#666', marginTop: 2 },
-  chevron: { fontSize: 22, color: '#bbb' },
-  empty: { textAlign: 'center', color: '#999', marginTop: 40, fontSize: 15 },
+  petName: { fontSize: scaleFont(16), fontWeight: '700', color: '#1a1a1a' },
+  petMeta: { fontSize: scaleFont(13), color: '#666', marginTop: scale(2) },
+  chevron: { fontSize: scaleFont(22), color: '#bbb' },
+  empty: { textAlign: 'center', color: '#999', marginTop: scale(40), fontSize: scaleFont(15) },
 });
 
 export default PetListScreen;

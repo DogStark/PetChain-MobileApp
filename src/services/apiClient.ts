@@ -42,7 +42,7 @@ function shouldRetry(error: any, attempt: number): boolean {
 }
 
 const delay = (attempt: number) =>
-  new Promise<void>(resolve => setTimeout(resolve, BASE_DELAY_MS * 2 ** attempt));
+  new Promise<void>((resolve) => setTimeout(resolve, BASE_DELAY_MS * 2 ** attempt));
 
 // --- Axios instance ---
 const apiClient: AxiosInstance = axios.create({
@@ -57,15 +57,16 @@ const apiClient: AxiosInstance = axios.create({
 apiClient.interceptors.request.use(async (requestConfig) => {
   const token = await getToken();
   if (token) {
-    requestConfig.headers = requestConfig.headers ?? {};
-    requestConfig.headers.Authorization = `Bearer ${token}`;
+    const headers = requestConfig.headers || {};
+    (headers as any).Authorization = `Bearer ${token}`;
+    (requestConfig as any).headers = headers;
   }
   return requestConfig;
 });
 
 // --- Resilient request wrapper ---
 export async function resilientRequest<T>(
-  requestConfig: AxiosRequestConfig
+  requestConfig: AxiosRequestConfig,
 ): Promise<AxiosResponse<T>> {
   if (isCircuitOpen()) {
     throw new Error('Service temporarily unavailable. Please try again later.');
@@ -87,7 +88,7 @@ export async function resilientRequest<T>(
 
   const message = lastError?.response
     ? `Request failed with status ${lastError.response.status}`
-    : lastError?.message ?? 'Network error';
+    : (lastError?.message ?? 'Network error');
   throw new Error(message);
 }
 

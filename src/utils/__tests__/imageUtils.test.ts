@@ -1,4 +1,7 @@
-import { pickImage, compressImage, generateThumbnail } from '../imageUtils';
+import { launchImageLibrary } from 'react-native-image-picker';
+import ImageResizer from 'react-native-image-resizer';
+
+import { pickImage, compressImage } from '../imageUtils';
 
 // Mock react-native-image-picker
 jest.mock('react-native-image-picker', () => ({
@@ -7,16 +10,13 @@ jest.mock('react-native-image-picker', () => ({
 
 // Mock react-native-image-resizer
 jest.mock('react-native-image-resizer', () => ({
-  default: {
-    createResizedImage: jest.fn(),
-  },
+  createResizedImage: jest.fn(),
 }));
 
 describe('imageUtils', () => {
   describe('pickImage', () => {
     it('should return null when user cancels', async () => {
-      const { launchImageLibrary } = require('react-native-image-picker');
-      launchImageLibrary.mockImplementation((options, callback) => {
+      (launchImageLibrary as jest.Mock).mockImplementation((options, callback) => {
         callback({ didCancel: true });
       });
 
@@ -25,15 +25,13 @@ describe('imageUtils', () => {
     });
 
     it('should return image data when successful', async () => {
-      const { launchImageLibrary } = require('react-native-image-picker');
       const mockAsset = {
         uri: 'file://test.jpg',
         type: 'image/jpeg',
         fileName: 'test.jpg',
         fileSize: 1024,
       };
-
-      launchImageLibrary.mockImplementation((options, callback) => {
+      (launchImageLibrary as jest.Mock).mockImplementation((options, callback) => {
         callback({ assets: [mockAsset] });
       });
 
@@ -49,8 +47,7 @@ describe('imageUtils', () => {
 
   describe('compressImage', () => {
     it('should compress image successfully', async () => {
-      const ImageResizer = require('react-native-image-resizer');
-      ImageResizer.default.createResizedImage.mockResolvedValue({
+      (ImageResizer as any).createResizedImage.mockResolvedValue({
         uri: 'file://compressed.jpg',
         size: 512,
         width: 800,

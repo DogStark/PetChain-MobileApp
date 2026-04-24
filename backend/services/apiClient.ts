@@ -55,10 +55,10 @@ function shouldRetry(error: any, attempt: number): boolean {
 }
 
 const delay = (attempt: number) =>
-  new Promise<void>(resolve => setTimeout(resolve, BASE_DELAY_MS * 2 ** attempt));
+  new Promise<void>((resolve) => setTimeout(resolve, BASE_DELAY_MS * 2 ** attempt));
 
 export async function resilientRequest<T>(
-  requestConfig: AxiosRequestConfig
+  requestConfig: AxiosRequestConfig,
 ): Promise<AxiosResponse<T>> {
   if (isCircuitOpen()) {
     throw new Error('Service temporarily unavailable. Please try again later.');
@@ -80,7 +80,7 @@ export async function resilientRequest<T>(
 
   const message = lastError?.response
     ? `Request failed with status ${lastError.response.status}`
-    : lastError?.message ?? 'Network error';
+    : (lastError?.message ?? 'Network error');
   throw new Error(message);
 }
 

@@ -69,6 +69,8 @@ const EmailVerificationScreen: React.FC<Props> = ({ onVerified, onSkip }) => {
               autoCapitalize="none"
               value={token}
               onChangeText={setToken}
+              returnKeyType="done"
+              onSubmitEditing={() => void handleVerify()}
             />
 
             <TouchableOpacity

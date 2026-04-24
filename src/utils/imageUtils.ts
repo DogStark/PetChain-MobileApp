@@ -1,4 +1,6 @@
 import { Platform } from 'react-native';
+import { launchImageLibrary } from 'react-native-image-picker';
+import ImageResizer from 'react-native-image-resizer';
 
 export interface ImagePickerResult {
   uri: string;
@@ -21,8 +23,6 @@ export interface ImageUploadResult {
 
 export const pickImage = async (): Promise<ImagePickerResult | null> => {
   try {
-    const { launchImageLibrary } = await import('react-native-image-picker');
-    
     return new Promise((resolve) => {
       launchImageLibrary(
         {
@@ -44,7 +44,7 @@ export const pickImage = async (): Promise<ImagePickerResult | null> => {
             name: asset.fileName || 'photo.jpg',
             size: asset.fileSize || 0,
           });
-        }
+        },
       );
     });
   } catch (error) {
@@ -55,9 +55,7 @@ export const pickImage = async (): Promise<ImagePickerResult | null> => {
 
 export const compressImage = async (uri: string): Promise<CompressedImage> => {
   try {
-    const ImageResizer = await import('react-native-image-resizer');
-    
-    const result = await ImageResizer.default.createResizedImage(
+    const result = await ImageResizer.createResizedImage(
       uri,
       800,
       600,
@@ -66,7 +64,7 @@ export const compressImage = async (uri: string): Promise<CompressedImage> => {
       0,
       undefined,
       false,
-      { mode: 'contain' }
+      { mode: 'contain' },
     );
 
     return {
@@ -88,9 +86,7 @@ export const compressImage = async (uri: string): Promise<CompressedImage> => {
 
 export const generateThumbnail = async (uri: string): Promise<string> => {
   try {
-    const ImageResizer = await import('react-native-image-resizer');
-    
-    const result = await ImageResizer.default.createResizedImage(
+    const result = await ImageResizer.createResizedImage(
       uri,
       150,
       150,
@@ -99,7 +95,7 @@ export const generateThumbnail = async (uri: string): Promise<string> => {
       0,
       undefined,
       false,
-      { mode: 'cover' }
+      { mode: 'cover' },
     );
 
     return result.uri;
@@ -111,11 +107,11 @@ export const generateThumbnail = async (uri: string): Promise<string> => {
 
 export const uploadToStorage = async (
   imageUri: string,
-  petId: string
+  petId: string,
 ): Promise<ImageUploadResult> => {
   try {
     const formData = new FormData();
-    
+
     formData.append('file', {
       uri: Platform.OS === 'ios' ? imageUri.replace('file://', '') : imageUri,
       type: 'image/jpeg',

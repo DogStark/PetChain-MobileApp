@@ -27,6 +27,7 @@ export interface Medication {
   remainingPills?: number;
   refillDate?: string;
   status?: MedicationStatus;
+  notes?: string;
   createdAt?: string;
   updatedAt?: string;
 }

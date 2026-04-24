@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   View,
-  Text,
   StyleSheet,
   SafeAreaView,
   ScrollView,
@@ -9,9 +8,10 @@ import {
   StatusBar,
   Dimensions,
   Platform,
-  type NativeSyntheticEvent,
-  type NativeScrollEvent,
 } from 'react-native';
+
+import AppText from '../components/AppText';
+import { scale } from '../utils/scaling';
 
 const { width } = Dimensions.get('window');
 
@@ -95,20 +95,20 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, onSkip 
     return (
       <View key={slide.id} style={[styles.slide, { width }]}>
         <View style={styles.imageContainer}>
-          <Text style={styles.emojiImage}>{slide.image}</Text>
+          <AppText style={styles.emojiImage}>{slide.image}</AppText>
         </View>
 
         <View style={styles.contentContainer}>
-          <Text style={styles.title}>{slide.title}</Text>
-          <Text style={styles.subtitle}>{slide.subtitle}</Text>
-          <Text style={styles.description}>{slide.description}</Text>
+          <AppText style={styles.title}>{slide.title}</AppText>
+          <AppText style={styles.subtitle}>{slide.subtitle}</AppText>
+          <AppText style={styles.description}>{slide.description}</AppText>
 
           {slide.features && (
             <View style={styles.featuresContainer}>
               {slide.features.map((feature, featureIndex) => (
-                <Text key={featureIndex} style={styles.featureText}>
+                <AppText key={featureIndex} style={styles.featureText}>
                   {feature}
-                </Text>
+                </AppText>
               ))}
             </View>
           )}
@@ -117,7 +117,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, onSkip 
         <View style={styles.buttonContainer}>
           {index > 0 && (
             <TouchableOpacity style={styles.backButton} onPress={() => handlePageChange(index - 1)}>
-              <Text style={styles.backButtonText}>Back</Text>
+              <AppText style={styles.backButtonText}>Back</AppText>
             </TouchableOpacity>
           )}
 
@@ -125,9 +125,9 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, onSkip 
             style={[styles.nextButton, isLastSlide && styles.getStartedButton]}
             onPress={handleNext}
           >
-            <Text style={[styles.nextButtonText, isLastSlide && styles.getStartedButtonText]}>
+            <AppText style={[styles.nextButtonText, isLastSlide && styles.getStartedButtonText]}>
               {isLastSlide ? 'Get Started' : 'Next'}
-            </Text>
+            </AppText>
           </TouchableOpacity>
         </View>
       </View>
@@ -154,7 +154,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, onSkip 
 
       <View style={styles.header}>
         <TouchableOpacity onPress={handleSkip}>
-          <Text style={styles.skipText}>Skip</Text>
+          <AppText style={styles.skipText}>Skip</AppText>
         </TouchableOpacity>
       </View>
 
@@ -184,9 +184,9 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
-    paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'ios' ? 10 : 20,
-    paddingBottom: 10,
+    paddingHorizontal: scale(20),
+    paddingTop: Platform.OS === 'ios' ? scale(10) : scale(20),
+    paddingBottom: scale(10),
   },
   skipText: {
     fontSize: 16,
@@ -200,19 +200,19 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: scale(20),
   },
   imageContainer: {
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: scale(40),
   },
   emojiImage: {
-    fontSize: 120,
-    marginBottom: 20,
+    fontSize: scale(120),
+    marginBottom: scale(20),
   },
   contentContainer: {
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: scale(40),
     flex: 1,
     justifyContent: 'center',
   },
@@ -221,32 +221,32 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#1F2937',
     textAlign: 'center',
-    marginBottom: 10,
-    lineHeight: 38,
+    marginBottom: scale(10),
+    lineHeight: scale(38),
   },
   subtitle: {
     fontSize: 18,
     color: '#6B7280',
     textAlign: 'center',
-    marginBottom: 20,
-    lineHeight: 24,
+    marginBottom: scale(20),
+    lineHeight: scale(24),
   },
   description: {
     fontSize: 16,
     color: '#4B5563',
     textAlign: 'center',
-    lineHeight: 24,
-    paddingHorizontal: 20,
-    marginBottom: 20,
+    lineHeight: scale(24),
+    paddingHorizontal: scale(20),
+    marginBottom: scale(20),
   },
   featuresContainer: {
     width: '100%',
-    paddingHorizontal: 20,
+    paddingHorizontal: scale(20),
   },
   featureText: {
     fontSize: 16,
     color: '#059669',
-    marginBottom: 8,
+    marginBottom: scale(8),
     textAlign: 'center',
   },
   buttonContainer: {
@@ -254,13 +254,13 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     width: '100%',
-    paddingHorizontal: 20,
-    paddingBottom: 40,
+    paddingHorizontal: scale(20),
+    paddingBottom: scale(40),
   },
   backButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 8,
+    paddingHorizontal: scale(20),
+    paddingVertical: scale(12),
+    borderRadius: scale(8),
     borderWidth: 1,
     borderColor: '#E5E7EB',
     backgroundColor: 'transparent',
@@ -271,11 +271,11 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   nextButton: {
-    paddingHorizontal: 30,
-    paddingVertical: 12,
-    borderRadius: 8,
+    paddingHorizontal: scale(30),
+    paddingVertical: scale(12),
+    borderRadius: scale(8),
     backgroundColor: '#3B82F6',
-    minWidth: 100,
+    minWidth: scale(100),
     alignItems: 'center',
   },
   getStartedButton: {
@@ -295,18 +295,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingBottom: 30,
+    paddingBottom: scale(30),
   },
   paginationDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: scale(8),
+    height: scale(8),
+    borderRadius: scale(4),
     backgroundColor: '#D1D5DB',
-    marginHorizontal: 4,
+    marginHorizontal: scale(4),
   },
   paginationDotActive: {
     backgroundColor: '#3B82F6',
-    width: 24,
+    width: scale(24),
   },
 });
 

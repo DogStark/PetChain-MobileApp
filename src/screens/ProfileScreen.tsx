@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   ScrollView,
@@ -12,6 +12,7 @@ import {
 
 import type { User, UserRole } from '../models/User';
 import { getUserProfile, saveUserProfile, updateUserProfile } from '../services/userService';
+import { scale, scaleFont } from '../utils/scaling';
 
 const DEFAULT_FORM: Omit<User, 'id'> = {
   email: '',
@@ -40,11 +41,30 @@ const DEFAULT_FORM: Omit<User, 'id'> = {
     soundEnabled: true,
     badgeEnabled: true,
   },
+  accessibilityPreferences: {
+    largeTextEnabled: false,
+    fontScaleMultiplier: 1.0,
+  },
 };
 
 const ProfileScreen: React.FC = () => {
   const [profile, setProfile] = useState<Omit<User, 'id'>>(DEFAULT_FORM);
   const [existingId, setExistingId] = useState<string | null>(null);
+
+  const emailRef = useRef<TextInput>(null);
+  const phoneRef = useRef<TextInput>(null);
+  const roleRef = useRef<TextInput>(null);
+  const photoRef = useRef<TextInput>(null);
+  const streetRef = useRef<TextInput>(null);
+  const cityRef = useRef<TextInput>(null);
+  const stateRef = useRef<TextInput>(null);
+  const postalRef = useRef<TextInput>(null);
+  const countryRef = useRef<TextInput>(null);
+  const ecNameRef = useRef<TextInput>(null);
+  const ecPhoneRef = useRef<TextInput>(null);
+  const ecRelRef = useRef<TextInput>(null);
+  const ecEmailRef = useRef<TextInput>(null);
+  const leadTimeRef = useRef<TextInput>(null);
 
   useEffect(() => {
     void (async () => {
@@ -59,6 +79,10 @@ const ProfileScreen: React.FC = () => {
           notificationPreferences: {
             ...DEFAULT_FORM.notificationPreferences,
             ...stored.notificationPreferences,
+          },
+          accessibilityPreferences: {
+            ...DEFAULT_FORM.accessibilityPreferences,
+            ...stored.accessibilityPreferences,
           },
         });
       }
@@ -106,6 +130,19 @@ const ProfileScreen: React.FC = () => {
     }));
   };
 
+  const setAccessibilityPref = (
+    key: keyof NonNullable<User['accessibilityPreferences']>,
+    value: boolean | number,
+  ) => {
+    setProfile((current) => ({
+      ...current,
+      accessibilityPreferences: {
+        ...current.accessibilityPreferences,
+        [key]: value,
+      },
+    }));
+  };
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.heading}>User Profile</Text>
@@ -115,36 +152,56 @@ const ProfileScreen: React.FC = () => {
         placeholder="Full name"
         value={profile.name}
         onChangeText={(value) => setProfile((current) => ({ ...current, name: value }))}
+        returnKeyType="next"
+        onSubmitEditing={() => emailRef.current?.focus()}
+        blurOnSubmit={false}
       />
       <TextInput
+        ref={emailRef}
         style={styles.input}
         placeholder="Email"
         keyboardType="email-address"
         value={profile.email}
         onChangeText={(value) => setProfile((current) => ({ ...current, email: value }))}
+        returnKeyType="next"
+        onSubmitEditing={() => phoneRef.current?.focus()}
+        blurOnSubmit={false}
       />
       <TextInput
+        ref={phoneRef}
         style={styles.input}
         placeholder="Phone"
         keyboardType="phone-pad"
         value={profile.phone}
         onChangeText={(value) => setProfile((current) => ({ ...current, phone: value }))}
+        returnKeyType="next"
+        onSubmitEditing={() => roleRef.current?.focus()}
+        blurOnSubmit={false}
       />
       <TextInput
+        ref={roleRef}
         style={styles.input}
         placeholder="Role (owner, vet, admin)"
         value={profile.role}
         onChangeText={(value) => setProfile((current) => ({ ...current, role: value as UserRole }))}
+        returnKeyType="next"
+        onSubmitEditing={() => photoRef.current?.focus()}
+        blurOnSubmit={false}
       />
       <TextInput
+        ref={photoRef}
         style={styles.input}
         placeholder="Profile photo URL"
         value={profile.profilePhoto}
         onChangeText={(value) => setProfile((current) => ({ ...current, profilePhoto: value }))}
+        returnKeyType="next"
+        onSubmitEditing={() => streetRef.current?.focus()}
+        blurOnSubmit={false}
       />
 
       <Text style={styles.sectionTitle}>Address</Text>
       <TextInput
+        ref={streetRef}
         style={styles.input}
         placeholder="Street"
         value={profile.address?.street ?? ''}
@@ -154,8 +211,12 @@ const ProfileScreen: React.FC = () => {
             address: { ...current.address, street: value },
           }))
         }
+        returnKeyType="next"
+        onSubmitEditing={() => cityRef.current?.focus()}
+        blurOnSubmit={false}
       />
       <TextInput
+        ref={cityRef}
         style={styles.input}
         placeholder="City"
         value={profile.address?.city ?? ''}
@@ -165,8 +226,12 @@ const ProfileScreen: React.FC = () => {
             address: { ...current.address, city: value },
           }))
         }
+        returnKeyType="next"
+        onSubmitEditing={() => stateRef.current?.focus()}
+        blurOnSubmit={false}
       />
       <TextInput
+        ref={stateRef}
         style={styles.input}
         placeholder="State"
         value={profile.address?.state ?? ''}
@@ -176,8 +241,12 @@ const ProfileScreen: React.FC = () => {
             address: { ...current.address, state: value },
           }))
         }
+        returnKeyType="next"
+        onSubmitEditing={() => postalRef.current?.focus()}
+        blurOnSubmit={false}
       />
       <TextInput
+        ref={postalRef}
         style={styles.input}
         placeholder="Postal code"
         value={profile.address?.postalCode ?? ''}
@@ -187,8 +256,12 @@ const ProfileScreen: React.FC = () => {
             address: { ...current.address, postalCode: value },
           }))
         }
+        returnKeyType="next"
+        onSubmitEditing={() => countryRef.current?.focus()}
+        blurOnSubmit={false}
       />
       <TextInput
+        ref={countryRef}
         style={styles.input}
         placeholder="Country"
         value={profile.address?.country ?? ''}
@@ -198,10 +271,14 @@ const ProfileScreen: React.FC = () => {
             address: { ...current.address, country: value },
           }))
         }
+        returnKeyType="next"
+        onSubmitEditing={() => ecNameRef.current?.focus()}
+        blurOnSubmit={false}
       />
 
       <Text style={styles.sectionTitle}>Emergency Contact</Text>
       <TextInput
+        ref={ecNameRef}
         style={styles.input}
         placeholder="Name"
         value={profile.emergencyContact?.name ?? ''}
@@ -211,8 +288,12 @@ const ProfileScreen: React.FC = () => {
             emergencyContact: { ...current.emergencyContact, name: value },
           }))
         }
+        returnKeyType="next"
+        onSubmitEditing={() => ecPhoneRef.current?.focus()}
+        blurOnSubmit={false}
       />
       <TextInput
+        ref={ecPhoneRef}
         style={styles.input}
         placeholder="Phone"
         keyboardType="phone-pad"
@@ -223,8 +304,12 @@ const ProfileScreen: React.FC = () => {
             emergencyContact: { ...current.emergencyContact, phone: value },
           }))
         }
+        returnKeyType="next"
+        onSubmitEditing={() => ecRelRef.current?.focus()}
+        blurOnSubmit={false}
       />
       <TextInput
+        ref={ecRelRef}
         style={styles.input}
         placeholder="Relationship"
         value={profile.emergencyContact?.relationship ?? ''}
@@ -234,8 +319,12 @@ const ProfileScreen: React.FC = () => {
             emergencyContact: { ...current.emergencyContact, relationship: value },
           }))
         }
+        returnKeyType="next"
+        onSubmitEditing={() => ecEmailRef.current?.focus()}
+        blurOnSubmit={false}
       />
       <TextInput
+        ref={ecEmailRef}
         style={styles.input}
         placeholder="Email"
         keyboardType="email-address"
@@ -246,6 +335,9 @@ const ProfileScreen: React.FC = () => {
             emergencyContact: { ...current.emergencyContact, email: value },
           }))
         }
+        returnKeyType="next"
+        onSubmitEditing={() => leadTimeRef.current?.focus()}
+        blurOnSubmit={false}
       />
 
       <Text style={styles.sectionTitle}>Notification Preferences</Text>
@@ -271,11 +363,14 @@ const ProfileScreen: React.FC = () => {
         />
       </View>
       <TextInput
+        ref={leadTimeRef}
         style={styles.input}
         placeholder="Reminder lead time (minutes)"
         keyboardType="numeric"
         value={String(profile.notificationPreferences?.reminderLeadTimeMinutes ?? 60)}
         onChangeText={(value) => setPref('reminderLeadTimeMinutes', Number(value) || 60)}
+        returnKeyType="done"
+        onSubmitEditing={() => void save()}
       />
       <View style={styles.switchRow}>
         <Text style={styles.switchLabel}>Sound enabled</Text>
@@ -292,6 +387,23 @@ const ProfileScreen: React.FC = () => {
         />
       </View>
 
+      <Text style={styles.sectionTitle}>Accessibility</Text>
+      <View style={styles.switchRow}>
+        <Text style={styles.switchLabel}>Enable large text</Text>
+        <Switch
+          value={profile.accessibilityPreferences?.largeTextEnabled ?? false}
+          onValueChange={(value) => setAccessibilityPref('largeTextEnabled', value)}
+        />
+      </View>
+      <TextInput
+        style={styles.input}
+        placeholder="Font scale multiplier (e.g. 1.2)"
+        keyboardType="numeric"
+        value={String(profile.accessibilityPreferences?.fontScaleMultiplier ?? 1.0)}
+        onChangeText={(value) => setAccessibilityPref('fontScaleMultiplier', Number(value) || 1.0)}
+        returnKeyType="done"
+      />
+
       <TouchableOpacity style={styles.saveButton} onPress={save}>
         <Text style={styles.saveButtonText}>Save Profile</Text>
       </TouchableOpacity>
@@ -301,40 +413,46 @@ const ProfileScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5' },
-  content: { padding: 18, paddingBottom: 36 },
-  heading: { fontSize: 22, fontWeight: '700', marginBottom: 20, color: '#111' },
-  sectionTitle: { fontSize: 16, fontWeight: '700', marginTop: 18, marginBottom: 10, color: '#333' },
+  content: { padding: scale(18), paddingBottom: scale(36) },
+  heading: { fontSize: scaleFont(22), fontWeight: '700', marginBottom: scale(20), color: '#111' },
+  sectionTitle: {
+    fontSize: scaleFont(16),
+    fontWeight: '700',
+    marginTop: scale(18),
+    marginBottom: scale(10),
+    color: '#333',
+  },
   input: {
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#ddd',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginBottom: 12,
-    fontSize: 14,
+    borderRadius: scale(10),
+    paddingHorizontal: scale(14),
+    paddingVertical: scale(12),
+    marginBottom: scale(12),
+    fontSize: scaleFont(14),
   },
   switchRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
+    marginBottom: scale(12),
+    paddingVertical: scale(6),
+    paddingHorizontal: scale(8),
     backgroundColor: '#fff',
-    borderRadius: 10,
+    borderRadius: scale(10),
     borderWidth: 1,
     borderColor: '#eee',
   },
-  switchLabel: { fontSize: 14, color: '#333', flex: 1, marginRight: 8 },
+  switchLabel: { fontSize: scaleFont(14), color: '#333', flex: 1, marginRight: scale(8) },
   saveButton: {
-    marginTop: 18,
+    marginTop: scale(18),
     backgroundColor: '#4CAF50',
-    borderRadius: 10,
-    paddingVertical: 14,
+    borderRadius: scale(10),
+    paddingVertical: scale(14),
     alignItems: 'center',
   },
-  saveButtonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  saveButtonText: { color: '#fff', fontWeight: '700', fontSize: scaleFont(15) },
 });
 
 export default ProfileScreen;

@@ -1,16 +1,16 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
   Modal,
   ScrollView,
   StyleSheet,
-  Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 
+import AppText from '../components/AppText';
 import {
   type DoseLog,
   type Medication,
@@ -23,6 +23,7 @@ import {
   scheduleRefillReminder,
 } from '../services/medicationService';
 import { scheduleMedicationReminder } from '../services/notificationService';
+import { scale, scaleFont } from '../utils/scaling';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,23 @@ const MedicationScreen: React.FC = () => {
   const [modalVisible, setModalVisible] = useState(false);
   const [editingMed, setEditingMed] = useState<Medication | null>(null);
   const [form, setForm] = useState<Omit<Medication, 'id'>>(EMPTY_FORM);
+
+  const dosageRef = useRef<TextInput>(null);
+  const freqRef = useRef<TextInput>(null);
+  const petIdRef = useRef<TextInput>(null);
+  const startRef = useRef<TextInput>(null);
+  const endRef = useRef<TextInput>(null);
+  const refillRef = useRef<TextInput>(null);
+  const instrRef = useRef<TextInput>(null);
+  const pNameRef = useRef<TextInput>(null);
+  const pContRef = useRef<TextInput>(null);
+  const pClinRef = useRef<TextInput>(null);
+  const phNameRef = useRef<TextInput>(null);
+  const phPhoneRef = useRef<TextInput>(null);
+  const phAddrRef = useRef<TextInput>(null);
+  const totalRef = useRef<TextInput>(null);
+  const remRef = useRef<TextInput>(null);
+  const notesRef = useRef<TextInput>(null);
 
   // ── Load data ──────────────────────────────────────────────────────────────
 
@@ -187,52 +205,54 @@ const MedicationScreen: React.FC = () => {
     return (
       <View style={styles.card}>
         <View style={styles.cardHeader}>
-          <Text style={styles.medName}>{item.name}</Text>
+          <AppText style={styles.medName}>{item.name}</AppText>
           <View style={styles.cardActions}>
             <TouchableOpacity onPress={() => openEdit(item)} style={styles.actionBtn}>
-              <Text style={styles.actionBtnText}>Edit</Text>
+              <AppText style={styles.actionBtnText}>Edit</AppText>
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => handleDelete(item.id)}
               style={[styles.actionBtn, styles.deleteBtn]}
             >
-              <Text style={[styles.actionBtnText, styles.deleteBtnText]}>Delete</Text>
+              <AppText style={[styles.actionBtnText, styles.deleteBtnText]}>Delete</AppText>
             </TouchableOpacity>
           </View>
         </View>
 
-        <Text style={styles.medDetail}>
+        <AppText style={styles.medDetail}>
           {item.dosage} · every {item.frequency}h
-        </Text>
-        <Text style={styles.medDetail}>Started: {formatDate(item.startDate)}</Text>
+        </AppText>
+        <AppText style={styles.medDetail}>Started: {formatDate(item.startDate)}</AppText>
 
-        <Text style={styles.medDetail}>Pet ID: {item.petId}</Text>
+        <AppText style={styles.medDetail}>Pet ID: {item.petId}</AppText>
         {item.instructions ? (
-          <Text style={styles.medDetail}>Instructions: {item.instructions}</Text>
+          <AppText style={styles.medDetail}>Instructions: {item.instructions}</AppText>
         ) : null}
         {item.prescriberInfo?.name ? (
-          <Text style={styles.medDetail}>
+          <AppText style={styles.medDetail}>
             Prescriber: {item.prescriberInfo.name}
             {item.prescriberInfo.contact ? ` • ${item.prescriberInfo.contact}` : ''}
-          </Text>
+          </AppText>
         ) : null}
         {item.pharmacyInfo?.name ? (
-          <Text style={styles.medDetail}>
+          <AppText style={styles.medDetail}>
             Pharmacy: {item.pharmacyInfo.name}
             {item.pharmacyInfo.phone ? ` • ${item.pharmacyInfo.phone}` : ''}
-          </Text>
+          </AppText>
         ) : null}
-        <Text style={styles.medDetail}>Started: {formatDate(item.startDate)}</Text>
-        {item.endDate && <Text style={styles.medDetail}>Ends: {formatDate(item.endDate)}</Text>}
+        <AppText style={styles.medDetail}>Started: {formatDate(item.startDate)}</AppText>
+        {item.endDate && (
+          <AppText style={styles.medDetail}>Ends: {formatDate(item.endDate)}</AppText>
+        )}
         {item.remainingPills !== undefined && (
-          <Text style={[styles.medDetail, lowStock && styles.lowStock]}>
+          <AppText style={[styles.medDetail, lowStock && styles.lowStock]}>
             Pills remaining: {item.remainingPills}
             {lowStock ? ' ⚠ Low stock' : ''}
-          </Text>
+          </AppText>
         )}
 
         {item.refillDate && (
-          <Text style={styles.medDetail}>Refill by: {formatDate(item.refillDate)}</Text>
+          <AppText style={styles.medDetail}>Refill by: {formatDate(item.refillDate)}</AppText>
         )}
 
         <View style={styles.doseActions}>
@@ -240,13 +260,13 @@ const MedicationScreen: React.FC = () => {
             style={styles.logBtn}
             onPress={() => void handleLogDose(item.id, false)}
           >
-            <Text style={styles.logBtnText}>✓ Log Dose</Text>
+            <AppText style={styles.logBtnText}>✓ Log Dose</AppText>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.logBtn, styles.skipBtn]}
             onPress={() => void handleLogDose(item.id, true)}
           >
-            <Text style={styles.logBtnText}>✗ Skip</Text>
+            <AppText style={styles.logBtnText}>✗ Skip</AppText>
           </TouchableOpacity>
         </View>
       </View>
@@ -270,9 +290,9 @@ const MedicationScreen: React.FC = () => {
 
         return (
           <View key={date.toDateString()} style={styles.dayBlock}>
-            <Text style={styles.dayLabel}>{label}</Text>
+            <AppText style={styles.dayLabel}>{label}</AppText>
             {slots.length === 0 ? (
-              <Text style={styles.emptyText}>No doses scheduled</Text>
+              <AppText style={styles.emptyText}>No doses scheduled</AppText>
             ) : (
               slots.map(({ med, time }) => {
                 const taken = isDoseTaken(med.id, time);
@@ -281,11 +301,11 @@ const MedicationScreen: React.FC = () => {
                     key={`${med.id}-${time.toISOString()}`}
                     style={[styles.slotRow, taken && styles.slotTaken]}
                   >
-                    <Text style={styles.slotTime}>{formatTime(time)}</Text>
-                    <Text style={styles.slotName}>
+                    <AppText style={styles.slotTime}>{formatTime(time)}</AppText>
+                    <AppText style={styles.slotName}>
                       {med.name} · {med.dosage}
-                    </Text>
-                    {taken && <Text style={styles.takenBadge}>✓</Text>}
+                    </AppText>
+                    {taken && <AppText style={styles.takenBadge}>✓</AppText>}
                   </View>
                 );
               })
@@ -302,63 +322,97 @@ const MedicationScreen: React.FC = () => {
     <Modal visible={modalVisible} animationType="slide" transparent onRequestClose={closeModal}>
       <View style={styles.modalOverlay}>
         <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>{editingMed ? 'Edit Medication' : 'Add Medication'}</Text>
+          <AppText style={styles.modalTitle}>
+            {editingMed ? 'Edit Medication' : 'Add Medication'}
+          </AppText>
 
           <TextInput
             style={styles.input}
             placeholder="Medication name *"
             value={form.name}
             onChangeText={(v) => setForm((f) => ({ ...f, name: v }))}
+            returnKeyType="next"
+            onSubmitEditing={() => dosageRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={dosageRef}
             style={styles.input}
             placeholder="Dosage (e.g. 5mg) *"
             value={form.dosage}
             onChangeText={(v) => setForm((f) => ({ ...f, dosage: v }))}
+            returnKeyType="next"
+            onSubmitEditing={() => freqRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={freqRef}
             style={styles.input}
             placeholder="Frequency (hours between doses)"
             keyboardType="numeric"
             value={String(form.frequency)}
             onChangeText={(v) => setForm((f) => ({ ...f, frequency: Number(v) || 8 }))}
+            returnKeyType="next"
+            onSubmitEditing={() => petIdRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={petIdRef}
             style={styles.input}
             placeholder="Pet ID *"
             value={form.petId}
             onChangeText={(v) => setForm((f) => ({ ...f, petId: v }))}
+            returnKeyType="next"
+            onSubmitEditing={() => startRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={startRef}
             style={styles.input}
             placeholder="Start date (YYYY-MM-DD)"
             value={form.startDate.slice(0, 10)}
             onChangeText={(v) => setForm((f) => ({ ...f, startDate: new Date(v).toISOString() }))}
+            returnKeyType="next"
+            onSubmitEditing={() => endRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={endRef}
             style={styles.input}
             placeholder="End date (YYYY-MM-DD)"
             value={form.endDate?.slice(0, 10) ?? ''}
             onChangeText={(v) =>
               setForm((f) => ({ ...f, endDate: v ? new Date(v).toISOString() : '' }))
             }
+            returnKeyType="next"
+            onSubmitEditing={() => refillRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={refillRef}
             style={styles.input}
             placeholder="Refill date (YYYY-MM-DD)"
             value={form.refillDate?.slice(0, 10) ?? ''}
             onChangeText={(v) =>
               setForm((f) => ({ ...f, refillDate: v ? new Date(v).toISOString() : '' }))
             }
+            returnKeyType="next"
+            onSubmitEditing={() => instrRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={instrRef}
             style={[styles.input, styles.textArea]}
             placeholder="Instructions"
             multiline
             value={form.instructions ?? ''}
             onChangeText={(v) => setForm((f) => ({ ...f, instructions: v }))}
+            returnKeyType="next"
+            onSubmitEditing={() => pNameRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={pNameRef}
             style={styles.input}
             placeholder="Prescriber name"
             value={form.prescriberInfo?.name ?? ''}
@@ -368,8 +422,12 @@ const MedicationScreen: React.FC = () => {
                 prescriberInfo: { ...f.prescriberInfo, name: v },
               }))
             }
+            returnKeyType="next"
+            onSubmitEditing={() => pContRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={pContRef}
             style={styles.input}
             placeholder="Prescriber contact"
             value={form.prescriberInfo?.contact ?? ''}
@@ -379,8 +437,12 @@ const MedicationScreen: React.FC = () => {
                 prescriberInfo: { ...f.prescriberInfo, contact: v },
               }))
             }
+            returnKeyType="next"
+            onSubmitEditing={() => pClinRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={pClinRef}
             style={styles.input}
             placeholder="Prescriber clinic"
             value={form.prescriberInfo?.clinic ?? ''}
@@ -390,8 +452,12 @@ const MedicationScreen: React.FC = () => {
                 prescriberInfo: { ...f.prescriberInfo, clinic: v },
               }))
             }
+            returnKeyType="next"
+            onSubmitEditing={() => phNameRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={phNameRef}
             style={styles.input}
             placeholder="Pharmacy name"
             value={form.pharmacyInfo?.name ?? ''}
@@ -401,8 +467,12 @@ const MedicationScreen: React.FC = () => {
                 pharmacyInfo: { ...f.pharmacyInfo, name: v },
               }))
             }
+            returnKeyType="next"
+            onSubmitEditing={() => phPhoneRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={phPhoneRef}
             style={styles.input}
             placeholder="Pharmacy phone"
             value={form.pharmacyInfo?.phone ?? ''}
@@ -412,8 +482,12 @@ const MedicationScreen: React.FC = () => {
                 pharmacyInfo: { ...f.pharmacyInfo, phone: v },
               }))
             }
+            returnKeyType="next"
+            onSubmitEditing={() => phAddrRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={phAddrRef}
             style={styles.input}
             placeholder="Pharmacy address"
             value={form.pharmacyInfo?.address ?? ''}
@@ -423,15 +497,23 @@ const MedicationScreen: React.FC = () => {
                 pharmacyInfo: { ...f.pharmacyInfo, address: v },
               }))
             }
+            returnKeyType="next"
+            onSubmitEditing={() => totalRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={totalRef}
             style={styles.input}
             placeholder="Total pills"
             keyboardType="numeric"
             value={form.totalPills !== undefined ? String(form.totalPills) : ''}
             onChangeText={(v) => setForm((f) => ({ ...f, totalPills: v ? Number(v) : undefined }))}
+            returnKeyType="next"
+            onSubmitEditing={() => remRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={remRef}
             style={styles.input}
             placeholder="Remaining pills"
             keyboardType="numeric"
@@ -439,21 +521,27 @@ const MedicationScreen: React.FC = () => {
             onChangeText={(v) =>
               setForm((f) => ({ ...f, remainingPills: v ? Number(v) : undefined }))
             }
+            returnKeyType="next"
+            onSubmitEditing={() => notesRef.current?.focus()}
+            blurOnSubmit={false}
           />
           <TextInput
+            ref={notesRef}
             style={[styles.input, styles.textArea]}
             placeholder="Notes"
             multiline
             value={form.notes ?? ''}
             onChangeText={(v) => setForm((f) => ({ ...f, notes: v }))}
+            returnKeyType="done"
+            onSubmitEditing={() => void handleSave()}
           />
 
           <View style={styles.modalActions}>
             <TouchableOpacity style={styles.cancelBtn} onPress={closeModal}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
+              <AppText style={styles.cancelBtnText}>Cancel</AppText>
             </TouchableOpacity>
             <TouchableOpacity style={styles.saveBtn} onPress={() => void handleSave()}>
-              <Text style={styles.saveBtnText}>Save</Text>
+              <AppText style={styles.saveBtnText}>Save</AppText>
             </TouchableOpacity>
           </View>
         </View>
@@ -467,9 +555,9 @@ const MedicationScreen: React.FC = () => {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Medications</Text>
+        <AppText style={styles.headerTitle}>Medications</AppText>
         <TouchableOpacity style={styles.addBtn} onPress={openAdd}>
-          <Text style={styles.addBtnText}>+ Add</Text>
+          <AppText style={styles.addBtnText}>+ Add</AppText>
         </TouchableOpacity>
       </View>
 
@@ -481,9 +569,9 @@ const MedicationScreen: React.FC = () => {
             style={[styles.tab, tab === t && styles.activeTab]}
             onPress={() => setTab(t)}
           >
-            <Text style={[styles.tabText, tab === t && styles.activeTabText]}>
+            <AppText style={[styles.tabText, tab === t && styles.activeTabText]}>
               {t.charAt(0).toUpperCase() + t.slice(1)}
-            </Text>
+            </AppText>
           </TouchableOpacity>
         ))}
       </View>
@@ -495,7 +583,7 @@ const MedicationScreen: React.FC = () => {
           keyExtractor={(item) => item.id}
           renderItem={renderMedItem}
           contentContainerStyle={styles.listContent}
-          ListEmptyComponent={<Text style={styles.emptyText}>No medications added yet.</Text>}
+          ListEmptyComponent={<AppText style={styles.emptyText}>No medications added yet.</AppText>}
         />
       )}
       {tab === 'daily' && renderSchedule(todayDates())}
@@ -520,12 +608,12 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#e0e0e0',
   },
-  headerTitle: { fontSize: 20, fontWeight: '700', color: '#1a1a1a' },
+  headerTitle: { fontSize: scaleFont(20), fontWeight: '700', color: '#1a1a1a' },
   addBtn: {
     backgroundColor: '#4CAF50',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 8,
+    paddingHorizontal: scale(14),
+    paddingVertical: scale(8),
+    borderRadius: scale(8),
   },
   addBtnText: { color: '#fff', fontWeight: '600' },
 
@@ -535,21 +623,21 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#e0e0e0',
   },
-  tab: { flex: 1, paddingVertical: 12, alignItems: 'center' },
+  tab: { flex: 1, paddingVertical: scale(12), alignItems: 'center' },
   activeTab: { borderBottomWidth: 2, borderBottomColor: '#4CAF50' },
-  tabText: { color: '#666', fontSize: 14 },
+  tabText: { color: '#666', fontSize: scaleFont(14) },
   activeTabText: { color: '#4CAF50', fontWeight: '600' },
 
   listContent: { padding: 12 },
 
   card: {
     backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 10,
+    borderRadius: scale(10),
+    padding: scale(14),
+    marginBottom: scale(10),
     shadowColor: '#000',
     shadowOpacity: 0.06,
-    shadowRadius: 4,
+    shadowRadius: scale(4),
     elevation: 2,
   },
   cardHeader: {
@@ -558,49 +646,49 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 6,
   },
-  medName: { fontSize: 16, fontWeight: '700', color: '#1a1a1a', flex: 1 },
-  cardActions: { flexDirection: 'row', gap: 6 },
+  medName: { fontSize: scaleFont(16), fontWeight: '700', color: '#1a1a1a', flex: 1 },
+  cardActions: { flexDirection: 'row', gap: scale(6) },
   actionBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
+    paddingHorizontal: scale(10),
+    paddingVertical: scale(4),
+    borderRadius: scale(6),
     backgroundColor: '#e8f5e9',
   },
-  actionBtnText: { fontSize: 12, color: '#4CAF50', fontWeight: '600' },
+  actionBtnText: { fontSize: scaleFont(12), color: '#4CAF50', fontWeight: '600' },
   deleteBtn: { backgroundColor: '#fdecea' },
   deleteBtnText: { color: '#e53935' },
 
-  medDetail: { fontSize: 13, color: '#555', marginTop: 2 },
+  medDetail: { fontSize: scaleFont(13), color: '#555', marginTop: scale(2) },
   lowStock: { color: '#e65100', fontWeight: '600' },
 
-  doseActions: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  doseActions: { flexDirection: 'row', gap: scale(8), marginTop: scale(10) },
   logBtn: {
     flex: 1,
     backgroundColor: '#4CAF50',
-    paddingVertical: 8,
-    borderRadius: 8,
+    paddingVertical: scale(8),
+    borderRadius: scale(8),
     alignItems: 'center',
   },
   skipBtn: { backgroundColor: '#9e9e9e' },
-  logBtnText: { color: '#fff', fontWeight: '600', fontSize: 13 },
+  logBtnText: { color: '#fff', fontWeight: '600', fontSize: scaleFont(13) },
 
-  scheduleContainer: { flex: 1, padding: 12 },
-  dayBlock: { marginBottom: 16 },
-  dayLabel: { fontSize: 15, fontWeight: '700', color: '#333', marginBottom: 6 },
+  scheduleContainer: { flex: 1, padding: scale(12) },
+  dayBlock: { marginBottom: scale(16) },
+  dayLabel: { fontSize: scaleFont(15), fontWeight: '700', color: '#333', marginBottom: scale(6) },
   slotRow: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 4,
+    borderRadius: scale(8),
+    padding: scale(10),
+    marginBottom: scale(4),
     borderLeftWidth: 3,
     borderLeftColor: '#4CAF50',
   },
   slotTaken: { borderLeftColor: '#9e9e9e', opacity: 0.7 },
-  slotTime: { fontSize: 13, fontWeight: '600', color: '#333', width: 60 },
-  slotName: { flex: 1, fontSize: 13, color: '#555' },
-  takenBadge: { fontSize: 16, color: '#4CAF50' },
+  slotTime: { fontSize: scaleFont(13), fontWeight: '600', color: '#333', width: scale(60) },
+  slotName: { flex: 1, fontSize: scaleFont(13), color: '#555' },
+  takenBadge: { fontSize: scaleFont(16), color: '#4CAF50' },
 
   emptyText: { textAlign: 'center', color: '#999', marginTop: 20, fontSize: 14 },
 
@@ -608,28 +696,33 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalContent: {
     backgroundColor: '#fff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    padding: 20,
+    borderTopLeftRadius: scale(16),
+    borderTopRightRadius: scale(16),
+    padding: scale(20),
     maxHeight: '90%',
   },
-  modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 14, color: '#1a1a1a' },
+  modalTitle: {
+    fontSize: scaleFont(18),
+    fontWeight: '700',
+    marginBottom: scale(14),
+    color: '#1a1a1a',
+  },
   input: {
     borderWidth: 1,
     borderColor: '#ddd',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 10,
-    fontSize: 14,
+    borderRadius: scale(8),
+    paddingHorizontal: scale(12),
+    paddingVertical: scale(10),
+    marginBottom: scale(10),
+    fontSize: scaleFont(14),
     backgroundColor: '#fafafa',
   },
-  textArea: { height: 70, textAlignVertical: 'top' },
-  modalActions: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  textArea: { height: scale(70), textAlignVertical: 'top' },
+  modalActions: { flexDirection: 'row', gap: scale(10), marginTop: scale(4) },
   cancelBtn: {
     flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
+    paddingVertical: scale(12),
+    borderRadius: scale(8),
     borderWidth: 1,
     borderColor: '#ddd',
     alignItems: 'center',
@@ -637,8 +730,8 @@ const styles = StyleSheet.create({
   cancelBtnText: { color: '#666', fontWeight: '600' },
   saveBtn: {
     flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
+    paddingVertical: scale(12),
+    borderRadius: scale(8),
     backgroundColor: '#4CAF50',
     alignItems: 'center',
   },

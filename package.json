@@ -25,8 +25,16 @@
       "**/__tests__/**/*.test.ts"
     ],
     "moduleNameMapper": {
+      "^react-native$": "<rootDir>/src/__mocks__/react-native.ts",
       "^react-native-keychain$": "<rootDir>/src/__mocks__/react-native-keychain.ts",
-      "^expo-constants$": "<rootDir>/src/__mocks__/expo-constants.ts"
+      "^expo-constants$": "<rootDir>/src/__mocks__/expo-constants.ts",
+      "^react-native-image-picker$": "<rootDir>/src/__mocks__/react-native-image-picker.ts",
+      "^react-native-image-resizer$": "<rootDir>/src/__mocks__/react-native-image-resizer.ts",
+      "^@react-native-async-storage/async-storage$": "<rootDir>/src/__mocks__/@react-native-async-storage/async-storage.ts",
+      "^@react-native-community/netinfo$": "<rootDir>/src/__mocks__/@react-native-community/netinfo.ts",
+      "^@react-native-community/geolocation$": "<rootDir>/src/__mocks__/@react-native-community/geolocation.ts",
+      "^expo-secure-store$": "<rootDir>/src/__mocks__/expo-secure-store.ts",
+      "^expo-notifications$": "<rootDir>/src/__mocks__/expo-notifications.ts"
     },
     "collectCoverageFrom": [
       "src/**/*.ts",
@@ -44,7 +52,7 @@
     "expo-notifications": "^0.31.1",
     "expo-secure-store": "^14.0.1",
     "react-native-image-picker": "^7.0.0",
-    "react-native-image-resizer": "^3.0.0",
+    "react-native-image-resizer": "1.4.5",
     "react-native-keychain": "^10.0.0"
   },
   "devDependencies": {

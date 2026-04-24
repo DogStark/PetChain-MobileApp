@@ -24,6 +24,11 @@ export interface NotificationPreferences {
   badgeEnabled?: boolean;
 }
 
+export interface AccessibilityPreferences {
+  largeTextEnabled?: boolean;
+  fontScaleMultiplier?: number;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -34,6 +39,7 @@ export interface User {
   address?: Address;
   emergencyContact?: EmergencyContact;
   notificationPreferences?: NotificationPreferences;
+  accessibilityPreferences?: AccessibilityPreferences;
   createdAt?: string;
   updatedAt?: string;
 }

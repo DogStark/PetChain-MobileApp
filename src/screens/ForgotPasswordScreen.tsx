@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -26,6 +26,9 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
   const [newPassword, setNewPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const passwordRef = useRef<TextInput>(null);
+  const confirmRef = useRef<TextInput>(null);
 
   const handleRequest = async () => {
     if (!email.trim()) {
@@ -92,6 +95,8 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
               keyboardType="email-address"
               value={email}
               onChangeText={setEmail}
+              returnKeyType="send"
+              onSubmitEditing={() => void handleRequest()}
             />
             <TouchableOpacity
               style={[styles.btn, loading && styles.btnDisabled]}
@@ -118,22 +123,32 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
               autoCapitalize="none"
               value={token}
               onChangeText={setToken}
+              returnKeyType="next"
+              onSubmitEditing={() => passwordRef.current?.focus()}
+              blurOnSubmit={false}
             />
             <TextInput
+              ref={passwordRef}
               style={styles.input}
               placeholder="New Password"
               placeholderTextColor="#aaa"
               secureTextEntry
               value={newPassword}
               onChangeText={setNewPassword}
+              returnKeyType="next"
+              onSubmitEditing={() => confirmRef.current?.focus()}
+              blurOnSubmit={false}
             />
             <TextInput
+              ref={confirmRef}
               style={styles.input}
               placeholder="Confirm New Password"
               placeholderTextColor="#aaa"
               secureTextEntry
               value={confirm}
               onChangeText={setConfirm}
+              returnKeyType="done"
+              onSubmitEditing={() => void handleReset()}
             />
             <TouchableOpacity
               style={[styles.btn, loading && styles.btnDisabled]}

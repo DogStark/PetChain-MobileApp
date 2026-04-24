@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -43,6 +43,10 @@ const EmergencyContactsScreen: React.FC = () => {
   const [modalVisible, setModalVisible] = useState(false);
   const [editingContact, setEditingContact] = useState<EmergencyContact | null>(null);
   const [form, setForm] = useState<Omit<EmergencyContact, 'id'>>(EMPTY_FORM);
+
+  const phoneRef = useRef<TextInput>(null);
+  const addressRef = useRef<TextInput>(null);
+  const notesRef = useRef<TextInput>(null);
 
   // ── Load contacts ──────────────────────────────────────────────────────────
 
@@ -316,8 +320,12 @@ const EmergencyContactsScreen: React.FC = () => {
               onChangeText={(v: string) =>
                 setForm((f: Omit<EmergencyContact, 'id'>) => ({ ...f, name: v }))
               }
+              returnKeyType="next"
+              onSubmitEditing={() => phoneRef.current?.focus()}
+              blurOnSubmit={false}
             />
             <TextInput
+              ref={phoneRef}
               style={styles.input}
               placeholder="Phone Number *"
               value={form.phoneNumber}
@@ -325,22 +333,32 @@ const EmergencyContactsScreen: React.FC = () => {
                 setForm((f: Omit<EmergencyContact, 'id'>) => ({ ...f, phoneNumber: v }))
               }
               keyboardType="phone-pad"
+              returnKeyType="next"
+              onSubmitEditing={() => addressRef.current?.focus()}
+              blurOnSubmit={false}
             />
             <TextInput
+              ref={addressRef}
               style={styles.input}
               placeholder="Address"
               value={form.address}
               onChangeText={(v: string) =>
                 setForm((f: Omit<EmergencyContact, 'id'>) => ({ ...f, address: v }))
               }
+              returnKeyType="next"
+              onSubmitEditing={() => notesRef.current?.focus()}
+              blurOnSubmit={false}
             />
             <TextInput
+              ref={notesRef}
               style={styles.input}
               placeholder="Notes"
               value={form.notes}
               onChangeText={(v: string) =>
                 setForm((f: Omit<EmergencyContact, 'id'>) => ({ ...f, notes: v }))
               }
+              returnKeyType="done"
+              onSubmitEditing={() => void handleSave()}
             />
 
             {/* Type picker */}

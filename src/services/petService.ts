@@ -2,7 +2,7 @@ import axios from 'axios';
 
 import apiClient from './apiClient';
 import { parseQRCodeData } from './qrCodeService';
-import { pickImage, compressImage, generateThumbnail, uploadToStorage } from '../utils/imageUtils';
+import { pickImage, compressImage, uploadToStorage } from '../utils/imageUtils';
 
 export interface PetOwnerSummary {
   id: string;
@@ -221,9 +221,9 @@ export async function uploadPetPhoto(petId: string): Promise<string | null> {
 
     const compressed = await compressImage(imageResult.uri);
     const uploadResult = await uploadToStorage(compressed.uri, petId);
-    
+
     await updatePet(petId, { photoUrl: uploadResult.url });
-    
+
     return uploadResult.url;
   } catch (error) {
     throw toPetServiceError(error);

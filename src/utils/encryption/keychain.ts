@@ -51,24 +51,19 @@ function getSecureStoreOptions() {
   };
 }
 
-function getBiometricAccessControl(): string | undefined {
+function getBiometricAccessControl(): Keychain.ACCESS_CONTROL | undefined {
   return (
-    keychainModule.ACCESS_CONTROL?.BIOMETRY_CURRENT_SET_OR_DEVICE_PASSCODE ??
-    keychainModule.ACCESS_CONTROL?.BIOMETRY_CURRENT_SET ??
-    keychainModule.ACCESS_CONTROL?.BIOMETRY_ANY
+    (keychainModule.ACCESS_CONTROL
+      ?.BIOMETRY_CURRENT_SET_OR_DEVICE_PASSCODE as Keychain.ACCESS_CONTROL) ??
+    (keychainModule.ACCESS_CONTROL?.BIOMETRY_CURRENT_SET as Keychain.ACCESS_CONTROL) ??
+    (keychainModule.ACCESS_CONTROL?.BIOMETRY_ANY as Keychain.ACCESS_CONTROL)
   );
 }
 
-function getBiometricAuthenticationType(): string | undefined {
+function getSecurityLevel(): Keychain.SECURITY_LEVEL | undefined {
   return (
-    keychainModule.AUTHENTICATION_TYPE?.DEVICE_PASSCODE_OR_BIOMETRICS ??
-    keychainModule.AUTHENTICATION_TYPE?.BIOMETRICS
-  );
-}
-
-function getSecurityLevel(): string | undefined {
-  return (
-    keychainModule.SECURITY_LEVEL?.SECURE_HARDWARE ?? keychainModule.SECURITY_LEVEL?.ANY
+    (keychainModule.SECURITY_LEVEL?.SECURE_HARDWARE as Keychain.SECURITY_LEVEL) ??
+    (keychainModule.SECURITY_LEVEL?.ANY as Keychain.SECURITY_LEVEL)
   );
 }
 
@@ -110,10 +105,7 @@ function decryptTokenBlob(encryptedData: string, key: string): SecureTokenPayloa
   const bytes = CryptoJS.AES.decrypt(encryptedData, key);
   const decrypted = bytes.toString(CryptoJS.enc.Utf8);
   if (!decrypted) {
-    throw new EncryptionError(
-      'Decryption failed - invalid data or wrong key',
-      'DECRYPTION_FAILED',
-    );
+    throw new EncryptionError('Decryption failed - invalid data or wrong key', 'DECRYPTION_FAILED');
   }
 
   const parsed = JSON.parse(decrypted) as Partial<SecureTokenPayload>;
@@ -181,7 +173,10 @@ export const storeSecureTokens = async (payload: SecureTokenPayload): Promise<vo
 
 export const getSecureTokens = async (): Promise<SecureTokenPayload | null> => {
   try {
-    const encryptedPayload = await SecureStore.getItemAsync(TOKEN_BLOB_KEY, getSecureStoreOptions());
+    const encryptedPayload = await SecureStore.getItemAsync(
+      TOKEN_BLOB_KEY,
+      getSecureStoreOptions(),
+    );
     if (!encryptedPayload) {
       return null;
     }
@@ -251,9 +246,8 @@ export const enableBiometricAuthentication = async (
       service: BIOMETRIC_KEYCHAIN_SERVICE,
       accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
       accessControl: getBiometricAccessControl(),
-      authenticationType: getBiometricAuthenticationType(),
       securityLevel: getSecurityLevel(),
-    });
+    } as any);
 
     const credentials = await Keychain.getGenericPassword({
       service: BIOMETRIC_KEYCHAIN_SERVICE,
@@ -288,7 +282,7 @@ export const authenticateWithBiometricGate = async (
       },
     });
 
-    return !!credentials?.password;
+    return typeof credentials !== 'boolean' && !!credentials.password;
   } catch {
     return false;
   }

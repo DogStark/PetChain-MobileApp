@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Image,
@@ -47,6 +47,14 @@ const PetFormScreen: React.FC<Props> = ({ pet, ownerId = '', onBack, onSaved }) 
   );
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const inputRefs = {
+    name: useRef<TextInput>(null),
+    species: useRef<TextInput>(null),
+    breed: useRef<TextInput>(null),
+    dateOfBirth: useRef<TextInput>(null),
+    microchipId: useRef<TextInput>(null),
+  };
 
   const loadPhoto = useCallback(async () => {
     if (pet) setPhotoUri(await getPhoto(pet.id));
@@ -127,6 +135,44 @@ const PetFormScreen: React.FC<Props> = ({ pet, ownerId = '', onBack, onSaved }) 
     }
   };
 
+  const fields: {
+    key: keyof FormState;
+    label: string;
+    placeholder: string;
+    next?: keyof FormState;
+    returnKeyType: 'next' | 'done';
+  }[] = [
+    {
+      key: 'name',
+      label: 'Name *',
+      placeholder: 'e.g. Buddy',
+      next: 'species',
+      returnKeyType: 'next',
+    },
+    {
+      key: 'species',
+      label: 'Species *',
+      placeholder: 'e.g. Dog, Cat',
+      next: 'breed',
+      returnKeyType: 'next',
+    },
+    {
+      key: 'breed',
+      label: 'Breed',
+      placeholder: 'e.g. Labrador',
+      next: 'dateOfBirth',
+      returnKeyType: 'next',
+    },
+    {
+      key: 'dateOfBirth',
+      label: 'Date of Birth',
+      placeholder: 'YYYY-MM-DD',
+      next: 'microchipId',
+      returnKeyType: 'next',
+    },
+    { key: 'microchipId', label: 'Microchip ID', placeholder: 'Optional', returnKeyType: 'done' },
+  ];
+
   return (
     <View style={styles.container}>
       {/* Header */}
@@ -159,23 +205,25 @@ const PetFormScreen: React.FC<Props> = ({ pet, ownerId = '', onBack, onSaved }) 
 
         {/* Fields */}
         <View style={styles.formCard}>
-          {(
-            [
-              { key: 'name', label: 'Name *', placeholder: 'e.g. Buddy' },
-              { key: 'species', label: 'Species *', placeholder: 'e.g. Dog, Cat' },
-              { key: 'breed', label: 'Breed', placeholder: 'e.g. Labrador' },
-              { key: 'dateOfBirth', label: 'Date of Birth', placeholder: 'YYYY-MM-DD' },
-              { key: 'microchipId', label: 'Microchip ID', placeholder: 'Optional' },
-            ] as { key: keyof FormState; label: string; placeholder: string }[]
-          ).map(({ key, label, placeholder }) => (
+          {fields.map(({ key, label, placeholder, next, returnKeyType }) => (
             <View key={key} style={styles.fieldRow}>
               <Text style={styles.fieldLabel}>{label}</Text>
               <TextInput
+                ref={inputRefs[key]}
                 style={styles.input}
                 placeholder={placeholder}
                 value={form[key]}
                 onChangeText={set(key)}
                 placeholderTextColor="#bbb"
+                returnKeyType={returnKeyType}
+                onSubmitEditing={() => {
+                  if (next) {
+                    inputRefs[next].current?.focus();
+                  } else {
+                    void handleSave();
+                  }
+                }}
+                blurOnSubmit={!next}
               />
             </View>
           ))}

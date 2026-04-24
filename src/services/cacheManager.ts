@@ -48,7 +48,9 @@ export class CacheManager {
     }
   }
 
-  async warm<T>(entries: Array<{ key: string; loader: () => Promise<T>; ttl?: number }>): Promise<void> {
+  async warm<T>(
+    entries: Array<{ key: string; loader: () => Promise<T>; ttl?: number }>,
+  ): Promise<void> {
     await Promise.all(
       entries.map(async ({ key, loader, ttl }) => {
         try {
@@ -57,7 +59,7 @@ export class CacheManager {
         } catch {
           // warming failures are non-fatal
         }
-      })
+      }),
     );
   }
 
