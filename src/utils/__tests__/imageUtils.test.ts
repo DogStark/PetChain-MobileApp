@@ -1,42 +1,38 @@
-import { pickImage, compressImage, generateThumbnail } from '../imageUtils';
+import { launchImageLibrary } from 'react-native-image-picker';
+import ImageResizer from 'react-native-image-resizer';
 
-// Mock react-native-image-picker
+import { pickImage, compressImage } from '../imageUtils';
+
 jest.mock('react-native-image-picker', () => ({
   launchImageLibrary: jest.fn(),
 }));
 
-// Mock react-native-image-resizer
 jest.mock('react-native-image-resizer', () => ({
-  default: {
-    createResizedImage: jest.fn(),
-  },
+  __esModule: true,
+  default: { createResizedImage: jest.fn() },
 }));
+
+const mockLaunchImageLibrary = launchImageLibrary as jest.Mock;
+const mockCreateResizedImage = ImageResizer.createResizedImage as jest.Mock;
 
 describe('imageUtils', () => {
   describe('pickImage', () => {
     it('should return null when user cancels', async () => {
-      const { launchImageLibrary } = require('react-native-image-picker');
-      launchImageLibrary.mockImplementation((options, callback) => {
+      mockLaunchImageLibrary.mockImplementation((_options, callback) => {
         callback({ didCancel: true });
       });
-
       const result = await pickImage();
       expect(result).toBeNull();
     });
 
     it('should return image data when successful', async () => {
-      const { launchImageLibrary } = require('react-native-image-picker');
-      const mockAsset = {
-        uri: 'file://test.jpg',
-        type: 'image/jpeg',
-        fileName: 'test.jpg',
-        fileSize: 1024,
-      };
-
-      launchImageLibrary.mockImplementation((options, callback) => {
-        callback({ assets: [mockAsset] });
+      mockLaunchImageLibrary.mockImplementation((_options, callback) => {
+        callback({
+          assets: [
+            { uri: 'file://test.jpg', type: 'image/jpeg', fileName: 'test.jpg', fileSize: 1024 },
+          ],
+        });
       });
-
       const result = await pickImage();
       expect(result).toEqual({
         uri: 'file://test.jpg',
@@ -49,21 +45,14 @@ describe('imageUtils', () => {
 
   describe('compressImage', () => {
     it('should compress image successfully', async () => {
-      const ImageResizer = require('react-native-image-resizer');
-      ImageResizer.default.createResizedImage.mockResolvedValue({
+      mockCreateResizedImage.mockResolvedValue({
         uri: 'file://compressed.jpg',
         size: 512,
         width: 800,
         height: 600,
       });
-
       const result = await compressImage('file://test.jpg');
-      expect(result).toEqual({
-        uri: 'file://compressed.jpg',
-        size: 512,
-        width: 800,
-        height: 600,
-      });
+      expect(result).toEqual({ uri: 'file://compressed.jpg', size: 512, width: 800, height: 600 });
     });
   });
 });

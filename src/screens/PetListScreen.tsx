@@ -48,7 +48,11 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet }) => {
   }, [load]);
 
   const renderItem = ({ item }: { item: Pet }) => (
-    <TouchableOpacity style={styles.card} onPress={() => onSelectPet(item)}>
+    <TouchableOpacity
+      style={styles.card}
+      onPress={() => onSelectPet(item)}
+      testID={`pet-item-${item.id}`}
+    >
       {photos[item.id] ? (
         <Image source={{ uri: photos[item.id] }} style={styles.avatar} />
       ) : (
@@ -76,7 +80,7 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet }) => {
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>My Pets</Text>
-        <TouchableOpacity style={styles.addBtn} onPress={onAddPet}>
+        <TouchableOpacity style={styles.addBtn} onPress={onAddPet} testID="add-pet-button">
           <Text style={styles.addBtnText}>+ Add</Text>
         </TouchableOpacity>
       </View>

@@ -107,4 +107,12 @@ module.exports = tseslint.config(
       'no-console': 'off',
     },
   },
+
+  // ── Node CJS config files (.detoxrc.js, e2e/jest.config.js) ──────────────
+  {
+    files: ['.detoxrc.js', 'e2e/jest.config.js'],
+    languageOptions: {
+      globals: { module: 'writable', require: 'readonly', __dirname: 'readonly' },
+    },
+  },
 );

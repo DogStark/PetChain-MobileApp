@@ -139,6 +139,7 @@ const PetFormScreen: React.FC<Props> = ({ pet, ownerId = '', onBack, onSaved }) 
           onPress={() => void handleSave()}
           style={[styles.saveBtn, saving && styles.saveBtnDisabled]}
           disabled={saving}
+          testID="pet-form-save-button"
         >
           <Text style={styles.saveBtnText}>{saving ? 'Saving…' : 'Save'}</Text>
         </TouchableOpacity>
@@ -176,6 +177,7 @@ const PetFormScreen: React.FC<Props> = ({ pet, ownerId = '', onBack, onSaved }) 
                 value={form[key]}
                 onChangeText={set(key)}
                 placeholderTextColor="#bbb"
+                testID={`pet-form-${key}-input`}
               />
             </View>
           ))}

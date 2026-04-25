@@ -59,6 +59,7 @@ const LoginScreen: React.FC<Props> = ({ onSuccess, onRegister, onForgotPassword 
           keyboardType="email-address"
           value={email}
           onChangeText={setEmail}
+          testID="login-email-input"
         />
         <TextInput
           style={styles.input}
@@ -67,6 +68,7 @@ const LoginScreen: React.FC<Props> = ({ onSuccess, onRegister, onForgotPassword 
           secureTextEntry
           value={password}
           onChangeText={setPassword}
+          testID="login-password-input"
         />
 
         <TouchableOpacity onPress={onForgotPassword} style={styles.forgotLink}>
@@ -77,6 +79,7 @@ const LoginScreen: React.FC<Props> = ({ onSuccess, onRegister, onForgotPassword 
           style={[styles.btn, loading && styles.btnDisabled]}
           onPress={() => void handleLogin()}
           disabled={loading}
+          testID="login-submit-button"
         >
           {loading ? (
             <ActivityIndicator color="#fff" />

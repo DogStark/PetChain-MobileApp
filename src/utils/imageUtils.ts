@@ -1,4 +1,6 @@
 import { Platform } from 'react-native';
+import { launchImageLibrary } from 'react-native-image-picker';
+import ImageResizer from 'react-native-image-resizer';
 
 export interface ImagePickerResult {
   uri: string;
@@ -21,30 +23,22 @@ export interface ImageUploadResult {
 
 export const pickImage = async (): Promise<ImagePickerResult | null> => {
   try {
-    const { launchImageLibrary } = await import('react-native-image-picker');
-    
     return new Promise((resolve) => {
       launchImageLibrary(
-        {
-          mediaType: 'photo',
-          quality: 0.8,
-          maxWidth: 2000,
-          maxHeight: 2000,
-        },
+        { mediaType: 'photo', quality: 0.8, maxWidth: 2000, maxHeight: 2000 },
         (response) => {
           if (response.didCancel || response.errorMessage || !response.assets?.[0]) {
             resolve(null);
             return;
           }
-
           const asset = response.assets[0];
           resolve({
-            uri: asset.uri!,
+            uri: asset.uri ?? '',
             type: asset.type || 'image/jpeg',
             name: asset.fileName || 'photo.jpg',
             size: asset.fileSize || 0,
           });
-        }
+        },
       );
     });
   } catch (error) {
@@ -55,9 +49,7 @@ export const pickImage = async (): Promise<ImagePickerResult | null> => {
 
 export const compressImage = async (uri: string): Promise<CompressedImage> => {
   try {
-    const ImageResizer = await import('react-native-image-resizer');
-    
-    const result = await ImageResizer.default.createResizedImage(
+    const result = await ImageResizer.createResizedImage(
       uri,
       800,
       600,
@@ -66,9 +58,8 @@ export const compressImage = async (uri: string): Promise<CompressedImage> => {
       0,
       undefined,
       false,
-      { mode: 'contain' }
+      { mode: 'contain' },
     );
-
     return {
       uri: result.uri,
       size: result.size || 0,
@@ -77,20 +68,13 @@ export const compressImage = async (uri: string): Promise<CompressedImage> => {
     };
   } catch (error) {
     console.error('Image compression error:', error);
-    return {
-      uri,
-      size: 0,
-      width: 800,
-      height: 600,
-    };
+    return { uri, size: 0, width: 800, height: 600 };
   }
 };
 
 export const generateThumbnail = async (uri: string): Promise<string> => {
   try {
-    const ImageResizer = await import('react-native-image-resizer');
-    
-    const result = await ImageResizer.default.createResizedImage(
+    const result = await ImageResizer.createResizedImage(
       uri,
       150,
       150,
@@ -99,9 +83,8 @@ export const generateThumbnail = async (uri: string): Promise<string> => {
       0,
       undefined,
       false,
-      { mode: 'cover' }
+      { mode: 'cover' },
     );
-
     return result.uri;
   } catch (error) {
     console.error('Thumbnail generation error:', error);
@@ -111,23 +94,20 @@ export const generateThumbnail = async (uri: string): Promise<string> => {
 
 export const uploadToStorage = async (
   imageUri: string,
-  petId: string
+  petId: string,
 ): Promise<ImageUploadResult> => {
   try {
     const formData = new FormData();
-    
     formData.append('file', {
       uri: Platform.OS === 'ios' ? imageUri.replace('file://', '') : imageUri,
       type: 'image/jpeg',
       name: `pet-${petId}-${Date.now()}.jpg`,
-    } as any);
+    } as unknown as Blob);
 
     const response = await fetch('/api/upload/pet-photo', {
       method: 'POST',
       body: formData,
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
+      headers: { 'Content-Type': 'multipart/form-data' },
     });
 
     if (!response.ok) {
@@ -135,10 +115,7 @@ export const uploadToStorage = async (
     }
 
     const result = await response.json();
-    return {
-      url: result.url,
-      thumbnailUrl: result.thumbnailUrl,
-    };
+    return { url: result.url, thumbnailUrl: result.thumbnailUrl };
   } catch (error) {
     console.error('Upload error:', error);
     throw new Error('Failed to upload image');

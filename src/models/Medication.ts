@@ -27,12 +27,14 @@ export interface Medication {
   remainingPills?: number;
   refillDate?: string;
   status?: MedicationStatus;
+  notes?: string;
   createdAt?: string;
   updatedAt?: string;
 }
 
 export interface CreateMedicationInput extends Omit<Medication, 'id' | 'createdAt' | 'updatedAt'> {
   status?: MedicationStatus;
+  notes?: string;
 }
 
 export type UpdateMedicationInput = Partial<

@@ -117,6 +117,6 @@ export async function scheduleRefillReminder(med: Medication): Promise<void> {
       body: `Time to refill ${med.name}`,
       data: { medicationId: med.id },
     },
-    trigger,
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: trigger },
   });
 }
