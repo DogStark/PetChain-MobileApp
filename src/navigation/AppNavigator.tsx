@@ -37,6 +37,7 @@ import PetHealthMetricsScreen from '../screens/PetHealthMetricsScreen';
 import PetListScreen from '../screens/PetListScreen';
 import PetProfileScreen from '../screens/PetProfileScreen';
 import PetShareScreen from '../screens/PetShareScreen';
+import PrivacyDashboardScreen from '../screens/PrivacyDashboardScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import QRScannerScreen from '../screens/QRScannerScreen';
 import ReconciliationScreen from '../screens/ReconciliationScreen';
@@ -188,6 +189,11 @@ function PetNavigator() {
         options={{ title: 'Notification Preferences' }}
       >
         {({ navigation }) => <NotificationPreferencesScreen onBack={() => navigation.goBack()} />}
+      </PetStack.Screen>
+      <PetStack.Screen name="PrivacyDashboard" options={{ title: 'Privacy Dashboard' }}>
+        {({ navigation }) => (
+          <PrivacyDashboardScreen onDeleteAccount={() => navigation.navigate('DeleteAccount')} />
+        )}
       </PetStack.Screen>
       <PetStack.Screen name="DeleteAccount" options={{ title: 'Delete Account' }}>
         {({ navigation }) => (

@@ -7,7 +7,7 @@ import axios, {
 import { fetch as pinnedFetch } from 'react-native-ssl-pinning';
 
 import config from '../config';
-import { getToken } from './authService';
+import { getToken, logout, refreshToken } from './authService';
 import { SSL_PINS, PIN_FAILURE_SUPPORT_URL } from '../config/security';
 import { setupInterceptors } from '../middleware/apiInterceptors';
 import { logError } from '../utils/errorLogger';
@@ -123,6 +123,51 @@ function recordFailure(): void {
   }
 }
 
+// --- Single-flight token refresh (Issue #547) ---
+// If multiple 401 responses arrive concurrently, only one refresh call is made.
+// All queued requests resolve / reject together once the refresh settles.
+
+type RefreshSubscriber = (newToken: string) => void;
+type RefreshRejecter = (err: unknown) => void;
+
+let refreshInFlight = false;
+const refreshSubscribers: RefreshSubscriber[] = [];
+const refreshRejecters: RefreshRejecter[] = [];
+
+function subscribeToRefresh(): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    refreshSubscribers.push(resolve);
+    refreshRejecters.push(reject);
+  });
+}
+
+function resolveAllSubscribers(token: string): void {
+  refreshSubscribers.splice(0).forEach((cb) => cb(token));
+  refreshRejecters.splice(0);
+}
+
+function rejectAllSubscribers(err: unknown): void {
+  refreshRejecters.splice(0).forEach((cb) => cb(err));
+  refreshSubscribers.splice(0);
+}
+
+async function singleFlightRefresh(): Promise<string> {
+  if (refreshInFlight) return subscribeToRefresh();
+
+  refreshInFlight = true;
+  try {
+    const token = await refreshToken();
+    resolveAllSubscribers(token);
+    return token;
+  } catch (err) {
+    rejectAllSubscribers(err);
+    await logout();
+    throw err;
+  } finally {
+    refreshInFlight = false;
+  }
+}
+
 // --- Retry ---
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 300;
@@ -156,6 +201,21 @@ apiClient.interceptors.request.use(async (requestConfig) => {
   return requestConfig;
 });
 setupInterceptors(apiClient);
+
+// 401 → single-flight token refresh (Issue #547)
+apiClient.interceptors.response.use(
+  (response) => response,
+  async (error: AxiosError) => {
+    const original = error.config as AxiosRequestConfig & { _retried?: boolean };
+    if (error.response?.status === 401 && !original._retried) {
+      original._retried = true;
+      const newToken = await singleFlightRefresh();
+      (original.headers as Record<string, string>).Authorization = `Bearer ${newToken}`;
+      return apiClient.request(original);
+    }
+    return Promise.reject(error);
+  },
+);
 
 // --- Resilient request wrapper ---
 export async function resilientRequest<T>(
@@ -225,5 +285,15 @@ export async function resilientRequest<T>(
 }
 
 export const getCircuitState = () => circuit.state;
+
+/** Exposed for testing only */
+export const _resetRefreshState = () => {
+  refreshInFlight = false;
+  refreshSubscribers.splice(0);
+  refreshRejecters.splice(0);
+};
+
+/** Exposed for testing only */
+export { singleFlightRefresh as singleFlightRefreshForTest };
 
 export default apiClient;

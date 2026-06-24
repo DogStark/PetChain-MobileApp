@@ -4,6 +4,13 @@ import bcrypt from 'bcryptjs';
 import { generateSecret as generateOtpSecret, generateURI, verifySync } from 'otplib';
 import QRCode from 'qrcode';
 
+import {
+  decryptTOTPSeed,
+  encryptTOTPSeed,
+  isEncryptedPayload,
+  type EncryptedPayload,
+} from '../utils/cryptoUtils';
+
 const BCRYPT_ROUNDS = 10;
 const BACKUP_CODE_COUNT = 10;
 const RECOVERY_TOKEN_TTL_MS = 15 * 60 * 1000; // 15 minutes
@@ -12,6 +19,32 @@ const RECOVERY_TOKEN_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 export function generateSecret(): string {
   return generateOtpSecret({ length: 20 });
+}
+
+/**
+ * Encrypt a TOTP seed before storing it in the database.
+ * Returns a JSON string containing (iv, authTag, ciphertext).
+ */
+export function encryptSeed(plainSecret: string): string {
+  return JSON.stringify(encryptTOTPSeed(plainSecret));
+}
+
+/**
+ * Decrypt a TOTP seed retrieved from the database.
+ */
+export function decryptSeed(storedValue: string): string {
+  const payload = JSON.parse(storedValue) as EncryptedPayload;
+  return decryptTOTPSeed(payload);
+}
+
+/**
+ * One-off migration helper: re-encrypts any plaintext seeds already stored in the DB.
+ * Pass each raw `seed` column value; if it is plaintext, returns the encrypted form.
+ * If already encrypted, returns the value unchanged.
+ */
+export function migrateSeedException(rawSeedValue: string): string {
+  if (isEncryptedPayload(rawSeedValue)) return rawSeedValue; // already encrypted
+  return encryptSeed(rawSeedValue);
 }
 
 export async function generateQRCodeDataURL(
@@ -29,9 +62,15 @@ export async function generateQRCodeDataURL(
 
 // ── TOTP verification ──────────────────────────────────────────────────────
 
-export function verifyTOTP(token: string, secret: string): boolean {
+/**
+ * Verify a TOTP token against a stored seed.
+ * `storedSeed` may be either a raw plaintext secret (legacy) or
+ * an encrypted JSON payload produced by `encryptSeed()`.
+ */
+export function verifyTOTP(token: string, storedSeed: string): boolean {
   try {
-    return verifySync({ token, secret }).valid;
+    const plainSecret = isEncryptedPayload(storedSeed) ? decryptSeed(storedSeed) : storedSeed;
+    return verifySync({ token, secret: plainSecret }).valid;
   } catch {
     return false;
   }

@@ -3,6 +3,7 @@ import axios from 'axios';
 import {
   getMedicalRecords,
   searchMedicalRecords,
+  searchRecords,
   type MedicalRecord,
 } from '../medicalRecordService';
 
@@ -141,5 +142,44 @@ describe('searchMedicalRecords', () => {
 
   it('throws when petId is empty', async () => {
     await expect(searchMedicalRecords('', 'rabies')).rejects.toThrow('Pet ID is required');
+  });
+});
+
+describe('searchRecords (FTS — Issue #536)', () => {
+  it('returns ranked results from the backend FTS endpoint', async () => {
+    const records = [makeRecord({ notes: 'rabies vaccination annual' })];
+    mockedAxios.get.mockResolvedValueOnce({ data: records });
+
+    const results = await searchRecords(PET_ID, 'rabies');
+    expect(results).toEqual(records);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/medical-records/search'),
+      expect.objectContaining({ params: { q: 'rabies' } }),
+    );
+  });
+
+  it('falls back to ILIKE search when FTS endpoint returns 404 (SQLite)', async () => {
+    // FTS endpoint not available → fall back
+    mockedAxios.get.mockRejectedValueOnce({
+      response: { status: 404 },
+      isAxiosError: true,
+    });
+    // Fallback getMedicalRecords call
+    const records = [makeRecord({ notes: 'dental cleaning' })];
+    mockedAxios.get.mockResolvedValueOnce(paginatedResponse(records));
+    mockedAxios.isAxiosError.mockReturnValue(true);
+
+    const results = await searchRecords(PET_ID, 'dental');
+    expect(results).toHaveLength(1);
+  });
+
+  it('returns empty array for blank query without hitting network', async () => {
+    const results = await searchRecords(PET_ID, '   ');
+    expect(results).toEqual([]);
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it('throws when petId is empty', async () => {
+    await expect(searchRecords('', 'rabies')).rejects.toThrow('Pet ID is required');
   });
 });

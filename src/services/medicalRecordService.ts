@@ -257,6 +257,31 @@ export const searchMedicalRecords = async (
   return data.data.filter((record) => extractSearchableText(record).includes(q));
 };
 
+/**
+ * Full-text search using PostgreSQL tsvector (Issue #536).
+ * Sends the query to the backend search endpoint which uses to_tsquery() with ts_rank.
+ * Falls back gracefully to the ILIKE-based `searchMedicalRecords` when the FTS endpoint
+ * is unavailable (e.g., SQLite local DB).
+ */
+export const searchRecords = async (petId: string, query: string): Promise<MedicalRecord[]> => {
+  if (!petId) throw new MedicalRecordError('Pet ID is required', 'INVALID_PET_ID');
+  if (!query.trim()) return [];
+
+  try {
+    const response = await axios.get<MedicalRecord[]>(
+      `${API_BASE_URL}/pets/${petId}/medical-records/search`,
+      { params: { q: query.trim() } },
+    );
+    return response.data;
+  } catch (error) {
+    // Fallback: SQLite / network error — use client-side ILIKE search
+    if (axios.isAxiosError(error) && (error.response?.status === 404 || !error.response)) {
+      return searchMedicalRecords(petId, query);
+    }
+    return handleApiError(error);
+  }
+};
+
 export const createMedicalRecord = async (
   petId: string,
   data: Partial<MedicalRecord>,
