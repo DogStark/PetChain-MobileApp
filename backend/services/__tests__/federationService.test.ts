@@ -17,11 +17,19 @@ jest.mock('@stellar/stellar-sdk', () => {
   };
 });
 
+// Mock axios and cacheService
+jest.mock('axios');
+jest.mock('../cacheService');
+
+import axios from 'axios';
+import * as cacheService from '../cacheService';
+
 import {
   claimFederatedAddress,
   getSignedRecord,
   getVetFederationRecord,
   lookupFederation,
+  resolveFederation,
   revokeVetCredential,
   signMedicalRecord,
   verifyRecordSignature,
@@ -147,6 +155,141 @@ describe('federationService', () => {
       const result = getSignedRecord('mr-getsigned-1');
       expect(result).not.toBeNull();
       expect(result!.vetFederatedAddress).toBe('dr.getsigned*petchain.app');
+    });
+  });
+
+  describe('resolveFederation', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+      (cacheService.get as jest.Mock).mockResolvedValue(null);
+      (cacheService.set as jest.Mock).mockResolvedValue(undefined);
+    });
+
+    it('returns null on cache miss and calls the federation server', async () => {
+      const federationAddress = 'user*petchain.app';
+      const result = { stellarAddress: 'GABC123', memo: 'user' };
+
+      (axios.get as jest.Mock).mockResolvedValueOnce({
+        data: result,
+        headers: {},
+      });
+
+      const resolved = await resolveFederation(federationAddress);
+
+      expect(resolved).toEqual(result);
+      expect(cacheService.get).toHaveBeenCalledWith(`federation:address:${federationAddress}`);
+      expect(axios.get).toHaveBeenCalledWith(
+        expect.stringContaining(`q=${federationAddress}`),
+        expect.objectContaining({ timeout: 5000 }),
+      );
+    });
+
+    it('caches positive results with default 15-minute TTL', async () => {
+      const federationAddress = 'user*petchain.app';
+      const result = { stellarAddress: 'GABC123', memo: 'user' };
+
+      (axios.get as jest.Mock).mockResolvedValueOnce({
+        data: result,
+        headers: {},
+      });
+
+      await resolveFederation(federationAddress);
+
+      expect(cacheService.set).toHaveBeenCalledWith(
+        `federation:address:${federationAddress}`,
+        result,
+        900, // 15 minutes
+      );
+    });
+
+    it('respects Cache-Control header from federation server', async () => {
+      const federationAddress = 'user*petchain.app';
+      const result = { stellarAddress: 'GABC123', memo: 'user' };
+
+      (axios.get as jest.Mock).mockResolvedValueOnce({
+        data: result,
+        headers: { 'cache-control': 'max-age=600' }, // 10 minutes
+      });
+
+      await resolveFederation(federationAddress);
+
+      // Should use the lower TTL (600 instead of 900)
+      expect(cacheService.set).toHaveBeenCalledWith(
+        `federation:address:${federationAddress}`,
+        result,
+        600,
+      );
+    });
+
+    it('uses default TTL if server TTL is higher', async () => {
+      const federationAddress = 'user*petchain.app';
+      const result = { stellarAddress: 'GABC123', memo: 'user' };
+
+      (axios.get as jest.Mock).mockResolvedValueOnce({
+        data: result,
+        headers: { 'cache-control': 'max-age=3600' }, // 1 hour (higher than default)
+      });
+
+      await resolveFederation(federationAddress);
+
+      // Should cap at default 15 minutes
+      expect(cacheService.set).toHaveBeenCalledWith(
+        `federation:address:${federationAddress}`,
+        result,
+        900, // capped at default
+      );
+    });
+
+    it('caches negative results (not found) for 2 minutes', async () => {
+      const federationAddress = 'notfound*petchain.app';
+
+      (axios.get as jest.Mock).mockRejectedValueOnce(new Error('404 Not Found'));
+
+      const resolved = await resolveFederation(federationAddress);
+
+      expect(resolved).toBeNull();
+      expect(cacheService.set).toHaveBeenCalledWith(
+        `federation:address:${federationAddress}`,
+        'NOT_FOUND',
+        120, // 2 minutes
+      );
+    });
+
+    it('returns cached result on cache hit', async () => {
+      const federationAddress = 'cached*petchain.app';
+      const cachedResult = { stellarAddress: 'GABC123', memo: 'cached' };
+
+      (cacheService.get as jest.Mock).mockResolvedValueOnce(cachedResult);
+
+      const resolved = await resolveFederation(federationAddress);
+
+      expect(resolved).toEqual(cachedResult);
+      expect(axios.get).not.toHaveBeenCalled(); // Should not call server
+    });
+
+    it('returns null when cache returns NOT_FOUND sentinel', async () => {
+      const federationAddress = 'notfound*petchain.app';
+
+      (cacheService.get as jest.Mock).mockResolvedValueOnce('NOT_FOUND');
+
+      const resolved = await resolveFederation(federationAddress);
+
+      expect(resolved).toBeNull();
+      expect(axios.get).not.toHaveBeenCalled(); // Should not call server
+    });
+
+    it('uses 2-minute TTL for network errors', async () => {
+      const federationAddress = 'error*petchain.app';
+
+      (axios.get as jest.Mock).mockRejectedValueOnce(new Error('Network timeout'));
+
+      await resolveFederation(federationAddress);
+
+      expect(cacheService.set).toHaveBeenCalledWith(
+        `federation:address:${federationAddress}`,
+        'NOT_FOUND',
+        120, // 2 minutes for error/not found
+      );
     });
   });
 });
