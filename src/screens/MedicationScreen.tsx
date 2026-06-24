@@ -11,6 +11,8 @@ import {
   View,
 } from 'react-native';
 
+import { SkeletonCard } from '../components/SkeletonCard';
+import { useMinimumLoadingTime } from '../hooks/useMinimumLoadingTime';
 import {
   checkDrugInteractions,
   getSeverityLabel,
@@ -74,6 +76,7 @@ const MedicationScreen: React.FC = () => {
   const [tab, setTab] = useState<Tab>('list');
   const [medications, setMedications] = useState<Medication[]>([]);
   const [doseLogs, setDoseLogs] = useState<DoseLog[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingMed, setEditingMed] = useState<Medication | null>(null);
   const [form, setForm] = useState<Omit<Medication, 'id'>>(EMPTY_FORM);
@@ -86,10 +89,18 @@ const MedicationScreen: React.FC = () => {
   const [refillTargetMed, setRefillTargetMed] = useState<Medication | null>(null);
   const [newSupplyInput, setNewSupplyInput] = useState('');
 
+  // Enforce minimum 300ms display for skeleton
+  const displayLoading = useMinimumLoadingTime(isLoading, { minLoadingTime: 300 });
+
   const loadData = useCallback(async () => {
-    const [meds, logs] = await Promise.all([getMedications(), getDoseLogs()]);
-    setMedications(meds);
-    setDoseLogs(logs);
+    setIsLoading(true);
+    try {
+      const [meds, logs] = await Promise.all([getMedications(), getDoseLogs()]);
+      setMedications(meds);
+      setDoseLogs(logs);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -663,7 +674,13 @@ const MedicationScreen: React.FC = () => {
           </TouchableOpacity>
         ))}
       </View>
-      {tab === 'list' && (
+      {tab === 'list' && displayLoading ? (
+        <View style={styles.listContent}>
+          {Array.from({ length: 5 }).map((_, index) => (
+            <SkeletonCard key={`skeleton-${index}`} />
+          ))}
+        </View>
+      ) : tab === 'list' ? (
         <FlatList
           data={medications}
           keyExtractor={(item) => item.id}
@@ -675,7 +692,7 @@ const MedicationScreen: React.FC = () => {
           windowSize={5}
           initialNumToRender={10}
         />
-      )}
+      ) : null}
       {tab === 'daily' && renderSchedule(todayDates())}
       {tab === 'weekly' && renderSchedule(weekDates())}
       {renderModal()}

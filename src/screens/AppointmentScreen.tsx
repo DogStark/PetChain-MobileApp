@@ -13,6 +13,8 @@ import {
 } from 'react-native';
 import { v4 as uuid } from 'uuid';
 
+import { SkeletonCard } from '../components/SkeletonCard';
+import { useMinimumLoadingTime } from '../hooks/useMinimumLoadingTime';
 import type { Medication } from '../models/Medication';
 import {
   AppointmentStatus,
@@ -59,6 +61,7 @@ const AppointmentScreen: React.FC = () => {
   const [tab, setTab] = useState<Tab>('upcoming');
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [medications, setMedications] = useState<Medication[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [bookingVisible, setBookingVisible] = useState(false);
   const [detailAppt, setDetailAppt] = useState<Appointment | null>(null);
   const [rescheduleVisible, setRescheduleVisible] = useState(false);
@@ -71,10 +74,18 @@ const AppointmentScreen: React.FC = () => {
   const [conflictModalVisible, setConflictModalVisible] = useState(false);
   const [isCheckingConflicts, setIsCheckingConflicts] = useState(false);
 
+  // Enforce minimum 300ms display for skeleton
+  const displayLoading = useMinimumLoadingTime(isLoading, { minLoadingTime: 300 });
+
   const load = useCallback(async () => {
-    const [appts, meds] = await Promise.all([getAppointments(), getMedications()]);
-    setAppointments(appts);
-    setMedications(meds);
+    setIsLoading(true);
+    try {
+      const [appts, meds] = await Promise.all([getAppointments(), getMedications()]);
+      setAppointments(appts);
+      setMedications(meds);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -336,21 +347,29 @@ const AppointmentScreen: React.FC = () => {
       </View>
 
       {/* List */}
-      <FlatList
-        data={displayed}
-        keyExtractor={(a) => a.id}
-        renderItem={renderItem}
-        contentContainerStyle={displayed.length === 0 && styles.empty}
-        ListEmptyComponent={
-          <Text style={styles.emptyText}>
-            {tab === 'upcoming' ? 'No upcoming appointments.' : 'No past appointments.'}
-          </Text>
-        }
-        removeClippedSubviews
-        maxToRenderPerBatch={10}
-        windowSize={5}
-        initialNumToRender={10}
-      />
+      {displayLoading ? (
+        <View style={styles.list}>
+          {Array.from({ length: 5 }).map((_, index) => (
+            <SkeletonCard key={`skeleton-${index}`} />
+          ))}
+        </View>
+      ) : (
+        <FlatList
+          data={displayed}
+          keyExtractor={(a) => a.id}
+          renderItem={renderItem}
+          contentContainerStyle={displayed.length === 0 && styles.empty}
+          ListEmptyComponent={
+            <Text style={styles.emptyText}>
+              {tab === 'upcoming' ? 'No upcoming appointments.' : 'No past appointments.'}
+            </Text>
+          }
+          removeClippedSubviews
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          initialNumToRender={10}
+        />
+      )}
 
       {/* ── Book Modal ── */}
       <Modal
@@ -729,6 +748,7 @@ const styles = StyleSheet.create({
   },
   suggestionLabel: { fontSize: 12, color: '#065F46', fontWeight: '600', marginBottom: 4 },
   suggestionTime: { fontSize: 14, color: '#047857', fontWeight: '700' },
+  list: { padding: 16 },
 });
 
 export default AppointmentScreen;

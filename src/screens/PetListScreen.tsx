@@ -1,12 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  FlatList,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { HeaderOfflineStatus, useOfflineStatus } from '../components/OfflineIndicator';
 import { OptimizedImage } from '../components/OptimizedImage';
@@ -14,8 +7,10 @@ import PaywallModal from '../components/PaywallModal';
 import PetAggregateView from '../components/PetAggregateView';
 import PetSelectorBar from '../components/PetSelectorBar';
 import { RetryError } from '../components/RetryError';
+import { SkeletonCard } from '../components/SkeletonCard';
 import SOSButton from '../components/SOSButton';
 import { usePetContext } from '../context/PetContext';
+import { useMinimumLoadingTime } from '../hooks/useMinimumLoadingTime';
 import petService, { type Pet } from '../services/petService';
 import subscriptionService, { type SubscriptionStatus } from '../services/subscriptionService';
 import { useRetry } from '../utils/useRetry';
@@ -47,6 +42,9 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
     maxRetries: 3,
     autoRetry: false,
   });
+
+  // Enforce minimum 300ms display for skeleton
+  const displayLoading = useMinimumLoadingTime(retryState.loading, { minLoadingTime: 300 });
 
   useEffect(() => {
     void execute();
@@ -172,8 +170,12 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
           retryCount={retryState.retryCount}
           maxRetries={3}
         />
-      ) : retryState.loading ? (
-        <ActivityIndicator style={styles.loader} size="large" color="#4CAF50" />
+      ) : displayLoading ? (
+        <View style={styles.list}>
+          {Array.from({ length: 5 }).map((_, index) => (
+            <SkeletonCard key={`skeleton-${index}`} />
+          ))}
+        </View>
       ) : (
         <FlatList
           data={pets}
