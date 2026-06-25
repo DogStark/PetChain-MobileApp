@@ -95,6 +95,15 @@ router.get('/', (req: AuthenticatedRequest, res) => {
       (r) => r.diagnosis && r.diagnosis.toLowerCase().includes(diagnosis.toLowerCase()),
     );
   list.sort((a, b) => new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime());
+
+  // Log bulk access with fire-and-forget pattern (non-blocking)
+  (req as AuditableRequest).audit?.('medical_record.accessed', 'medical_record', undefined, {
+    petId,
+    vetId,
+    type,
+    recordCount: list.length,
+  });
+
   return res.json(ok(list.map(toApiRecord)));
 });
 

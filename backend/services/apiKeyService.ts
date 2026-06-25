@@ -142,12 +142,23 @@ export async function validateApiKey(secret: string): Promise<ApiKey | null> {
   }
 
   const prefix = secret.slice(0, PREFIX_SEGMENT.length + 9);
-  const candidates = [...store.apiKeys.values()].filter(
-    (k) => k.keyPrefix === prefix && isKeyUsable(k),
-  );
+  const candidates = [...store.apiKeys.values()].filter((k) => k.keyPrefix === prefix);
 
   for (const candidate of candidates) {
     if (await verifyKey(secret, candidate.keyHash)) {
+      if (!isKeyUsable(candidate)) {
+        // Key matches but is expired or revoked — surface expiry specifically
+        if (
+          candidate.status !== 'revoked' &&
+          candidate.expiresAt &&
+          new Date(candidate.expiresAt).getTime() <= Date.now()
+        ) {
+          const err = new Error('api_key_expired') as Error & { code: string };
+          err.code = 'API_KEY_EXPIRED';
+          throw err;
+        }
+        return null;
+      }
       candidate.lastUsedAt = nowIso();
       candidate.updatedAt = nowIso();
       return candidate;
@@ -155,6 +166,22 @@ export async function validateApiKey(secret: string): Promise<ApiKey | null> {
   }
 
   return null;
+}
+
+/**
+ * Background job: permanently delete API keys that expired more than 30 days ago.
+ * Safe to call on a daily cron schedule.
+ */
+export function cleanupExpiredApiKeys(): { deleted: number } {
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  let deleted = 0;
+  for (const [id, key] of store.apiKeys.entries()) {
+    if (key.expiresAt && new Date(key.expiresAt).getTime() <= cutoff) {
+      store.apiKeys.delete(id);
+      deleted += 1;
+    }
+  }
+  return { deleted };
 }
 
 export function hasScope(key: ApiKey, required: ApiKeyScope | ApiKeyScope[]): boolean {
@@ -308,6 +335,7 @@ export default {
   hashKey,
   verifyKey,
   processRotationExpiry,
+  cleanupExpiredApiKeys,
   resetApiKeyStore,
   getAvailableScopes,
   DEFAULT_ROTATION_OVERLAP_MS,

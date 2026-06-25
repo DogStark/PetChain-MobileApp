@@ -51,11 +51,15 @@
     "storybook:ci": "npx sb-rn-get-stories"
   },
   "lint-staged": {
-    "*.{ts,tsx,js,jsx}": [
-      "eslint --fix",
+    "{src,backend}/**/*.{ts,tsx,js,jsx}": [
+      "eslint --fix --max-warnings=-1",
       "prettier --write"
     ],
-    "*.{json,md,yml,yaml}": [
+    "{src,backend}/**/*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ],
+    "*.{ts,tsx,js,jsx}": [
+      "eslint --fix --max-warnings=-1",
       "prettier --write"
     ]
   },

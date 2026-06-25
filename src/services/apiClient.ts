@@ -8,6 +8,7 @@ import { fetch as pinnedFetch } from 'react-native-ssl-pinning';
 
 import config from '../config';
 import { getToken, logout, refreshToken } from './authService';
+import { buildSignatureHeaders } from './certPinning';
 import { SSL_PINS, PIN_FAILURE_SUPPORT_URL } from '../config/security';
 import { setupInterceptors } from '../middleware/apiInterceptors';
 import { logError } from '../utils/errorLogger';
@@ -198,6 +199,21 @@ apiClient.interceptors.request.use(async (requestConfig) => {
     requestConfig.headers = requestConfig.headers ?? ({} as typeof requestConfig.headers);
     (requestConfig.headers as Record<string, string>).Authorization = `Bearer ${token}`;
   }
+
+  // Attach HMAC-SHA256 request signature
+  try {
+    const body =
+      requestConfig.data != null
+        ? typeof requestConfig.data === 'string'
+          ? requestConfig.data
+          : JSON.stringify(requestConfig.data)
+        : '';
+    const sigHeaders = await buildSignatureHeaders(body);
+    Object.assign(requestConfig.headers as Record<string, string>, sigHeaders);
+  } catch {
+    // signing failure must not block the request — log only
+  }
+
   return requestConfig;
 });
 setupInterceptors(apiClient);

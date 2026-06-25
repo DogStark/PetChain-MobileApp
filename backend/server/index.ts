@@ -3,6 +3,7 @@ import http from 'http';
 import { createApp, setReadiness } from './app';
 import { checkDatabaseConnection, runMigrations } from '../config/database';
 import apiKeyService from '../services/apiKeyService';
+import { startPaymentIdempotencyCleanupJob } from '../services/stellarPaymentService';
 import logger from '../utils/logger';
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -55,6 +56,9 @@ async function start(): Promise<void> {
       60_000,
     ) as unknown as NodeJS.Timeout;
     rotationInterval.unref();
+
+    const idempotencyCleanupInterval = startPaymentIdempotencyCleanupJob();
+    idempotencyCleanupInterval.unref();
 
     if (process.send) process.send('ready');
   });

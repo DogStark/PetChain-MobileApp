@@ -13,6 +13,8 @@ import {
 } from 'react-native';
 import { v4 as uuid } from 'uuid';
 
+import { SkeletonCard } from '../components/SkeletonCard';
+import { useMinimumLoadingTime } from '../hooks/useMinimumLoadingTime';
 import type { Medication } from '../models/Medication';
 import {
   AppointmentStatus,
@@ -59,11 +61,14 @@ const AppointmentScreen: React.FC = () => {
   const [tab, setTab] = useState<Tab>('upcoming');
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [medications, setMedications] = useState<Medication[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [bookingVisible, setBookingVisible] = useState(false);
   const [detailAppt, setDetailAppt] = useState<Appointment | null>(null);
   const [rescheduleVisible, setRescheduleVisible] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [rescheduleDate, setRescheduleDate] = useState('');
+  const [bookingLoading, setBookingLoading] = useState(false);
+  const [conflictState, setConflictState] = useState<ConflictCheckResponse | null>(null);
 
   // ── Conflict modal state ────────────────────────────────────────────────────
   const [conflictResult, setConflictResult] = useState<ConflictDetectionResult | null>(null);
@@ -71,10 +76,18 @@ const AppointmentScreen: React.FC = () => {
   const [conflictModalVisible, setConflictModalVisible] = useState(false);
   const [isCheckingConflicts, setIsCheckingConflicts] = useState(false);
 
+  // Enforce minimum 300ms display for skeleton
+  const displayLoading = useMinimumLoadingTime(isLoading, { minLoadingTime: 300 });
+
   const load = useCallback(async () => {
-    const [appts, meds] = await Promise.all([getAppointments(), getMedications()]);
-    setAppointments(appts);
-    setMedications(meds);
+    setIsLoading(true);
+    try {
+      const [appts, meds] = await Promise.all([getAppointments(), getMedications()]);
+      setAppointments(appts);
+      setMedications(meds);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -104,6 +117,7 @@ const AppointmentScreen: React.FC = () => {
       date: dateObj.toISOString(),
       time: dateObj.toTimeString().slice(0, 5),
       type: 'ROUTINE_CHECKUP' as Appointment['type'],
+      durationMinutes: 30,
       location: form.location.trim() || undefined,
       vetName: form.vetName.trim() || undefined,
       notes: form.notes.trim() || undefined,
@@ -122,6 +136,7 @@ const AppointmentScreen: React.FC = () => {
     // Sync to device calendar
     await syncAppointmentToCalendar(saved).catch(() => {});
     setForm(EMPTY_FORM);
+    setConflictState(null);
     setBookingVisible(false);
     setConflictModalVisible(false);
     setPendingAppointment(null);
@@ -336,32 +351,48 @@ const AppointmentScreen: React.FC = () => {
       </View>
 
       {/* List */}
-      <FlatList
-        data={displayed}
-        keyExtractor={(a) => a.id}
-        renderItem={renderItem}
-        contentContainerStyle={displayed.length === 0 && styles.empty}
-        ListEmptyComponent={
-          <Text style={styles.emptyText}>
-            {tab === 'upcoming' ? 'No upcoming appointments.' : 'No past appointments.'}
-          </Text>
-        }
-        removeClippedSubviews
-        maxToRenderPerBatch={10}
-        windowSize={5}
-        initialNumToRender={10}
-      />
+      {displayLoading ? (
+        <View style={styles.list}>
+          {Array.from({ length: 5 }).map((_, index) => (
+            <SkeletonCard key={`skeleton-${index}`} />
+          ))}
+        </View>
+      ) : (
+        <FlatList
+          data={displayed}
+          keyExtractor={(a) => a.id}
+          renderItem={renderItem}
+          contentContainerStyle={displayed.length === 0 && styles.empty}
+          ListEmptyComponent={
+            <Text style={styles.emptyText}>
+              {tab === 'upcoming' ? 'No upcoming appointments.' : 'No past appointments.'}
+            </Text>
+          }
+          removeClippedSubviews
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          initialNumToRender={10}
+        />
+      )}
 
       {/* ── Book Modal ── */}
       <Modal
         visible={bookingVisible}
         animationType="slide"
-        onRequestClose={() => setBookingVisible(false)}
+        onRequestClose={() => {
+          setBookingVisible(false);
+          setConflictState(null);
+        }}
       >
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Book Appointment</Text>
-            <TouchableOpacity onPress={() => setBookingVisible(false)}>
+            <TouchableOpacity
+              onPress={() => {
+                setBookingVisible(false);
+                setConflictState(null);
+              }}
+            >
               <Text style={styles.modalClose}>✕</Text>
             </TouchableOpacity>
           </View>
@@ -658,6 +689,7 @@ const styles = StyleSheet.create({
   },
   btnDisabled: { opacity: 0.6 },
   primaryBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  primaryBtnDisabled: { backgroundColor: '#9CA3AF', opacity: 0.6 },
   dangerBtn: {
     borderWidth: 1,
     borderColor: '#EF4444',
@@ -678,6 +710,21 @@ const styles = StyleSheet.create({
   warningBtnText: { color: '#B45309', fontWeight: '600', fontSize: 15 },
   secondaryBtn: { paddingVertical: 12, alignItems: 'center', marginTop: 8 },
   secondaryBtnText: { color: '#6B7280', fontSize: 14 },
+  // Warning banner
+  warningBanner: { borderRadius: 10, padding: 14, marginBottom: 16 },
+  warningBannerRed: { backgroundColor: '#FEE2E2', borderLeftWidth: 4, borderLeftColor: '#EF4444' },
+  warningBannerYellow: {
+    backgroundColor: '#FEF3C7',
+    borderLeftWidth: 4,
+    borderLeftColor: '#F59E0B',
+  },
+  warningBannerTitle: { fontWeight: '700', fontSize: 14, marginBottom: 6 },
+  warningBannerTitleRed: { color: '#991B1B' },
+  warningBannerTitleYellow: { color: '#92400E' },
+  warningBannerText: { fontSize: 13, color: '#6B7280', marginBottom: 8 },
+  conflictDetail: { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.1)' },
+  conflictDetailLabel: { fontSize: 12, fontWeight: '600', color: '#374151', marginBottom: 4 },
+  conflictDetailValue: { fontSize: 12, color: '#6B7280' },
   detailRow: {
     flexDirection: 'row',
     paddingVertical: 12,
@@ -729,6 +776,7 @@ const styles = StyleSheet.create({
   },
   suggestionLabel: { fontSize: 12, color: '#065F46', fontWeight: '600', marginBottom: 4 },
   suggestionTime: { fontSize: 14, color: '#047857', fontWeight: '700' },
+  list: { padding: 16 },
 });
 
 export default AppointmentScreen;

@@ -1,13 +1,9 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
+import { computeMigrationChecksum } from '../sqliteMigrationRunner';
 import type { SqliteMigration } from '../sqliteMigrationRunner';
 
-const migration: SqliteMigration = {
-  version: '20260527000001',
-  description: 'Create health_thresholds table',
-
-  async up(db: SQLiteDatabase) {
-    await db.execAsync(`
+const UP_SQL = `
       CREATE TABLE IF NOT EXISTS health_thresholds (
         id TEXT PRIMARY KEY NOT NULL,
         pet_id TEXT NOT NULL,
@@ -24,7 +20,15 @@ const migration: SqliteMigration = {
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now'))
       )
-    `);
+    `;
+
+const migration: SqliteMigration = {
+  version: '20260527000001',
+  description: 'Create health_thresholds table',
+  checksum: computeMigrationChecksum('20260527000001', UP_SQL),
+
+  async up(db: SQLiteDatabase) {
+    await db.execAsync(UP_SQL);
   },
 
   async down(db: SQLiteDatabase) {

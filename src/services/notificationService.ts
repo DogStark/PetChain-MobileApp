@@ -43,6 +43,7 @@ export interface NotificationPreferences {
   medicationReminders: boolean;
   appointmentReminders: boolean;
   vaccinationAlerts: boolean;
+  marketingNotifications: boolean;
   reminderLeadTimeMinutes: number;
   soundEnabled: boolean;
   vibrationEnabled: boolean;
@@ -135,6 +136,7 @@ const DEFAULT_PREFS: NotificationPreferences = {
   medicationReminders: true,
   appointmentReminders: true,
   vaccinationAlerts: true,
+  marketingNotifications: false,
   reminderLeadTimeMinutes: 60,
   soundEnabled: true,
   vibrationEnabled: true,
@@ -724,6 +726,65 @@ export const updateScheduledNotification = async (
 
 export const cancelScheduledNotification = async (notificationId: string): Promise<void> => {
   await cancelEntityNotification(notificationId);
+};
+
+// ─── Vaccination notification transfer ───────────────────────────────────────
+
+/**
+ * Called when a pet changes owner. Cancels all scheduled vaccination
+ * notifications for the pet on the current device, then asks the backend to
+ * trigger a push to the new owner so they can re-register the reminders.
+ */
+export const transferVaccinationNotifications = async (
+  petId: string,
+  newOwnerUserId: string,
+): Promise<void> => {
+  // 1. Cancel every scheduled vaccination notification that belongs to this pet
+  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+  const petVaccinationNotifs = scheduled.filter(
+    (n: Notifications.NotificationRequest) =>
+      n.content.data?.type === 'vaccination' && n.content.data?.petId === petId,
+  );
+  await Promise.all(
+    petVaccinationNotifs.map((n: Notifications.NotificationRequest) =>
+      Notifications.cancelScheduledNotificationAsync(n.identifier),
+    ),
+  );
+
+  // 2. Clean up the notification map for any reminder ids associated with this pet
+  const map = await getNotificationMap();
+  const petReminderKeys = Object.keys(map).filter((key) => key.startsWith(`${petId}-`));
+  for (const key of petReminderKeys) {
+    delete map[key];
+  }
+  await setItem(NOTIFICATION_MAP_KEY, JSON.stringify(map));
+
+  // 3. Notify the backend so it can push a re-schedule request to the new owner's device
+  await apiClient.post('/api/notifications/vaccination-transfer', { petId, newOwnerUserId });
+};
+
+// ─── Ownership transfer: re-schedule vaccination reminders ───────────────────
+
+/**
+ * Called when a pet is transferred TO the current device/user.
+ * Cancels any existing vaccination notifications for each reminder (the previous
+ * owner's device keeps its own scheduled notifications — they will naturally
+ * become stale since the pet no longer belongs to them) and schedules fresh
+ * ones on this device.
+ *
+ * @param reminders - The vaccination reminders for the transferred pet,
+ *                    fetched fresh from the server after the transfer completes.
+ */
+export const transferVaccinationNotifications = async (
+  reminders: Array<{ id: string; name: string; dueDate: string; petId: string }>,
+): Promise<void> => {
+  await Promise.all(
+    reminders.map(async (reminder) => {
+      // Cancel any stale local notification for this reminder id, then re-schedule
+      await cancelEntityNotification(reminder.id);
+      await scheduleVaccinationReminder(reminder);
+    }),
+  );
 };
 
 // ─── Push token registration ──────────────────────────────────────────────────

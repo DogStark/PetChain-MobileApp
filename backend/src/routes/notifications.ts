@@ -194,4 +194,51 @@ router.delete('/dlq', authorizeRoles(UserRole.ADMIN), async (_req, res) => {
   return res.json(ok(null, 'DLQ cleared'));
 });
 
+// ─── Vaccination notification transfer ───────────────────────────────────────
+
+/**
+ * POST /api/notifications/vaccination-transfer
+ * Called when a pet changes owner. Sends a push to the new owner asking their
+ * device to load and schedule local vaccination reminders for the transferred pet.
+ */
+router.post('/vaccination-transfer', async (req: AuthenticatedRequest, res) => {
+  const { petId, newOwnerUserId } = req.body as {
+    petId?: string;
+    newOwnerUserId?: string;
+  };
+
+  if (!petId?.trim() || !newOwnerUserId?.trim()) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      'petId and newOwnerUserId are required',
+    );
+  }
+
+  const pet = require('../../server/store').store.pets.get(petId.trim());
+  if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
+
+  // Only the current owner or admin may trigger this transfer
+  if (req.user!.role !== UserRole.ADMIN && req.user!.id !== pet.ownerId) {
+    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to transfer notifications for this pet');
+  }
+
+  await sendToUser(
+    newOwnerUserId.trim(),
+    'health_tips' as NotificationTopic, // closest available topic for health-related push
+    '🐾 Vaccination reminders transferred',
+    `Vaccination reminders for ${pet.name} are now active on your account.`,
+    { type: 'vaccination_transfer', petId: petId.trim() },
+  );
+
+  logger.info('vaccination_notifications_transferred', {
+    petId: petId.trim(),
+    fromUserId: req.user!.id,
+    toUserId: newOwnerUserId.trim(),
+  });
+
+  return res.json(ok(null, 'Vaccination notifications transferred'));
+});
+
 export default router;

@@ -31,6 +31,7 @@ module.exports = {
     '^expo-image-picker$': '<rootDir>/src/__mocks__/expo-image-picker.ts',
     '^node-fetch$': '<rootDir>/src/__mocks__/node-fetch.js',
     '^otplib$': '<rootDir>/src/__mocks__/otplib.ts',
+    '^react-native-ssl-pinning$': '<rootDir>/src/__mocks__/react-native-ssl-pinning.ts',
   },
   collectCoverageFrom: [
     'src/**/*.ts',

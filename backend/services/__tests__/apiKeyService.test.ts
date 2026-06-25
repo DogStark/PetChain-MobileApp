@@ -139,4 +139,81 @@ describe('apiKeyService', () => {
       expect(apiKeyService.hasScope(full, ['pets:read', 'search:read'])).toBe(false);
     });
   });
+
+  describe('expiry enforcement', () => {
+    it('rejects an expired key with api_key_expired error', async () => {
+      const { secret, key } = await apiKeyService.createApiKey(
+        {
+          name: 'Expiry test',
+          scopes: ['pets:read'],
+          expiresAt: new Date(Date.now() - 1000).toISOString(), // already expired
+        },
+        'admin-1',
+      );
+
+      await expect(apiKeyService.validateApiKey(secret)).rejects.toThrow('api_key_expired');
+      await expect(apiKeyService.validateApiKey(secret)).rejects.toMatchObject({
+        code: 'API_KEY_EXPIRED',
+      });
+    });
+
+    it('accepts a key that has not yet expired', async () => {
+      const { secret } = await apiKeyService.createApiKey(
+        {
+          name: 'Future expiry',
+          scopes: ['pets:read'],
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        'admin-1',
+      );
+      const validated = await apiKeyService.validateApiKey(secret);
+      expect(validated).not.toBeNull();
+    });
+
+    it('key with no expiresAt never expires via this path', async () => {
+      const { secret } = await apiKeyService.createApiKey(
+        { name: 'No expiry', scopes: ['pets:read'] },
+        'admin-1',
+      );
+      const validated = await apiKeyService.validateApiKey(secret);
+      expect(validated).not.toBeNull();
+    });
+  });
+
+  describe('cleanupExpiredApiKeys background job', () => {
+    it('deletes keys expired more than 30 days ago', async () => {
+      const { key: old } = await apiKeyService.createApiKey(
+        {
+          name: 'Old expired',
+          scopes: ['pets:read'],
+          expiresAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString(),
+        },
+        'admin-1',
+      );
+      const { key: recent } = await apiKeyService.createApiKey(
+        {
+          name: 'Recently expired',
+          scopes: ['pets:read'],
+          expiresAt: new Date(Date.now() - 1000).toISOString(), // expired but < 30 days
+        },
+        'admin-1',
+      );
+      const { key: active } = await apiKeyService.createApiKey(
+        { name: 'Active', scopes: ['pets:read'] },
+        'admin-1',
+      );
+
+      const result = apiKeyService.cleanupExpiredApiKeys();
+      expect(result.deleted).toBe(1);
+      expect(store.apiKeys.has(old.id)).toBe(false);
+      expect(store.apiKeys.has(recent.id)).toBe(true);
+      expect(store.apiKeys.has(active.id)).toBe(true);
+    });
+
+    it('returns 0 when no keys are eligible for deletion', async () => {
+      await apiKeyService.createApiKey({ name: 'Active', scopes: ['pets:read'] }, 'admin-1');
+      const result = apiKeyService.cleanupExpiredApiKeys();
+      expect(result.deleted).toBe(0);
+    });
+  });
 });

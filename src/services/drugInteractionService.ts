@@ -11,7 +11,7 @@ import { getDrugById, type Species } from '../../backend/services/drugDatabaseSe
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type InteractionSeverity = 'mild' | 'moderate' | 'severe';
+export type InteractionSeverity = 'mild' | 'moderate' | 'severe' | 'contraindicated';
 
 export interface DrugInteraction {
   drugA: string;
@@ -84,6 +84,15 @@ const KNOWN_INTERACTIONS: DrugInteraction[] = [
     description:
       'Bacteriostatic (doxycycline) may reduce efficacy of bactericidal (amoxicillin) antibiotics.',
     recommendation: 'Avoid concurrent use unless specifically indicated.',
+  },
+  {
+    drugA: 'carprofen',
+    drugB: 'enrofloxacin',
+    severity: 'contraindicated',
+    description:
+      'Concurrent NSAID and fluoroquinolone use in renally compromised patients carries a high risk of acute kidney injury.',
+    recommendation:
+      'Do NOT administer concurrently. Discontinue one agent before starting the other. Consult a veterinarian immediately.',
   },
 ];
 
@@ -232,7 +241,12 @@ export async function isInteractionOverridden(
  * Get severity label for display.
  */
 export function getSeverityLabel(severity: InteractionSeverity): string {
-  return { mild: '⚠️ Mild', moderate: '🟠 Moderate', severe: '🔴 Severe' }[severity];
+  return {
+    mild: '⚠️ Mild',
+    moderate: '🟠 Moderate',
+    severe: '🔴 Severe',
+    contraindicated: '🚫 Contraindicated',
+  }[severity];
 }
 
 export { findInteraction };

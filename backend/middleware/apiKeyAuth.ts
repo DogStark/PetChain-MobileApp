@@ -44,7 +44,15 @@ export function authenticateApiKey(...requiredScopes: ApiKeyScope[]) {
     }
 
     try {
-      const key = await apiKeyService.validateApiKey(secret);
+      let key: ApiKey | null;
+      try {
+        key = await apiKeyService.validateApiKey(secret);
+      } catch (err: unknown) {
+        if (err instanceof Error && (err as any).code === 'API_KEY_EXPIRED') {
+          return sendError(res, 401, 'API_KEY_EXPIRED', 'API key has expired.');
+        }
+        throw err;
+      }
       if (!key) {
         return sendError(res, 401, 'INVALID_API_KEY', 'Invalid or expired API key.');
       }

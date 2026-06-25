@@ -57,4 +57,19 @@ describe('authenticateApiKey middleware', () => {
     const usage = apiKeyService.getUsageSummary();
     expect(usage.some((u) => u.endpoint === '/protected')).toBe(true);
   });
+
+  it('returns 401 api_key_expired for expired keys', async () => {
+    apiKeyService.resetApiKeyStore();
+    const { secret: expiredSecret } = await apiKeyService.createApiKey(
+      {
+        name: 'Expired key',
+        scopes: ['pets:read'],
+        expiresAt: new Date(Date.now() - 1000).toISOString(),
+      },
+      'admin-1',
+    );
+    const res = await request(app).get('/protected').set('X-Api-Key', expiredSecret);
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('API_KEY_EXPIRED');
+  });
 });

@@ -68,6 +68,20 @@ async function init(): Promise<void> {
   await db.execAsync(
     `CREATE INDEX IF NOT EXISTS idx_appointments_pet_scheduled ON appointments (pet_id, scheduled_at)`,
   );
+
+  // SOAP note drafts – one draft per (petId, vetId) pair
+  await db.execAsync(
+    `CREATE TABLE IF NOT EXISTS soap_note_drafts (
+      id TEXT PRIMARY KEY NOT NULL,
+      pet_id TEXT NOT NULL,
+      vet_id TEXT NOT NULL,
+      data TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`,
+  );
+  await db.execAsync(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_soap_drafts_pet_vet ON soap_note_drafts (pet_id, vet_id)`,
+  );
 }
 
 // Initialize DB on module import
@@ -235,6 +249,45 @@ export async function deleteHealthMetricById(id: string): Promise<void> {
   await db.runAsync(`DELETE FROM health_metrics WHERE id = ?`, [id]);
 }
 
+// ─── SOAP Note Drafts ────────────────────────────────────────────────────────
+// Table is created in init() above (soap_note_drafts, unique on pet_id + vet_id).
+
+export interface SoapNoteDraft {
+  petId: string;
+  vetId: string;
+  subjective: string;
+  objective: string;
+  assessment: string;
+  plan: string;
+  savedAt: string; // ISO string
+}
+
+export async function upsertSoapDraft(draft: SoapNoteDraft): Promise<void> {
+  const encryptedData = await encrypt(draft, 'localdb_soap_drafts');
+  await db.runAsync(
+    `INSERT OR REPLACE INTO soap_note_drafts (id, pet_id, vet_id, data, updated_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [`${draft.petId}::${draft.vetId}`, draft.petId, draft.vetId, encryptedData, draft.savedAt],
+  );
+}
+
+export async function getSoapDraft(petId: string, vetId: string): Promise<SoapNoteDraft | null> {
+  const row = await db.getFirstAsync<{ data: string }>(
+    `SELECT data FROM soap_note_drafts WHERE pet_id = ? AND vet_id = ? LIMIT 1`,
+    [petId, vetId],
+  );
+  if (!row) return null;
+  try {
+    return await safeDecrypt<SoapNoteDraft>(row.data, 'localdb_soap_drafts', true);
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteSoapDraft(petId: string, vetId: string): Promise<void> {
+  await db.runAsync(`DELETE FROM soap_note_drafts WHERE pet_id = ? AND vet_id = ?`, [petId, vetId]);
+}
+
 // ─── Appointments CRUD ────────────────────────────────────────────────────────
 
 export async function getAllAppointmentsByPetId<T = unknown>(petId: string): Promise<T[]> {
@@ -326,6 +379,9 @@ export default {
   getHealthMetricsByPetId,
   upsertHealthMetric,
   deleteHealthMetricById,
+  upsertSoapDraft,
+  getSoapDraft,
+  deleteSoapDraft,
   getAllAppointmentsByPetId,
   getAllLocalAppointments,
   getAppointmentsInWindow,

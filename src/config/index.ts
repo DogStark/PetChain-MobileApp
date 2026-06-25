@@ -62,6 +62,16 @@ const config = {
   googlePlaces: {
     apiKey: env('GOOGLE_PLACES_API_KEY', ''),
   },
+  pinLock: {
+    /** Show remaining-attempts counter after this many failures */
+    warnAfterAttempts: 3,
+    /** Enforce cooldown after this many failures */
+    cooldownAfterAttempts: 5,
+    /** Cooldown duration in seconds */
+    cooldownSeconds: 30,
+    /** Wipe local session after this many total failures */
+    wipeAfterAttempts: 10,
+  },
 } as const;
 
 export type AppConfig = typeof config;

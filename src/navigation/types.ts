@@ -62,6 +62,7 @@ export type PetStackParamList = {
   Search: undefined;
   NotificationPreferences: undefined;
   DeleteAccount: undefined;
+  ClinicalNotes: { petId: string; vetId?: string };
 };
 
 // ─── Screen prop helpers ──────────────────────────────────────────────────────

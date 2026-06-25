@@ -83,3 +83,16 @@ export const exportVaccinationCertificate = async (petId: string): Promise<strin
   );
   return data;
 };
+
+/**
+ * Called after a pet ownership transfer to schedule vaccination notifications
+ * on the new owner's device. Cancels any existing local notifications for this
+ * pet and re-schedules them from the freshly-fetched reminders.
+ *
+ * Import scheduleVaccinationReminder and cancelEntityNotification at call-site
+ * since this function works purely with the API layer; notification scheduling
+ * is done in the component / hook that invokes this helper.
+ */
+export const getRemindersForTransfer = async (petId: string): Promise<VaccinationReminder[]> => {
+  return getVaccinationReminders(petId);
+};

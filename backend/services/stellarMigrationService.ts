@@ -9,7 +9,7 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 
 import { StellarAnchorService } from './stellarService';
-import { query } from '../src/db';
+import { getPool, query } from '../src/db';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -60,6 +60,13 @@ export interface TestnetRecord {
   ledgerSequence?: number;
 }
 
+export interface ReconcileDiscrepancy {
+  checkpointId: string;
+  recordId: string;
+  mainnetTxId: string;
+  reason: 'tx_not_found' | 'hash_mismatch' | 'tx_failed';
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -84,6 +91,25 @@ function sanitizeHash(value: unknown): string {
 function sanitizeTxId(value: unknown): string {
   if (typeof value !== 'string') return '';
   return /^[0-9a-f]{64}$/i.test(value) ? value.toLowerCase() : '';
+}
+
+// ---------------------------------------------------------------------------
+// Transaction helper
+// ---------------------------------------------------------------------------
+
+async function withTransaction<T>(fn: (client: import('pg').PoolClient) => Promise<T>): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +337,107 @@ export class StellarMigrationService {
     };
   }
 
+  /**
+   * Compare DB-verified checkpoints for a run against Horizon mainnet.
+   * Returns discrepancies where the on-chain state does not match the DB record.
+   */
+  async reconcile(runId: string): Promise<ReconcileDiscrepancy[]> {
+    const sanitizedRunId = sanitizeString(runId);
+    if (!sanitizedRunId) throw new Error('Invalid runId');
+
+    const result = await query(
+      `SELECT id, record_id, mainnet_tx_id, testnet_record_hash
+       FROM stellar_migration_checkpoints
+       WHERE migration_run_id = $1 AND status = 'verified' AND mainnet_tx_id IS NOT NULL`,
+      [sanitizedRunId],
+    );
+
+    const server = new StellarSdk.Horizon.Server('https://horizon.stellar.org');
+    const discrepancies: ReconcileDiscrepancy[] = [];
+
+    for (const row of result.rows) {
+      const mainnetTxId = sanitizeTxId(String(row.mainnet_tx_id));
+      const expectedHash = sanitizeHash(String(row.testnet_record_hash));
+      const recordId = sanitizeString(String(row.record_id));
+
+      try {
+        const tx = await (
+          server as unknown as Record<
+            string,
+            (...args: unknown[]) => {
+              transaction: (id: string) => { call: () => Promise<{ successful: boolean }> };
+            }
+          >
+        )
+          .transactions()
+          .transaction(mainnetTxId)
+          .call();
+
+        if (!tx || tx.successful === false) {
+          discrepancies.push({
+            checkpointId: String(row.id),
+            recordId,
+            mainnetTxId,
+            reason: 'tx_failed',
+          });
+          continue;
+        }
+
+        const ops = await (
+          server as unknown as Record<
+            string,
+            (...args: unknown[]) => {
+              forTransaction: (id: string) => {
+                call: () => Promise<{
+                  records: Array<{ type: string; name: string; value: string }>;
+                }>;
+              };
+            }
+          >
+        )
+          .operations()
+          .forTransaction(mainnetTxId)
+          .call();
+
+        const manageDataOp = ops.records?.find(
+          (op: { type: string; name: string; value: string }) =>
+            op.type === 'manage_data' && op.name === `record:${recordId}`.slice(0, 64),
+        );
+
+        if (!manageDataOp) {
+          discrepancies.push({
+            checkpointId: String(row.id),
+            recordId,
+            mainnetTxId,
+            reason: 'tx_not_found',
+          });
+          continue;
+        }
+
+        const onChainHash = sanitizeHash(
+          Buffer.from(manageDataOp.value, 'base64').toString('utf8'),
+        );
+        if (onChainHash !== expectedHash) {
+          discrepancies.push({
+            checkpointId: String(row.id),
+            recordId,
+            mainnetTxId,
+            reason: 'hash_mismatch',
+          });
+        }
+      } catch {
+        discrepancies.push({
+          checkpointId: String(row.id),
+          recordId,
+          mainnetTxId,
+          reason: 'tx_not_found',
+        });
+      }
+    }
+
+    return discrepancies;
+  }
+
   // -------------------------------------------------------------------------
   // Internal helpers
   // -------------------------------------------------------------------------
@@ -337,6 +464,8 @@ export class StellarMigrationService {
     const locked = await this.lockCheckpoint(checkpoint.id);
     if (!locked) return 'skipped';
 
+    let anchorResult: Awaited<ReturnType<StellarAnchorService['anchorRecord']>> | undefined;
+
     try {
       // Validate testnet transaction integrity
       const testnetRecord: TestnetRecord = {
@@ -358,9 +487,9 @@ export class StellarMigrationService {
       }
 
       // Re-anchor on mainnet using the exact same hash
-      const anchorResult = await this.anchorService.anchorRecord({
+      anchorResult = await this.anchorService.anchorRecord({
         recordId: checkpoint.recordId,
-        payload: checkpoint.testnetRecordHash, // use raw hash as payload so hashPayload(hash) is deterministic
+        payload: checkpoint.testnetRecordHash,
         sourceSecret: this.mainnetSecret,
         network: 'mainnet',
       });
@@ -377,15 +506,37 @@ export class StellarMigrationService {
         );
       }
 
-      await this.updateCheckpoint(
-        checkpoint.id,
-        'verified',
-        anchorResult.transactionId,
-        anchorResult.ledgerSequence,
-      );
+      // Wrap checkpoint update in a DB transaction so the write and Stellar submission
+      // result are atomic — if either fails, both roll back.
+      await withTransaction(async (client) => {
+        await client.query(
+          `UPDATE stellar_migration_checkpoints
+           SET status = $2,
+               mainnet_tx_id = COALESCE($3, mainnet_tx_id),
+               mainnet_ledger = COALESCE($4, mainnet_ledger),
+               error_message = NULL,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [
+            checkpoint.id,
+            'verified',
+            anchorResult!.transactionId ?? null,
+            anchorResult!.ledgerSequence ?? null,
+          ],
+        );
+      });
+
       return 'verified';
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
+
+      // Log XDR so the transaction can be manually re-applied if the DB write failed
+      if (anchorResult?.xdr) {
+        console.error(
+          `[stellarMigration] rollback — checkpoint=${checkpoint.id} xdr=${anchorResult.xdr}`,
+        );
+      }
+
       await this.updateCheckpoint(checkpoint.id, 'failed', undefined, undefined, message);
       return 'failed';
     }

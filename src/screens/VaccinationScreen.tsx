@@ -11,7 +11,10 @@ import {
   View,
 } from 'react-native';
 
-import { scheduleVaccinationReminder } from '../services/notificationService';
+import {
+  cancelEntityNotification,
+  scheduleVaccinationReminder,
+} from '../services/notificationService';
 import {
   anchorCertificateToStellar,
   generateVaccinationCertificate,
@@ -43,15 +46,36 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
   const [petId, setPetId] = useState(initialPetId ?? '');
   const [reminders, setReminders] = useState<VaccinationReminder[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // ── Record vaccination modal ──────────────────────────────────────────────
   const [modalVisible, setModalVisible] = useState(false);
   const [selected, setSelected] = useState<VaccinationReminder | null>(null);
   const [administeredDate, setAdministeredDate] = useState(new Date().toISOString().slice(0, 10));
   const [lotNumber, setLotNumber] = useState('');
   const [manufacturer, setManufacturer] = useState('');
 
+  // ── Detail / reminder management modal ───────────────────────────────────
+  const [detailVisible, setDetailVisible] = useState(false);
+  const [detailItem, setDetailItem] = useState<VaccinationReminder | null>(null);
+  const [rescheduleDate, setRescheduleDate] = useState('');
+  const [rescheduling, setRescheduling] = useState(false);
+
   const sortedReminders = useMemo(
     () => [...reminders].sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
     [reminders],
+  );
+
+  // ─── Schedule notifications for 7-day and 1-day lead times ───────────────
+  const scheduleRemindersForVaccination = useCallback(
+    async (reminder: VaccinationReminder): Promise<void> => {
+      await scheduleVaccinationReminder({
+        id: reminder.id,
+        name: reminder.vaccineName,
+        dueDate: reminder.dueDate,
+        petId: reminder.petId,
+      });
+    },
+    [],
   );
 
   const loadReminders = useCallback(async () => {
@@ -60,16 +84,8 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
     try {
       const nextReminders = await getVaccinationReminders(petId.trim());
       setReminders(nextReminders);
-      await Promise.all(
-        nextReminders.map((reminder) =>
-          scheduleVaccinationReminder({
-            id: reminder.id,
-            name: reminder.vaccineName,
-            dueDate: reminder.dueDate,
-            petId: reminder.petId,
-          }),
-        ),
-      );
+      // Schedule local push notifications (7-day + 1-day lead, handled inside scheduleVaccinationReminder)
+      await Promise.all(nextReminders.map(scheduleRemindersForVaccination));
     } catch (error) {
       Alert.alert(
         'Vaccinations',
@@ -78,12 +94,13 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
     } finally {
       setLoading(false);
     }
-  }, [petId]);
+  }, [petId, scheduleRemindersForVaccination]);
 
   useEffect(() => {
     void loadReminders();
   }, [loadReminders]);
 
+  // ─── Record administered ──────────────────────────────────────────────────
   const openAdministered = (reminder: VaccinationReminder) => {
     setSelected(reminder);
     setAdministeredDate(new Date().toISOString().slice(0, 10));
@@ -105,6 +122,10 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
         anchorToBlockchain: true,
       });
       setModalVisible(false);
+
+      // Reload reminders — the backend recalculates nextDueDate from history.
+      // After reload, scheduleRemindersForVaccination fires for each reminder,
+      // including the freshly-computed next due date.
       await loadReminders();
     } catch (error) {
       Alert.alert(
@@ -114,6 +135,56 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
     }
   };
 
+  // ─── Detail view: dismiss or reschedule reminder ──────────────────────────
+  const openDetail = (reminder: VaccinationReminder) => {
+    setDetailItem(reminder);
+    setRescheduleDate(reminder.dueDate);
+    setRescheduling(false);
+    setDetailVisible(true);
+  };
+
+  const dismissReminder = async () => {
+    if (!detailItem) return;
+    try {
+      await cancelEntityNotification(detailItem.id);
+      Alert.alert('Reminder dismissed', `Notifications for ${detailItem.vaccineName} have been cancelled.`);
+      setDetailVisible(false);
+    } catch {
+      Alert.alert('Error', 'Could not dismiss the reminder.');
+    }
+  };
+
+  const rescheduleReminder = async () => {
+    if (!detailItem) return;
+    const parsed = new Date(rescheduleDate);
+    if (isNaN(parsed.getTime()) || parsed <= new Date()) {
+      Alert.alert('Invalid date', 'Please enter a future date in YYYY-MM-DD format.');
+      return;
+    }
+    setRescheduling(true);
+    try {
+      // Cancel existing notifications then schedule fresh ones against the new due date
+      await cancelEntityNotification(detailItem.id);
+      await scheduleVaccinationReminder({
+        id: detailItem.id,
+        name: detailItem.vaccineName,
+        dueDate: rescheduleDate,
+        petId: detailItem.petId,
+      });
+      // Optimistically update the local state so the card reflects the new date
+      setReminders((prev) =>
+        prev.map((r) => (r.id === detailItem.id ? { ...r, dueDate: rescheduleDate } : r)),
+      );
+      Alert.alert('Rescheduled', `Reminders for ${detailItem.vaccineName} rescheduled to ${formatLocalDate(rescheduleDate)}.`);
+      setDetailVisible(false);
+    } catch {
+      Alert.alert('Error', 'Could not reschedule the reminder.');
+    } finally {
+      setRescheduling(false);
+    }
+  };
+
+  // ─── Certificate export ───────────────────────────────────────────────────
   const handleExportCertificate = async () => {
     if (!petId.trim()) {
       Alert.alert('Vaccinations', 'Enter a pet ID before exporting a certificate.');
@@ -122,14 +193,12 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
     try {
       const petInfo: PetCertificateInfo = {
         petId: petId.trim(),
-        petName: petId.trim(), // use petId as name fallback; real app would fetch pet profile
+        petName: petId.trim(),
         species: 'dog',
         ownerName: 'Pet Owner',
       };
 
       const cert = await generateVaccinationCertificate(petInfo, reminders);
-
-      // Anchor hash to Stellar (non-blocking)
       void anchorCertificateToStellar(cert.hash);
 
       Alert.alert(
@@ -137,10 +206,7 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
         `Certificate ID: ${cert.hash}\n\nWould you like to share it?`,
         [
           { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Share',
-            onPress: () => void shareCertificate(cert.filePath),
-          },
+          { text: 'Share', onPress: () => void shareCertificate(cert.filePath) },
         ],
       );
     } catch (error) {
@@ -151,13 +217,24 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
     }
   };
 
+  // ─── Render helpers ───────────────────────────────────────────────────────
+  const renderNextDueDate = (item: VaccinationReminder) => {
+    if (item.status === 'administered') return null;
+    return (
+      <Text style={styles.nextDue}>
+        Next due: {formatLocalDate(item.dueDate)}
+      </Text>
+    );
+  };
+
   const renderReminder = ({ item }: { item: VaccinationReminder }) => (
-    <View style={styles.card}>
+    <TouchableOpacity style={styles.card} onPress={() => openDetail(item)} activeOpacity={0.85}>
       <View style={styles.cardHeader}>
         <Text style={styles.vaccineName}>{item.vaccineName}</Text>
         <Text style={[styles.status, styles[item.status]]}>{STATUS_LABELS[item.status]}</Text>
       </View>
       <Text style={styles.detail}>Due: {formatLocalDate(item.dueDate)}</Text>
+      {renderNextDueDate(item)}
       <Text style={styles.detail}>
         {item.schedule.core ? 'Core vaccine' : 'Risk-based vaccine'} ·{' '}
         {item.schedule.minimumAgeWeeks}+ weeks
@@ -179,10 +256,16 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
           ? item.reminderDates.map(formatLocalDate).join(', ')
           : 'none scheduled'}
       </Text>
-      <TouchableOpacity style={styles.primaryButton} onPress={() => openAdministered(item)}>
+      <TouchableOpacity
+        style={styles.primaryButton}
+        onPress={(e) => {
+          e.stopPropagation();
+          openAdministered(item);
+        }}
+      >
         <Text style={styles.primaryButtonText}>Mark administered</Text>
       </TouchableOpacity>
-    </View>
+    </TouchableOpacity>
   );
 
   return (
@@ -222,6 +305,7 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
         contentContainerStyle={styles.listContent}
       />
 
+      {/* ── Record vaccination modal ─────────────────────────────────────── */}
       <Modal visible={modalVisible} animationType="slide" transparent>
         <View style={styles.modalBackdrop}>
           <ScrollView style={styles.modalContent}>
@@ -257,6 +341,67 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
                 onPress={() => void saveAdministered()}
               >
                 <Text style={styles.primaryButtonText}>Save & anchor</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* ── Detail / reminder management modal ──────────────────────────── */}
+      <Modal visible={detailVisible} animationType="slide" transparent>
+        <View style={styles.modalBackdrop}>
+          <ScrollView style={styles.modalContent}>
+            <Text style={styles.modalTitle}>{detailItem?.vaccineName}</Text>
+
+            {detailItem && (
+              <>
+                <Text style={styles.detailModalRow}>
+                  Status: {STATUS_LABELS[detailItem.status]}
+                </Text>
+                <Text style={styles.detailModalRow}>
+                  Due date: {formatLocalDate(detailItem.dueDate)}
+                </Text>
+                {detailItem.lastAdministeredDate ? (
+                  <Text style={styles.detailModalRow}>
+                    Last administered: {formatLocalDate(detailItem.lastAdministeredDate)}
+                  </Text>
+                ) : null}
+                <Text style={styles.detailModalRow}>{detailItem.schedule.notes}</Text>
+                {detailItem.reminderDates.length > 0 && (
+                  <Text style={styles.detailModalRow}>
+                    Scheduled reminders:{' '}
+                    {detailItem.reminderDates.map(formatLocalDate).join(', ')}
+                  </Text>
+                )}
+
+                <Text style={styles.sectionLabel}>Reschedule reminder</Text>
+                <TextInput
+                  value={rescheduleDate}
+                  onChangeText={setRescheduleDate}
+                  placeholder="New due date (YYYY-MM-DD)"
+                  style={styles.input}
+                />
+              </>
+            )}
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={() => setDetailVisible(false)}
+              >
+                <Text style={styles.secondaryButtonText}>Close</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.dismissButton} onPress={() => void dismissReminder()}>
+                <Text style={styles.dismissButtonText}>Dismiss</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.primaryButton, rescheduling && styles.buttonDisabled]}
+                onPress={() => void rescheduleReminder()}
+                disabled={rescheduling}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {rescheduling ? 'Saving…' : 'Reschedule'}
+                </Text>
               </TouchableOpacity>
             </View>
           </ScrollView>
@@ -304,6 +449,7 @@ const styles = StyleSheet.create({
   due_soon: { color: '#664D03', backgroundColor: '#FFF3CD' },
   upcoming: { color: '#084298', backgroundColor: '#CFE2FF' },
   detail: { color: '#344054', marginTop: 4 },
+  nextDue: { color: '#1C7ED6', fontWeight: '600', marginTop: 4 },
   verified: { color: '#047857', fontWeight: '700', marginTop: 8 },
   pending: { color: '#B45309', fontWeight: '700', marginTop: 8 },
   primaryButton: {
@@ -315,6 +461,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   primaryButtonText: { color: '#FFFFFF', fontWeight: '700' },
+  buttonDisabled: { opacity: 0.5 },
   secondaryButton: {
     backgroundColor: '#E7F0FA',
     paddingVertical: 10,
@@ -324,6 +471,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   secondaryButtonText: { color: '#1C4E80', fontWeight: '700' },
+  dismissButton: {
+    backgroundColor: '#FEE2E2',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dismissButtonText: { color: '#991B1B', fontWeight: '700' },
   certificateButton: {
     borderWidth: 1,
     borderColor: '#1C7ED6',
@@ -333,16 +489,22 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   certificateButtonText: { color: '#1C7ED6', fontWeight: '700' },
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.45)', justifyContent: 'flex-end' },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+    justifyContent: 'flex-end',
+  },
   modalContent: {
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 18,
     borderTopRightRadius: 18,
     padding: 18,
-    maxHeight: '70%',
+    maxHeight: '80%',
   },
   modalTitle: { fontSize: 20, fontWeight: '700', marginBottom: 8 },
   modalLabel: { color: '#344054', marginBottom: 12 },
+  detailModalRow: { color: '#344054', marginTop: 6, lineHeight: 20 },
+  sectionLabel: { fontWeight: '700', color: '#102A43', marginTop: 16, marginBottom: 6 },
   input: {
     borderWidth: 1,
     borderColor: '#D0D5DD',
@@ -350,7 +512,14 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 10,
   },
-  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginBottom: 24 },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginBottom: 24,
+    marginTop: 8,
+    flexWrap: 'wrap',
+  },
 });
 
 export default VaccinationScreen;

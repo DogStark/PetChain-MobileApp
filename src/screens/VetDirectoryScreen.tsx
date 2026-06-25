@@ -14,6 +14,8 @@ import {
   View,
 } from 'react-native';
 
+import { SkeletonCard } from '../components/SkeletonCard';
+import { useMinimumLoadingTime } from '../hooks/useMinimumLoadingTime';
 import {
   getMessages,
   getVetProfile,
@@ -30,6 +32,9 @@ const VetDirectoryScreen: React.FC = () => {
   const [vets, setVets] = useState<VetProfile[]>([]);
   const [selectedVet, setSelectedVet] = useState<VetProfile | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Enforce minimum 300ms display for skeleton
+  const displayLoading = useMinimumLoadingTime(loading, { minLoadingTime: 300 });
 
   // Search filters
   const [specialty, setSpecialty] = useState('');
@@ -136,8 +141,12 @@ const VetDirectoryScreen: React.FC = () => {
           </TouchableOpacity>
         </View>
 
-        {loading ? (
-          <ActivityIndicator style={styles.loader} size="large" color="#4299e1" />
+        {displayLoading ? (
+          <View style={styles.list}>
+            {Array.from({ length: 5 }).map((_, index) => (
+              <SkeletonCard key={`skeleton-${index}`} />
+            ))}
+          </View>
         ) : (
           <FlatList
             data={vets}

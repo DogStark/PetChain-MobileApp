@@ -1,6 +1,7 @@
 type MigrationRow = {
   version: string;
   description: string;
+  checksum: string;
   applied_at: string;
   status: 'applied' | 'rolled_back';
 };
@@ -25,13 +26,19 @@ async function executeSql(sql: string, params: any[] = []): Promise<any[]> {
     return [];
   }
 
+  // Ignore ALTER TABLE (checksum column addition) — no-op in mock
+  if (normalized.startsWith('alter table schema_migrations')) {
+    return [];
+  }
+
   if (normalized.startsWith('insert or replace into schema_migrations')) {
     ensureSchemaMigrationsTable();
     const rows = tableStore.get('schema_migrations')!;
-    const [version, description] = params;
+    // Params: [version, description, checksum] — applied_at and status are SQL literals
+    const [version, description, checksum = ''] = params;
     const applied_at = new Date().toISOString();
     const existing = rows.find((row) => row.version === version);
-    const record: MigrationRow = { version, description, applied_at, status: 'applied' };
+    const record: MigrationRow = { version, description, checksum, applied_at, status: 'applied' };
     if (existing) {
       Object.assign(existing, record);
     } else {
@@ -53,6 +60,16 @@ async function executeSql(sql: string, params: any[] = []): Promise<any[]> {
     return [];
   }
 
+  // checksum-aware select (new)
+  if (normalized.includes('select version, checksum from schema_migrations')) {
+    ensureSchemaMigrationsTable();
+    return tableStore
+      .get('schema_migrations')!
+      .filter((row) => row.status === 'applied')
+      .map((row) => ({ version: row.version, checksum: row.checksum ?? '' }));
+  }
+
+  // legacy select (kept for backward compat)
   if (
     normalized.startsWith(
       "select version from schema_migrations where status = 'applied' order by version asc",
@@ -81,6 +98,8 @@ async function executeSql(sql: string, params: any[] = []): Promise<any[]> {
 
   return [];
 }
+
+const mockResultSet = { rows: { length: 0, item: () => null } };
 
 const mockTx = {
   executeSql: jest.fn((sql, params, success, _error) => {

@@ -14,6 +14,7 @@ import AdoptionScreen from '../screens/AdoptionScreen';
 import AppointmentScreen from '../screens/AppointmentScreen';
 import AuditHistoryScreen from '../screens/AuditHistoryScreen';
 import AuthNavigator from '../screens/AuthNavigator';
+import ClinicalNotesScreen from '../screens/ClinicalNotesScreen';
 import CommunityScreen from '../screens/CommunityScreen';
 import DeleteAccountScreen from '../screens/DeleteAccountScreen';
 import EmergencyContactsScreen from '../screens/EmergencyContactsScreen';
@@ -46,7 +47,6 @@ import TelemedicineScreen from '../screens/TelemedicineScreen';
 import TravelCertificateScreen from '../screens/TravelCertificateScreen';
 import TrustlineScreen from '../screens/TrustlineScreen';
 import VaccinationScreen from '../screens/VaccinationScreen';
-import analyticsService from '../services/analyticsService';
 import { extractDeepLinkParams } from '../services/notificationService';
 import performance from '../utils/performance';
 
@@ -205,6 +205,15 @@ function PetNavigator() {
                 ?.getParent()
                 ?.reset({ index: 0, routes: [{ name: 'Auth' }] })
             }
+          />
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen name="ClinicalNotes" options={{ headerShown: false }}>
+        {({ route, navigation }) => (
+          <ClinicalNotesScreen
+            petId={route.params.petId}
+            vetId={route.params.vetId}
+            onBack={() => navigation.goBack()}
           />
         )}
       </PetStack.Screen>

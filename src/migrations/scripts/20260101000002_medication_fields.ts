@@ -1,20 +1,25 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
+import { computeMigrationChecksum } from '../sqliteMigrationRunner';
 import type { SqliteMigration } from '../sqliteMigrationRunner';
+
+const UP_SQL = `ALTER TABLE medications ADD COLUMN prescriber_info TEXT`;
+const UP_SQL2 = `ALTER TABLE medications ADD COLUMN pharmacy_info TEXT`;
 
 const migration: SqliteMigration = {
   version: '20260101000002',
   description: 'Add prescriber_info and pharmacy_info columns to medications',
+  checksum: computeMigrationChecksum('20260101000002', UP_SQL + UP_SQL2),
 
   async up(db: SQLiteDatabase) {
     // SQLite ALTER TABLE only supports ADD COLUMN — use IF NOT EXISTS guard via try/catch
     try {
-      await db.execAsync(`ALTER TABLE medications ADD COLUMN prescriber_info TEXT`);
+      await db.execAsync(UP_SQL);
     } catch {
       // Column already exists — idempotent
     }
     try {
-      await db.execAsync(`ALTER TABLE medications ADD COLUMN pharmacy_info TEXT`);
+      await db.execAsync(UP_SQL2);
     } catch {
       // Column already exists — idempotent
     }

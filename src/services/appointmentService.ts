@@ -370,3 +370,55 @@ function _formatTimeDiff(ms: number): string {
 function _formatTime(d: Date): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
+
+export interface ConflictCheckResponse {
+  conflicts: Array<{
+    type: 'exact' | 'near';
+    appointment: Appointment;
+  }>;
+  canSave: boolean;
+  hasWarning: boolean;
+  reason?: string;
+}
+
+/**
+ * Check for appointment conflicts for a pet and vet at a given time.
+ * @param petId - Pet ID
+ * @param vetId - Vet ID
+ * @param date - Date in YYYY-MM-DD format
+ * @param time - Time in HH:MM format
+ * @param durationMinutes - Appointment duration (default 30)
+ * @param excludeId - Appointment ID to exclude from conflicts (for updates)
+ */
+export async function checkConflicts(
+  petId: string,
+  vetId: string,
+  date: string,
+  time: string,
+  durationMinutes: number = 30,
+  excludeId?: string,
+): Promise<ConflictCheckResponse> {
+  try {
+    const response = await apiClient.post<{ data: ConflictCheckResponse }>(
+      `${BASE_URL}/check-conflicts`,
+      {
+        petId,
+        vetId,
+        date,
+        time,
+        durationMinutes,
+        excludeId,
+      },
+    );
+    return response.data.data;
+  } catch (error) {
+    console.error('Failed to check conflicts:', error);
+    // Return safe defaults on error - allow booking but log
+    return {
+      conflicts: [],
+      canSave: true,
+      hasWarning: false,
+      reason: null,
+    };
+  }
+}

@@ -11,11 +11,15 @@ import {
   View,
 } from 'react-native';
 
+import { SkeletonCard } from '../components/SkeletonCard';
+import { useMinimumLoadingTime } from '../hooks/useMinimumLoadingTime';
 import {
   checkDrugInteractions,
   getSeverityLabel,
   recordVetOverride,
+  type DrugInteraction,
   type InteractionCheckResult,
+  type InteractionSeverity,
 } from '../services/drugInteractionService';
 import {
   type DoseLog,
@@ -74,6 +78,7 @@ const MedicationScreen: React.FC = () => {
   const [tab, setTab] = useState<Tab>('list');
   const [medications, setMedications] = useState<Medication[]>([]);
   const [doseLogs, setDoseLogs] = useState<DoseLog[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingMed, setEditingMed] = useState<Medication | null>(null);
   const [form, setForm] = useState<Omit<Medication, 'id'>>(EMPTY_FORM);
@@ -81,15 +86,24 @@ const MedicationScreen: React.FC = () => {
   const [vetOverrideMode, setVetOverrideMode] = useState(false);
   const [vetId, setVetId] = useState('');
   const [overrideJustification, setOverrideJustification] = useState('');
+  const [contraindicatedAcknowledged, setContraindicatedAcknowledged] = useState(false);
   // Refill modal state
   const [refillModalVisible, setRefillModalVisible] = useState(false);
   const [refillTargetMed, setRefillTargetMed] = useState<Medication | null>(null);
   const [newSupplyInput, setNewSupplyInput] = useState('');
 
+  // Enforce minimum 300ms display for skeleton
+  const displayLoading = useMinimumLoadingTime(isLoading, { minLoadingTime: 300 });
+
   const loadData = useCallback(async () => {
-    const [meds, logs] = await Promise.all([getMedications(), getDoseLogs()]);
-    setMedications(meds);
-    setDoseLogs(logs);
+    setIsLoading(true);
+    try {
+      const [meds, logs] = await Promise.all([getMedications(), getDoseLogs()]);
+      setMedications(meds);
+      setDoseLogs(logs);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -120,15 +134,32 @@ const MedicationScreen: React.FC = () => {
         .filter((m) => m.petId === form.petId.trim())
         .map((m) => m.name);
       const result = await checkDrugInteractions(form.name.trim(), existingNames);
-      if (result.hasInteractions && !vetOverrideMode) {
-        setInteractionResult(result);
-        return; // block save until user acknowledges or vet overrides
-      }
-      if (result.hasInteractions && vetOverrideMode) {
+
+      if (result.hasInteractions) {
+        const hasContraindicated = result.interactions.some(
+          (i) => i.severity === 'contraindicated',
+        );
+
+        if (!vetOverrideMode) {
+          setInteractionResult(result);
+          return; // block save — user must acknowledge warnings first
+        }
+
+        // Contraindicated requires explicit acknowledgement before override is accepted
+        if (hasContraindicated && !contraindicatedAcknowledged) {
+          setInteractionResult(result);
+          Alert.alert(
+            '⛔ Contraindicated Combination',
+            'This combination is contraindicated. You must acknowledge the risk before proceeding with a vet override.',
+          );
+          return;
+        }
+
         if (!vetId.trim() || !overrideJustification.trim()) {
           Alert.alert('Override Required', 'Vet ID and justification are required to override.');
           return;
         }
+
         for (const interaction of result.interactions) {
           await recordVetOverride({
             drugA: interaction.drugA,
@@ -139,7 +170,6 @@ const MedicationScreen: React.FC = () => {
         }
       }
     }
-
     const remainingPills = form.remainingPills ? Number(form.remainingPills) : undefined;
     const currentSupply =
       form.currentSupply !== undefined ? Number(form.currentSupply) : remainingPills;
@@ -160,6 +190,7 @@ const MedicationScreen: React.FC = () => {
     setVetOverrideMode(false);
     setVetId('');
     setOverrideJustification('');
+    setContraindicatedAcknowledged(false);
     closeModal();
     void loadData();
   };
@@ -565,39 +596,90 @@ const MedicationScreen: React.FC = () => {
           {interactionResult?.hasInteractions && (
             <View style={styles.interactionWarning}>
               <Text style={styles.interactionTitle}>⚠️ Drug Interaction Detected</Text>
-              {interactionResult.interactions.map((i, idx) => (
-                <View key={idx} style={styles.interactionItem}>
-                  <Text style={styles.interactionSeverity}>{getSeverityLabel(i.severity)}</Text>
-                  <Text style={styles.interactionDesc}>{i.description}</Text>
-                  <Text style={styles.interactionRec}>{i.recommendation}</Text>
-                </View>
-              ))}
-              {!vetOverrideMode ? (
-                <TouchableOpacity
-                  style={styles.overrideBtn}
-                  onPress={() => setVetOverrideMode(true)}
-                >
-                  <Text style={styles.overrideBtnText}>Vet Override</Text>
-                </TouchableOpacity>
-              ) : (
-                <View>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Vet ID *"
-                    value={vetId}
-                    onChangeText={setVetId}
-                  />
-                  <TextInput
-                    style={[styles.input, styles.textArea]}
-                    placeholder="Justification for override *"
-                    multiline
-                    value={overrideJustification}
-                    onChangeText={setOverrideJustification}
-                  />
-                  <TouchableOpacity style={styles.saveBtn} onPress={() => void handleSave()}>
-                    <Text style={styles.saveBtnText}>Save with Override</Text>
-                  </TouchableOpacity>
-                </View>
+              {(
+                ['contraindicated', 'severe', 'moderate', 'mild'] as InteractionSeverity[]
+              ).map((severity) => {
+                const group = interactionResult.interactions.filter(
+                  (i: DrugInteraction) => i.severity === severity,
+                );
+                if (group.length === 0) return null;
+                return (
+                  <View key={severity} style={styles.severityGroup}>
+                    <View
+                      style={[
+                        styles.severityBadge,
+                        severity === 'contraindicated' && styles.badgeContraindicated,
+                        severity === 'severe' && styles.badgeSevere,
+                        severity === 'moderate' && styles.badgeModerate,
+                        severity === 'mild' && styles.badgeMild,
+                      ]}
+                    >
+                      <Text style={styles.severityBadgeText}>{getSeverityLabel(severity)}</Text>
+                    </View>
+                    {group.map((i: DrugInteraction, idx: number) => (
+                      <View key={idx} style={styles.interactionItem}>
+                        <Text style={styles.interactionDrugs}>
+                          {i.drugA} + {i.drugB}
+                        </Text>
+                        <Text style={styles.interactionDesc}>{i.description}</Text>
+                        <Text style={styles.interactionRec}>{i.recommendation}</Text>
+                      </View>
+                    ))}
+                  </View>
+                );
+              })}
+
+              {/* Contraindicated acknowledgement gate */}
+              {interactionResult.interactions.some((i) => i.severity === 'contraindicated') &&
+                !contraindicatedAcknowledged && (
+                  <View style={styles.contraindicatedWarning}>
+                    <Text style={styles.contraindicatedWarningText}>
+                      ⛔ This combination is contraindicated. You must explicitly acknowledge the
+                      danger before a vet override can be applied.
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.acknowledgeBtn}
+                      onPress={() => setContraindicatedAcknowledged(true)}
+                    >
+                      <Text style={styles.acknowledgeBtnText}>
+                        I understand the risk — acknowledge
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+              {/* Override controls — only shown after contraindicated is acknowledged (or not present) */}
+              {(!interactionResult.interactions.some((i) => i.severity === 'contraindicated') ||
+                contraindicatedAcknowledged) && (
+                <>
+                  {!vetOverrideMode ? (
+                    <TouchableOpacity
+                      style={styles.overrideBtn}
+                      onPress={() => setVetOverrideMode(true)}
+                    >
+                      <Text style={styles.overrideBtnText}>Vet Override</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <View>
+                      <TextInput
+                        style={styles.input}
+                        placeholder="Vet ID *"
+                        value={vetId}
+                        onChangeText={setVetId}
+                      />
+                      <TextInput
+                        style={[styles.input, styles.textArea]}
+                        placeholder="Justification for override *"
+                        multiline
+                        value={overrideJustification}
+                        onChangeText={setOverrideJustification}
+                      />
+                      <TouchableOpacity style={styles.saveBtn} onPress={() => void handleSave()}>
+                        <Text style={styles.saveBtnText}>Save with Override</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </>
               )}
             </View>
           )}
@@ -663,7 +745,13 @@ const MedicationScreen: React.FC = () => {
           </TouchableOpacity>
         ))}
       </View>
-      {tab === 'list' && (
+      {tab === 'list' && displayLoading ? (
+        <View style={styles.listContent}>
+          {Array.from({ length: 5 }).map((_, index) => (
+            <SkeletonCard key={`skeleton-${index}`} />
+          ))}
+        </View>
+      ) : tab === 'list' ? (
         <FlatList
           data={medications}
           keyExtractor={(item) => item.id}
@@ -675,7 +763,7 @@ const MedicationScreen: React.FC = () => {
           windowSize={5}
           initialNumToRender={10}
         />
-      )}
+      ) : null}
       {tab === 'daily' && renderSchedule(todayDates())}
       {tab === 'weekly' && renderSchedule(weekDates())}
       {renderModal()}
@@ -844,10 +932,44 @@ const styles = StyleSheet.create({
     borderColor: '#FFCA28',
   },
   interactionTitle: { fontSize: 15, fontWeight: '700', color: '#7B4F00', marginBottom: 8 },
-  interactionItem: { marginBottom: 10 },
-  interactionSeverity: { fontWeight: '700', fontSize: 13, marginBottom: 2 },
+  severityGroup: { marginBottom: 12 },
+  severityBadge: {
+    alignSelf: 'flex-start',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginBottom: 6,
+  },
+  badgeContraindicated: { backgroundColor: '#B71C1C' },
+  badgeSevere: { backgroundColor: '#E53935' },
+  badgeModerate: { backgroundColor: '#F57C00' },
+  badgeMild: { backgroundColor: '#F9A825' },
+  severityBadgeText: { color: '#fff', fontWeight: '700', fontSize: 12 },
+  interactionItem: { marginBottom: 8, paddingLeft: 4 },
+  interactionDrugs: { fontWeight: '700', fontSize: 13, color: '#1a1a1a', marginBottom: 2 },
   interactionDesc: { fontSize: 13, color: '#333', marginBottom: 2 },
   interactionRec: { fontSize: 12, color: '#555', fontStyle: 'italic' },
+  contraindicatedWarning: {
+    marginTop: 10,
+    padding: 10,
+    backgroundColor: '#FFEBEE',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#B71C1C',
+  },
+  contraindicatedWarningText: {
+    fontSize: 13,
+    color: '#B71C1C',
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  acknowledgeBtn: {
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#B71C1C',
+    alignItems: 'center',
+  },
+  acknowledgeBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
   overrideBtn: {
     marginTop: 8,
     paddingVertical: 10,

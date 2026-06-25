@@ -1,3 +1,7 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ExpoSQLite from 'expo-sqlite';
+import { AppState, type AppStateStatus } from 'react-native';
+
 import apiClient from './apiClient';
 import { executeSql } from './localDB';
 import { networkMonitor } from '../utils/networkMonitor';
@@ -41,13 +45,84 @@ const DEFAULT_OPTIONS: Required<SyncEngineOptions> = {
   strategy: 'last-write-wins',
 };
 
+// ── Exponential backoff constants ─────────────────────────────────────────────
+
+/** Backoff steps in ms: 30s → 60s → 120s → 300s → 600s */
+const BACKOFF_STEPS_MS = [30_000, 60_000, 120_000, 300_000, 600_000];
+
+/** Non-retryable HTTP status codes — surface immediately, no backoff */
+const NON_RETRYABLE_STATUSES = new Set([401, 403, 422]);
+
+const BACKOFF_STORAGE_KEY = '@sync_engine:backoff';
+
+interface BackoffState {
+  /** Current step index into BACKOFF_STEPS_MS */
+  stepIndex: number;
+  /** Timestamp when the next retry is allowed */
+  nextRetryAt: number;
+}
+
 export class SyncEngine {
   private listeners = new Set<SyncListener>();
   private isRunning = false;
   private readonly options: Required<SyncEngineOptions>;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private appStateSubscription: { remove: () => void } | null = null;
 
   constructor(options: SyncEngineOptions = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
+    this._subscribeAppState();
+  }
+
+  // ── Backoff helpers ───────────────────────────────────────────────────────
+
+  private async _getBackoffState(): Promise<BackoffState> {
+    try {
+      const raw = await AsyncStorage.getItem(BACKOFF_STORAGE_KEY);
+      if (raw) return JSON.parse(raw) as BackoffState;
+    } catch {
+      /* ignore */
+    }
+    return { stepIndex: 0, nextRetryAt: 0 };
+  }
+
+  private async _advanceBackoff(): Promise<void> {
+    const state = await this._getBackoffState();
+    const nextStep = Math.min(state.stepIndex + 1, BACKOFF_STEPS_MS.length - 1);
+    const delay = BACKOFF_STEPS_MS[nextStep];
+    const next: BackoffState = { stepIndex: nextStep, nextRetryAt: Date.now() + delay };
+    await AsyncStorage.setItem(BACKOFF_STORAGE_KEY, JSON.stringify(next));
+    this._scheduleRetry(delay);
+  }
+
+  private async _resetBackoff(): Promise<void> {
+    await AsyncStorage.removeItem(BACKOFF_STORAGE_KEY);
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  private _scheduleRetry(delayMs: number): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => {
+      this.syncNow().catch(() => {});
+    }, delayMs);
+  }
+
+  private _subscribeAppState(): void {
+    this.appStateSubscription = AppState.addEventListener('change', (state: AppStateStatus) => {
+      // On foreground, attempt one sync immediately regardless of backoff
+      if (state === 'active') {
+        this.syncNow().catch(() => {});
+      }
+    });
+  }
+
+  /** Release resources (call on teardown) */
+  destroy(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.appStateSubscription?.remove();
   }
 
   async initialize(): Promise<void> {
@@ -135,7 +210,22 @@ export class SyncEngine {
         completed += 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown sync failure';
-        await this.recordFailure(record, message);
+        const status = (error as { response?: { status?: number } })?.response?.status;
+
+        if (status != null && NON_RETRYABLE_STATUSES.has(status)) {
+          // Non-retryable: surface immediately, do not schedule backoff retry
+          await this.clearRecord(record.id);
+          this.emit({
+            type: 'failed',
+            total,
+            completed,
+            failed: failed + 1,
+            message: `Non-retryable error ${status}: ${message}`,
+            record,
+          });
+        } else {
+          await this.recordFailure(record, message);
+        }
         failed += 1;
       }
       this.emit({ type: 'progress', total, completed, failed, record });
@@ -149,6 +239,13 @@ export class SyncEngine {
       failed,
     };
     this.emit(event);
+
+    if (failed > 0) {
+      await this._advanceBackoff();
+    } else {
+      await this._resetBackoff();
+    }
+
     return event;
   }
 
@@ -178,8 +275,7 @@ export class SyncEngine {
   }
 
   private async getDirtyRecord(id: string): Promise<DirtyRecord | null> {
-    const db = await import('expo-sqlite');
-    const conn = db.openDatabaseSync('petchain.db');
+    const conn = ExpoSQLite.openDatabaseSync('petchain.db');
     const row = (await conn.getFirstAsync(`SELECT * FROM dirty_records WHERE id = ? LIMIT 1`, [
       id,
     ])) as {
@@ -198,8 +294,7 @@ export class SyncEngine {
   }
 
   private async getBatch(): Promise<DirtyRecord[]> {
-    const db = await import('expo-sqlite');
-    const conn = db.openDatabaseSync('petchain.db');
+    const conn = ExpoSQLite.openDatabaseSync('petchain.db');
     const rows = (await conn.getAllAsync(
       `SELECT * FROM dirty_records WHERE attempts < ? ORDER BY updated_at ASC LIMIT ?`,
       [this.options.maxRetries, this.options.batchSize],

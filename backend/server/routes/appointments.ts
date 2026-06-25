@@ -501,4 +501,116 @@ router.delete('/:id', (req: AuthenticatedRequest, res) => {
   return res.json(ok(null, 'Appointment deleted'));
 });
 
+/**
+ * POST /appointments/check-conflicts
+ * Check for conflicting appointments for a pet and vet at a given time.
+ * Body: { petId, vetId, date, time, durationMinutes?, excludeId? }
+ * Returns: { conflicts: Array<{type, appointment}>, canSave: boolean, reason?: string }
+ */
+router.post('/check-conflicts', (req: AuthenticatedRequest, res) => {
+  const body = req.body as {
+    petId?: string;
+    vetId?: string;
+    date?: string;
+    time?: string;
+    durationMinutes?: number;
+    excludeId?: string;
+  };
+
+  if (!body.petId?.trim() || !body.vetId?.trim() || !body.date?.trim() || !body.time?.trim()) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      'petId, vetId, date, and time are required',
+    );
+  }
+
+  const petId = body.petId.trim();
+  const vetId = body.vetId.trim();
+  const date = body.date.trim();
+  const time = body.time.trim();
+  const duration = body.durationMinutes ?? 30;
+  const excludeId = body.excludeId?.trim();
+
+  // Parse the requested appointment times
+  const requestedStart = new Date(`${date}T${time}`);
+  const requestedEnd = new Date(requestedStart.getTime() + duration * 60_000);
+
+  if (isNaN(requestedStart.getTime())) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid date/time format');
+  }
+
+  const conflicts: Array<{ type: 'exact' | 'near'; appointment: StoredAppointment }> = [];
+
+  // Check all non-cancelled appointments
+  for (const appt of store.appointments.values()) {
+    if (appt.id === excludeId) continue;
+    if (appt.status === AppointmentStatus.CANCELLED) continue;
+
+    const apptStart = new Date(`${appt.date}T${appt.time}`);
+    const apptEnd = new Date(apptStart.getTime() + (appt.durationMinutes ?? 30) * 60_000);
+
+    // Check pet conflicts (same pet, overlapping times)
+    if (appt.petId === petId) {
+      const overlap = timeRangesOverlap(requestedStart, requestedEnd, apptStart, apptEnd);
+      const gap = minGapBetweenRanges(requestedStart, requestedEnd, apptStart, apptEnd);
+
+      if (overlap) {
+        conflicts.push({ type: 'exact', appointment: appt });
+      } else if (gap < 30) {
+        conflicts.push({ type: 'near', appointment: appt });
+      }
+    }
+
+    // Check vet conflicts (same vet, overlapping times)
+    if (appt.vetId === vetId) {
+      const overlap = timeRangesOverlap(requestedStart, requestedEnd, apptStart, apptEnd);
+
+      if (overlap) {
+        conflicts.push({ type: 'exact', appointment: appt });
+      }
+    }
+  }
+
+  // Determine if we can save
+  const hasExactConflict = conflicts.some((c) => c.type === 'exact');
+  const hasNearConflict = conflicts.some((c) => c.type === 'near');
+
+  return res.json({
+    success: true,
+    data: {
+      conflicts,
+      canSave: !hasExactConflict,
+      hasWarning: hasNearConflict,
+      reason: hasExactConflict
+        ? 'Exact time conflict found. Cannot save.'
+        : hasNearConflict
+          ? 'Near-time conflict found (< 30 min gap). Proceed with caution.'
+          : null,
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+function timeRangesOverlap(
+  start1: Date,
+  end1: Date,
+  start2: Date,
+  end2: Date,
+): boolean {
+  return start1 < end2 && end1 > start2;
+}
+
+function minGapBetweenRanges(
+  start1: Date,
+  end1: Date,
+  start2: Date,
+  end2: Date,
+): number {
+  if (end1 <= start2) return Math.max(0, start2.getTime() - end1.getTime());
+  if (end2 <= start1) return Math.max(0, start1.getTime() - end2.getTime());
+  return 0; // Ranges overlap
+}
+
 export default router;

@@ -11,7 +11,6 @@
 import { useNavigation } from '@react-navigation/native';
 import React, { useCallback, useEffect, useReducer, useRef } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   FlatList,
   RefreshControl,
@@ -22,6 +21,8 @@ import {
 } from 'react-native';
 
 import NotificationItem, { resolveNavPayload } from '../components/NotificationItem';
+import { SkeletonCard } from '../components/SkeletonCard';
+import { useMinimumLoadingTime } from '../hooks/useMinimumLoadingTime';
 import {
   deleteAll,
   deleteMany,
@@ -146,6 +147,11 @@ export default function NotificationCenterScreen() {
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
   const navigation = useNavigation<{ navigate: (screen: string, params?: unknown) => void }>();
   const isMounted = useRef(true);
+
+  // Enforce minimum 300ms display for skeleton
+  const displayLoading = useMinimumLoadingTime(state.loading && !state.refreshing, {
+    minLoadingTime: 300,
+  });
 
   useEffect(() => {
     return () => {
@@ -365,9 +371,11 @@ export default function NotificationCenterScreen() {
       </View>
 
       {/* Content */}
-      {state.loading && !state.refreshing ? (
-        <View style={styles.centered} testID="loading-indicator">
-          <ActivityIndicator size="large" color="#4CAF50" />
+      {displayLoading ? (
+        <View style={styles.loadingContainer} testID="loading-indicator">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <SkeletonCard key={`skeleton-${index}`} />
+          ))}
         </View>
       ) : state.error ? (
         <View style={styles.centered} testID="error-state">
@@ -497,6 +505,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 32,
+  },
+  loadingContainer: {
+    flex: 1,
+    padding: 16,
   },
   emptyContainer: {
     flexGrow: 1,

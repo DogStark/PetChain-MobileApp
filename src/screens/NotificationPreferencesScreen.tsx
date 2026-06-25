@@ -17,6 +17,7 @@ import PermissionRationaleModal from '../components/PermissionRationaleModal';
 import {
   getPreferences,
   savePreferences,
+  sendAlertNotification,
   type NotificationPreferences,
 } from '../services/notificationService';
 import petService, { type Pet } from '../services/petService';
@@ -67,6 +68,12 @@ const NotificationPreferencesScreen: React.FC<Props> = ({ onBack }) => {
       }
     }
     update('medicationReminders', value);
+    if (value) {
+      void sendAlertNotification(
+        'Medication Reminders On',
+        'You will receive medication reminders.',
+      );
+    }
   };
 
   const getPetOverride = (petId: string) =>
@@ -190,13 +197,40 @@ const NotificationPreferencesScreen: React.FC<Props> = ({ onBack }) => {
           <Row
             label="Appointment Reminders"
             value={prefs.appointmentReminders}
-            onValueChange={(v) => update('appointmentReminders', v)}
+            onValueChange={(v) => {
+              update('appointmentReminders', v);
+              if (v)
+                void sendAlertNotification(
+                  'Appointment Reminders On',
+                  'You will receive appointment reminders.',
+                );
+            }}
           />
           <View style={styles.sep} />
           <Row
             label="Vaccination Alerts"
             value={prefs.vaccinationAlerts}
-            onValueChange={(v) => update('vaccinationAlerts', v)}
+            onValueChange={(v) => {
+              update('vaccinationAlerts', v);
+              if (v)
+                void sendAlertNotification(
+                  'Vaccination Alerts On',
+                  'You will receive vaccination alerts.',
+                );
+            }}
+          />
+          <View style={styles.sep} />
+          <Row
+            label="Marketing & Promotions"
+            value={prefs.marketingNotifications}
+            onValueChange={(v) => {
+              update('marketingNotifications', v);
+              if (v)
+                void sendAlertNotification(
+                  'Marketing Notifications On',
+                  'You will receive offers and updates from PetChain.',
+                );
+            }}
           />
         </View>
 
@@ -260,6 +294,10 @@ const NotificationPreferencesScreen: React.FC<Props> = ({ onBack }) => {
                 </View>
               </View>
               <Text style={styles.hint}>Notifications will be suppressed during quiet hours.</Text>
+              <Text style={styles.urgentNote}>
+                🚨 Urgent alerts (Emergency SOS, medication overdue by &gt;2 h) always bypass quiet
+                hours.
+              </Text>
             </>
           )}
         </View>
@@ -384,7 +422,8 @@ const styles = StyleSheet.create({
     fontSize: 15,
     backgroundColor: '#fafafa',
   },
-  hint: { fontSize: 12, color: '#aaa', paddingBottom: 10 },
+  hint: { fontSize: 12, color: '#aaa', paddingBottom: 6 },
+  urgentNote: { fontSize: 12, color: '#d32f2f', paddingBottom: 10, fontWeight: '500' },
   successText: {
     color: '#4CAF50',
     fontSize: 13,

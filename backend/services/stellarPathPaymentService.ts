@@ -14,6 +14,13 @@ export interface StellarAssetInput {
   type?: 'native' | 'credit_alphanum4' | 'credit_alphanum12';
 }
 
+export class PathPaymentPathNotFoundError extends Error {
+  constructor(message = 'No conversion path found via DEX') {
+    super(message);
+    this.name = 'PathPaymentPathNotFoundError';
+  }
+}
+
 export interface PaymentPathQuote {
   paymentId: string;
   plan: SubscriptionPlan;
@@ -109,10 +116,6 @@ const NETWORK_PASSPHRASE =
   process.env.STELLAR_NETWORK === 'mainnet'
     ? StellarSdk.Networks.PUBLIC
     : StellarSdk.Networks.TESTNET;
-const DEFAULT_RECEIVING_SECRET = process.env.STELLAR_RECEIVING_SECRET || '';
-const DEFAULT_RECEIVING_PUBLIC_KEY = process.env.STELLAR_RECEIVING_PUBLIC_KEY || '';
-const DEFAULT_PATH_FEE_STROOPS = process.env.STELLAR_PATH_FEE_STROOPS || '100';
-
 const audits = new Map<string, PathPaymentAuditEntry[]>();
 const pendingPayments = new Map<
   string,
@@ -165,13 +168,6 @@ function assetDescriptor(asset: StellarSdk.Asset): {
   };
 }
 
-function pathRecordToAssets(record: PathLikeRecord): StellarSdk.Asset[] {
-  return record.path.map((step) => {
-    if (step.asset_type === 'native') return StellarSdk.Asset.native();
-    return new StellarSdk.Asset(step.asset_code, step.asset_issuer);
-  });
-}
-
 function pathRecordToDescriptor(record: PathLikeRecord): Array<{
   code: string;
   issuer?: string;
@@ -193,9 +189,12 @@ function formatXlm(value: string | number): string {
 }
 
 function resolveReceivingAccount(): string {
-  if (DEFAULT_RECEIVING_PUBLIC_KEY) return DEFAULT_RECEIVING_PUBLIC_KEY;
-  if (DEFAULT_RECEIVING_SECRET) {
-    return StellarSdk.Keypair.fromSecret(DEFAULT_RECEIVING_SECRET).publicKey();
+  const receivingPublicKey = process.env.STELLAR_RECEIVING_PUBLIC_KEY || '';
+  const receivingSecret = process.env.STELLAR_RECEIVING_SECRET || '';
+
+  if (receivingPublicKey) return receivingPublicKey;
+  if (receivingSecret) {
+    return StellarSdk.Keypair.fromSecret(receivingSecret).publicKey();
   }
   throw new Error('STELLAR_RECEIVING_SECRET or STELLAR_RECEIVING_PUBLIC_KEY is required');
 }
@@ -297,6 +296,75 @@ export class StellarPathPaymentService {
     };
   }
 
+  async findPaymentPath(input: {
+    sourceAsset: StellarSdk.Asset;
+    destinationAsset: StellarSdk.Asset;
+    destinationAmount: string;
+  }): Promise<PathLikeRecord> {
+    const page = await this.server
+      .strictReceivePaths(input.sourceAsset, input.destinationAsset, input.destinationAmount)
+      .call();
+
+    if (page.records.length === 0) {
+      throw new PathPaymentPathNotFoundError();
+    }
+
+    return page.records
+      .slice()
+      .sort((a, b) => asNumber(a.source_amount) - asNumber(b.source_amount))[0];
+  }
+
+  async executePathPayment(input: {
+    sourceAccount: string;
+    quote: PaymentPathQuote;
+    paymentId: string;
+  }): Promise<string> {
+    const sourceAccount = await this.server.loadAccount(input.sourceAccount);
+    const baseFee = await this.server.fetchBaseFee();
+    const pathFeeStroops = Number(process.env.STELLAR_PATH_FEE_STROOPS || '100');
+    const medianFee = Math.max(baseFee, pathFeeStroops);
+    const builder = new StellarSdk.TransactionBuilder(
+      sourceAccount as unknown as StellarSdk.Account,
+      {
+        fee: String(medianFee),
+        networkPassphrase: NETWORK_PASSPHRASE,
+      },
+    );
+
+    const destination = resolveReceivingAccount();
+    if (input.quote.mode === 'direct-xlm') {
+      builder.addOperation(
+        StellarSdk.Operation.payment({
+          destination,
+          asset: StellarSdk.Asset.native(),
+          amount: input.quote.destinationAmount,
+        }),
+      );
+    } else {
+      const destMin = this.getMinimumDestinationAmount(input.quote.destinationAmount);
+      builder.addOperation(
+        StellarSdk.Operation.pathPaymentStrictSend({
+          sendAsset: assetFromInput(input.quote.sourceAsset),
+          sendAmount: input.quote.sourceAmount,
+          destination,
+          destAsset: StellarSdk.Asset.native(),
+          destMin,
+          path: input.quote.path.map((step) =>
+            step.type === 'native'
+              ? StellarSdk.Asset.native()
+              : new StellarSdk.Asset(step.code, step.issuer ?? ''),
+          ),
+        } as any),
+      );
+    }
+
+    const tx = builder
+      .addMemo(StellarSdk.Memo.text(input.paymentId.slice(0, 28)))
+      .setTimeout(60)
+      .build();
+    return tx.toXDR();
+  }
+
   getAudits(paymentId?: string): PathPaymentAuditEntry[] {
     if (!paymentId) return [...audits.values()].flat();
     return audits.get(paymentId) ?? [];
@@ -315,25 +383,11 @@ export class StellarPathPaymentService {
     const sourceAssetDescriptor = assetDescriptor(input.sourceAsset);
 
     try {
-      const page = await this.server
-        .strictReceivePaths(input.sourceAsset, receivingAsset, destinationAmount)
-        .call();
-
-      if (page.records.length === 0) {
-        return this.buildDirectXlmFallback({
-          paymentId: input.paymentId,
-          userId: input.userId,
-          plan: input.plan,
-          sourceAsset: input.sourceAsset,
-          destinationAmount,
-          receivingAccount,
-          fallbackReason: 'No conversion path found via DEX',
-        });
-      }
-
-      const best = page.records
-        .slice()
-        .sort((a, b) => asNumber(a.source_amount) - asNumber(b.source_amount))[0];
+      const best = await this.findPaymentPath({
+        sourceAsset: input.sourceAsset,
+        destinationAsset: receivingAsset,
+        destinationAmount,
+      });
       const path = pathRecordToDescriptor(best);
       const sourceAmount = best.source_amount;
       const fee = this.estimateFee();
@@ -357,6 +411,18 @@ export class StellarPathPaymentService {
         expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
       };
     } catch (error) {
+      if (error instanceof PathPaymentPathNotFoundError) {
+        return this.buildDirectXlmFallback({
+          paymentId: input.paymentId,
+          userId: input.userId,
+          plan: input.plan,
+          sourceAsset: input.sourceAsset,
+          destinationAmount,
+          receivingAccount,
+          fallbackReason: error.message,
+        });
+      }
+
       return this.buildDirectXlmFallback({
         paymentId: input.paymentId,
         userId: input.userId,
@@ -416,46 +482,7 @@ export class StellarPathPaymentService {
     sourceAccount: string;
     paymentId: string;
   }): Promise<string> {
-    const sourceAccount = await this.server.loadAccount(input.sourceAccount);
-    const builder = new StellarSdk.TransactionBuilder(
-      sourceAccount as unknown as StellarSdk.Account,
-      {
-        fee: String(await this.server.fetchBaseFee()),
-        networkPassphrase: NETWORK_PASSPHRASE,
-      },
-    );
-
-    const destination = resolveReceivingAccount();
-    if (input.quote.mode === 'direct-xlm') {
-      builder.addOperation(
-        StellarSdk.Operation.payment({
-          destination,
-          asset: StellarSdk.Asset.native(),
-          amount: input.quote.destinationAmount,
-        }),
-      );
-    } else {
-      builder.addOperation(
-        StellarSdk.Operation.pathPaymentStrictReceive({
-          sendAsset: assetFromInput(input.quote.sourceAsset),
-          sendMax: input.quote.sourceAmount,
-          destination,
-          destAsset: StellarSdk.Asset.native(),
-          destAmount: input.quote.destinationAmount,
-          path: input.quote.path.map((step) =>
-            step.type === 'native'
-              ? StellarSdk.Asset.native()
-              : new StellarSdk.Asset(step.code, step.issuer ?? ''),
-          ),
-        }),
-      );
-    }
-
-    const tx = builder
-      .addMemo(StellarSdk.Memo.text(input.paymentId.slice(0, 28)))
-      .setTimeout(60)
-      .build();
-    return tx.toXDR();
+    return this.executePathPayment(input);
   }
 
   private getDestinationAmount(plan: SubscriptionPlan): string {
@@ -467,7 +494,13 @@ export class StellarPathPaymentService {
   }
 
   private estimateFee(): string {
-    return (Number(DEFAULT_PATH_FEE_STROOPS) / 10_000_000).toFixed(7);
+    const pathFeeStroops = Number(process.env.STELLAR_PATH_FEE_STROOPS || '100');
+    return (pathFeeStroops / 10_000_000).toFixed(7);
+  }
+
+  private getMinimumDestinationAmount(destinationAmount: string): string {
+    const amount = asNumber(destinationAmount);
+    return Math.max(0, amount * 0.995).toFixed(7);
   }
 }
 

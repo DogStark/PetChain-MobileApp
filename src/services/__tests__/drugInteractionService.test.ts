@@ -45,6 +45,18 @@ describe('drugInteractionService — Issue #335', () => {
       expect(result.interactions[0].severity).toBe('mild');
     });
 
+    it('detects contraindicated interaction (carprofen + enrofloxacin)', async () => {
+      const result = await checkDrugInteractions('carprofen', ['enrofloxacin']);
+      expect(result.hasInteractions).toBe(true);
+      expect(result.interactions[0].severity).toBe('contraindicated');
+    });
+
+    it('detects contraindicated regardless of argument order', async () => {
+      const result = await checkDrugInteractions('enrofloxacin', ['carprofen']);
+      expect(result.hasInteractions).toBe(true);
+      expect(result.interactions[0].severity).toBe('contraindicated');
+    });
+
     it('returns no interactions for non-interacting drugs', async () => {
       const result = await checkDrugInteractions('amoxicillin', ['phenobarbital']);
       expect(result.hasInteractions).toBe(false);
@@ -96,6 +108,7 @@ describe('drugInteractionService — Issue #335', () => {
       expect(getSeverityLabel('mild')).toContain('Mild');
       expect(getSeverityLabel('moderate')).toContain('Moderate');
       expect(getSeverityLabel('severe')).toContain('Severe');
+      expect(getSeverityLabel('contraindicated')).toContain('Contraindicated');
     });
   });
 

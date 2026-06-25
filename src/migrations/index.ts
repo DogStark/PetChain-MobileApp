@@ -17,4 +17,6 @@ export {
   runSqliteMigrations,
   rollbackSqliteMigrations,
   getSqliteMigrationHistory,
+  validateMigrations,
+  computeMigrationChecksum,
 } from './sqliteMigrationRunner';

@@ -4,7 +4,7 @@
  * co-signing request flow, status polling, and key rotation from the mobile app.
  */
 import apiClient from './apiClient';
-import { sendAlertNotification } from './notificationService';
+import { sendAlertNotification, transferVaccinationNotifications } from './notificationService';
 import type {
   JointOwnershipResponse,
   PendingTransactionResponse,
@@ -256,6 +256,9 @@ export async function initiateOwnershipTransfer(
       'A co-owner has requested to transfer pet ownership. Your signature is required.',
       { type: 'cosign_request', transactionId: response.data.id },
     );
+    // Cancel scheduled vaccination reminders on the current owner's device
+    // and signal the backend to re-push them to the new owner.
+    await transferVaccinationNotifications(data.petId, data.newOwnerUserId);
     return response.data;
   } catch (error) {
     throw toMultisigError(error);

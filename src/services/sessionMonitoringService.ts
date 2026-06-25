@@ -141,6 +141,19 @@ export interface AlertPayload {
   timestamp: string;
 }
 
+// ─── Timeout warning configuration ───────────────────────────────────────────
+
+/** How many ms before session expiry to show the warning modal */
+const WARNING_BEFORE_EXPIRY_MS = 2 * 60 * 1000; // 2 minutes
+
+export interface SessionTimeoutWarningPayload {
+  /** Seconds remaining until auto-logout */
+  secondsRemaining: number;
+}
+
+type TimeoutWarningListener = (payload: SessionTimeoutWarningPayload) => void;
+type TimeoutExpiredListener = () => void;
+
 // ─── Error Class ──────────────────────────────────────────────────────────────
 
 export class SessionMonitoringError extends Error {
@@ -170,6 +183,14 @@ class SessionMonitoringService {
   private activeFlow: UserFlowStep = 'app_launch';
   private statusListeners: Array<(status: SessionStatus) => void> = [];
   private alertListeners: Array<(alert: AlertPayload) => void> = [];
+
+  // ── Inactivity / timeout warning ──────────────────────────────────────────
+  private inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+  private warningTimer: ReturnType<typeof setTimeout> | null = null;
+  private warningCountdownInterval: ReturnType<typeof setInterval> | null = null;
+  private timeoutWarningListeners: TimeoutWarningListener[] = [];
+  private timeoutExpiredListeners: TimeoutExpiredListener[] = [];
+  private warningActive = false;
 
   // ── Session lifecycle ──────────────────────────────────────────────────────
 
@@ -216,6 +237,8 @@ class SessionMonitoringService {
       appVersion: device.appVersion,
     });
 
+    this._resetInactivityTimer();
+
     return session.id;
   }
 
@@ -223,6 +246,7 @@ class SessionMonitoringService {
    * End the current session normally.
    */
   async endSession(status: Extract<SessionStatus, 'ended' | 'abnormal'> = 'ended'): Promise<void> {
+    this._clearTimers();
     if (!this.currentSession) return;
 
     const now = Date.now();
@@ -269,6 +293,8 @@ class SessionMonitoringService {
     this.activeFlow = flow;
     this.currentSession.flowPath.push(flow);
     await this._persistCurrentSession();
+
+    this._resetInactivityTimer();
 
     await this._trackEvent({
       type: 'navigation',
@@ -357,6 +383,8 @@ class SessionMonitoringService {
    */
   async trackUserAction(action: string, data?: Record<string, unknown>): Promise<void> {
     if (!this.currentSession) return;
+
+    this._resetInactivityTimer();
 
     await this._trackEvent({
       type: 'user_action',
@@ -467,6 +495,44 @@ class SessionMonitoringService {
     return () => {
       this.alertListeners = this.alertListeners.filter((l) => l !== listener);
     };
+  }
+
+  /**
+   * Subscribe to session timeout warning events (fires 2 min before expiry).
+   * Receives a countdown payload updated every second.
+   * Returns an unsubscribe function.
+   */
+  onTimeoutWarning(listener: TimeoutWarningListener): () => void {
+    this.timeoutWarningListeners.push(listener);
+    return () => {
+      this.timeoutWarningListeners = this.timeoutWarningListeners.filter((l) => l !== listener);
+    };
+  }
+
+  /**
+   * Subscribe to session expiry (fires when the inactivity timeout has elapsed).
+   * Returns an unsubscribe function.
+   */
+  onTimeoutExpired(listener: TimeoutExpiredListener): () => void {
+    this.timeoutExpiredListeners.push(listener);
+    return () => {
+      this.timeoutExpiredListeners = this.timeoutExpiredListeners.filter((l) => l !== listener);
+    };
+  }
+
+  /**
+   * Extend the current session (call after the user taps "Stay logged in").
+   * Resets the inactivity timer and calls authService.refreshToken().
+   */
+  async extendSession(): Promise<void> {
+    if (!this.currentSession) return;
+    this._resetInactivityTimer();
+    try {
+      const { refreshToken } = await import('./authService');
+      await refreshToken();
+    } catch {
+      // Non-fatal — session extension failure is not a crash
+    }
   }
 
   // ── Accessors ──────────────────────────────────────────────────────────────
@@ -591,6 +657,60 @@ class SessionMonitoringService {
       appVersion: config.app.version,
       platform: 'unknown',
     };
+  }
+
+  // ── Inactivity / warning timer helpers ────────────────────────────────────
+
+  private _clearTimers(): void {
+    if (this.inactivityTimer) {
+      clearTimeout(this.inactivityTimer);
+      this.inactivityTimer = null;
+    }
+    if (this.warningTimer) {
+      clearTimeout(this.warningTimer);
+      this.warningTimer = null;
+    }
+    if (this.warningCountdownInterval) {
+      clearInterval(this.warningCountdownInterval);
+      this.warningCountdownInterval = null;
+    }
+    this.warningActive = false;
+  }
+
+  private _resetInactivityTimer(): void {
+    if (!this.currentSession) return;
+    this._clearTimers();
+
+    const warningAt = SESSION_TIMEOUT_MS - WARNING_BEFORE_EXPIRY_MS;
+
+    // Schedule warning at (SESSION_TIMEOUT_MS - 2 minutes)
+    this.warningTimer = setTimeout(() => {
+      this._startWarningCountdown();
+    }, warningAt);
+  }
+
+  private _startWarningCountdown(): void {
+    if (!this.currentSession) return;
+    this.warningActive = true;
+    let secondsRemaining = Math.round(WARNING_BEFORE_EXPIRY_MS / 1000);
+
+    // Emit initial warning
+    this.timeoutWarningListeners.forEach((l) => l({ secondsRemaining }));
+
+    // Tick every second
+    this.warningCountdownInterval = setInterval(() => {
+      secondsRemaining -= 1;
+      this.timeoutWarningListeners.forEach((l) => l({ secondsRemaining }));
+
+      if (secondsRemaining <= 0) {
+        if (this.warningCountdownInterval) clearInterval(this.warningCountdownInterval);
+        this.warningCountdownInterval = null;
+        this.warningActive = false;
+        // Fire expiry — UI/caller should call authService.logout()
+        this.timeoutExpiredListeners.forEach((l) => l());
+        this.endSession('ended').catch(() => {});
+      }
+    }, 1000);
   }
 }
 

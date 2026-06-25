@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -19,6 +19,10 @@ import {
   type MedicalRecord,
   type RecordFilters,
 } from '../services/medicalRecordService';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const PAGE_SIZE = 20;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,7 +53,16 @@ interface Props {
 
 const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
   const [records, setRecords] = useState<MedicalRecord[]>([]);
+  // initial load state — shows full-screen spinner
   const [loading, setLoading] = useState(false);
+  // next-page fetch state — shows footer spinner
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  // page acts as our cursor: next page to load
+  const nextPageRef = useRef(1);
+  // prevent duplicate onEndReached fires
+  const isFetchingRef = useRef(false);
+
   const [selectedType, setSelectedType] = useState<RecordType>(undefined);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -58,32 +71,85 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
   const [detailRecord, setDetailRecord] = useState<MedicalRecord | null>(null);
   const [filtersVisible, setFiltersVisible] = useState(false);
 
-  const loadRecords = useCallback(async () => {
+  // ─── Helpers ─────────────────────────────────────────────────────────────
+
+  const mapRecord = (r: MedicalRecord): MedicalRecord => ({
+    ...r,
+    verificationStatus: (r.isBlockchainVerified ? 'verified' : 'unknown') as
+      | 'verified'
+      | 'unknown'
+      | 'pending',
+  });
+
+  // ─── Initial / reset load ─────────────────────────────────────────────────
+
+  const loadFirstPage = useCallback(async () => {
     setLoading(true);
+    setRecords([]);
+    setHasMore(true);
+    nextPageRef.current = 1;
+    isFetchingRef.current = true;
     try {
-      const filters: RecordFilters = { type: selectedType };
+      const filters: RecordFilters = {
+        type: selectedType,
+        page: 1,
+        limit: PAGE_SIZE,
+      };
       if (startDate) filters.startDate = startDate;
       if (endDate) filters.endDate = endDate;
+
       const res = await getMedicalRecords(petId, filters);
-      // Map backend fields to UI-friendly verificationStatus
-      const mapped = res.data.data.map((r) => ({
-        ...r,
-        verificationStatus: (r.isBlockchainVerified ? 'verified' : 'unknown') as
-          | 'verified'
-          | 'unknown'
-          | 'pending',
-      }));
+      const { data: payload } = res;
+      const mapped = payload.data.map(mapRecord);
+
       setRecords(mapped);
+      // If the API returned fewer records than requested, we've hit the end
+      setHasMore(payload.data.length === PAGE_SIZE && payload.page < payload.totalPages);
+      nextPageRef.current = 2;
     } catch {
       Alert.alert('Error', 'Failed to load medical records.');
     } finally {
       setLoading(false);
+      isFetchingRef.current = false;
     }
   }, [petId, selectedType, startDate, endDate]);
 
   useEffect(() => {
-    if (!isSearchMode) void loadRecords();
-  }, [loadRecords, isSearchMode]);
+    if (!isSearchMode) void loadFirstPage();
+  }, [loadFirstPage, isSearchMode]);
+
+  // ─── Paginated next-page fetch ────────────────────────────────────────────
+
+  const loadNextPage = useCallback(async () => {
+    if (isFetchingRef.current || !hasMore || isSearchMode) return;
+
+    isFetchingRef.current = true;
+    setLoadingMore(true);
+    try {
+      const filters: RecordFilters = {
+        type: selectedType,
+        page: nextPageRef.current,
+        limit: PAGE_SIZE,
+      };
+      if (startDate) filters.startDate = startDate;
+      if (endDate) filters.endDate = endDate;
+
+      const res = await getMedicalRecords(petId, filters);
+      const { data: payload } = res;
+      const mapped = payload.data.map(mapRecord);
+
+      setRecords((prev) => [...prev, ...mapped]);
+      setHasMore(payload.data.length === PAGE_SIZE && payload.page < payload.totalPages);
+      nextPageRef.current += 1;
+    } catch {
+      Alert.alert('Error', 'Failed to load more records.');
+    } finally {
+      setLoadingMore(false);
+      isFetchingRef.current = false;
+    }
+  }, [petId, selectedType, startDate, endDate, hasMore, isSearchMode]);
+
+  // ─── Search ───────────────────────────────────────────────────────────────
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) {
@@ -95,6 +161,7 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
     try {
       const results = await searchMedicalRecords(petId, searchQuery);
       setRecords(results);
+      setHasMore(false); // search returns all results at once
     } catch {
       Alert.alert('Error', 'Search failed.');
     } finally {
@@ -107,10 +174,12 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
     setIsSearchMode(false);
   };
 
+  // ─── Filter actions ───────────────────────────────────────────────────────
+
   const applyFilters = () => {
     setIsSearchMode(false);
     setFiltersVisible(false);
-    void loadRecords();
+    // loadFirstPage will be triggered by the useEffect dependency on selectedType/startDate/endDate
   };
 
   const resetFilters = () => {
@@ -119,7 +188,13 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
     setEndDate('');
   };
 
-  // ─── Render helpers ──────────────────────────────────────────────────────────
+  // ─── FlatList callbacks ───────────────────────────────────────────────────
+
+  const handleEndReached = useCallback(() => {
+    void loadNextPage();
+  }, [loadNextPage]);
+
+  // ─── Render helpers ───────────────────────────────────────────────────────
 
   const renderItem = useCallback(
     ({ item }: { item: MedicalRecord }) => (
@@ -146,7 +221,26 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
     [],
   );
 
-  // ─── Render ──────────────────────────────────────────────────────────────────
+  const renderFooter = useCallback(() => {
+    if (isSearchMode) return null;
+    if (loadingMore) {
+      return (
+        <View style={styles.footerLoader}>
+          <ActivityIndicator size="small" color="#10B981" />
+        </View>
+      );
+    }
+    if (!hasMore && records.length > 0) {
+      return (
+        <View style={styles.footerEnd}>
+          <Text style={styles.footerEndText}>All records loaded</Text>
+        </View>
+      );
+    }
+    return null;
+  }, [loadingMore, hasMore, records.length, isSearchMode]);
+
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
     <View style={styles.container}>
@@ -231,16 +325,22 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
           data={records}
           keyExtractor={(r) => r.id}
           renderItem={renderItem}
+          // Pagination
+          onEndReached={handleEndReached}
+          onEndReachedThreshold={0.4}
+          ListFooterComponent={renderFooter}
+          // Performance
+          initialNumToRender={10}
+          windowSize={5}
+          maxToRenderPerBatch={10}
+          removeClippedSubviews
+          // Layout
           contentContainerStyle={records.length === 0 ? styles.emptyContainer : styles.list}
           ListEmptyComponent={
             <Text style={styles.emptyText}>
               {isSearchMode ? `No results for "${searchQuery}".` : 'No records found.'}
             </Text>
           }
-          removeClippedSubviews
-          maxToRenderPerBatch={10}
-          windowSize={5}
-          initialNumToRender={10}
         />
       )}
 
@@ -330,7 +430,6 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
             <ScrollView contentContainerStyle={styles.detailBody}>
               {(() => {
                 const record = detailRecord as ExtendedRecord;
-
                 return (
                   <>
                     <DetailRow label="Type" value={detailRecord.type} />
@@ -470,7 +569,7 @@ const styles = StyleSheet.create({
   },
   chipClearText: { fontSize: 12, color: '#991B1B', fontWeight: '600' },
   loader: { marginTop: 40 },
-  list: { padding: 12 },
+  list: { padding: 12, paddingBottom: 24 },
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 80 },
   emptyText: { color: '#9CA3AF', fontSize: 15, textAlign: 'center' },
   card: {
@@ -489,16 +588,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 6,
   },
-  cardMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
   typeBadge: { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },
   typeBadgeText: { fontSize: 12, fontWeight: '700', textTransform: 'capitalize', color: '#374151' },
   cardDate: { fontSize: 12, color: '#6B7280' },
   cardNotes: { fontSize: 14, color: '#374151', marginBottom: 4 },
   cardMeta: { fontSize: 12, color: '#9CA3AF' },
+  // Footer
+  footerLoader: {
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  footerEnd: {
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  footerEndText: {
+    fontSize: 13,
+    color: '#9CA3AF',
+  },
   // Filter sheet
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   filterSheet: {
@@ -559,52 +666,6 @@ const styles = StyleSheet.create({
   },
   detailLabel: { width: 90, fontSize: 13, color: '#6B7280', fontWeight: '600' },
   detailValue: { flex: 1, fontSize: 14, color: '#111827' },
-
-  // Verification
-  verificationSection: {
-    marginTop: 20,
-    padding: 16,
-    backgroundColor: '#F0F9FF',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#B0E0FE',
-  },
-  verificationTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0369A1',
-    marginBottom: 10,
-  },
-  verificationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 12,
-  },
-  verificationText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#0C4A6E',
-    lineHeight: 18,
-  },
-  errorText: {
-    color: '#DC2626',
-    fontSize: 12,
-    marginTop: 6,
-    fontStyle: 'italic',
-  },
-  verifyButton: {
-    backgroundColor: '#4A90A4',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  verifyButtonText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 15,
-  },
 });
 
 export default MedicalRecordViewerScreen;
