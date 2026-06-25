@@ -3,11 +3,14 @@ import { type IncomingMessage, type Server } from 'http';
 import { v4 as uuidv4 } from 'uuid';
 import { WebSocketServer, type WebSocket } from 'ws';
 
+import { isEncryptedMessage } from '../utils/messageEncryption';
+
 export interface Message {
   id: string;
   conversationId: string;
   senderId: string;
   recipientId: string;
+  /** Serialized EncryptedMessage JSON — plaintext is never stored. */
   content?: string;
   attachmentUrl?: string;
   attachmentType?: string;
@@ -29,7 +32,15 @@ export function getMessages(conversationId: string, limit = 50, before?: string)
   return filtered.slice(-limit);
 }
 
+/**
+ * Persists a message.
+ * Throws if `content` is provided but is not a valid E2E-encrypted payload,
+ * ensuring the backend never stores plaintext chat messages.
+ */
 export function saveMessage(msg: Omit<Message, 'id' | 'createdAt'>): Message {
+  if (msg.content !== undefined && !isEncryptedMessage(msg.content)) {
+    throw new Error('Message content must be an E2E-encrypted payload (plaintext is not allowed)');
+  }
   const saved: Message = { ...msg, id: uuidv4(), createdAt: new Date().toISOString() };
   const list = messages.get(saved.conversationId) ?? [];
   list.push(saved);
@@ -66,6 +77,13 @@ export function attachWebSocketServer(server: Server): void {
           attachmentUrl?: string;
           attachmentType?: string;
         };
+
+        // Reject unencrypted content at the WebSocket layer
+        if (data.content !== undefined && !isEncryptedMessage(data.content)) {
+          ws.send(JSON.stringify({ error: 'Content must be E2E-encrypted before sending' }));
+          return;
+        }
+
         const conversationId = getConversationId(userId, data.recipientId);
         const msg = saveMessage({ conversationId, senderId: userId, ...data });
 
@@ -75,8 +93,12 @@ export function attachWebSocketServer(server: Server): void {
           recipientWs.send(JSON.stringify(msg));
         }
         ws.send(JSON.stringify(msg));
-      } catch {
-        ws.send(JSON.stringify({ error: 'Invalid message format' }));
+      } catch (err) {
+        ws.send(
+          JSON.stringify({
+            error: err instanceof Error ? err.message : 'Invalid message format',
+          }),
+        );
       }
     });
 

@@ -34,6 +34,11 @@ export interface User {
   authProvider: AuthProvider;
   isEmailVerified: boolean;
   lastLoginAt?: string;
+
+  /** Hex-encoded ECDH (P-256) public key for E2E-encrypted telemedicine chat. */
+  chatPublicKey?: string;
+  /** ISO timestamp of the last key rotation. */
+  chatPublicKeyUpdatedAt?: string;
 }
 
 /**
@@ -65,4 +70,6 @@ export interface UpdateUserInput {
   role?: UserRole;
   pets?: PetReference[];
   isEmailVerified?: boolean;
+  /** Hex-encoded ECDH public key used for E2E-encrypted telemedicine chat. */
+  chatPublicKey?: string;
 }

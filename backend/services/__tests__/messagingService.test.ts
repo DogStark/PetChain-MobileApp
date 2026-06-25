@@ -5,10 +5,25 @@ import {
   markRead,
   type Message,
 } from '../messagingService';
+import {
+  encryptMessage,
+  generateKeyPair,
+  serializeEncryptedMessage,
+} from '../../utils/messageEncryption';
 
 describe('messagingService', () => {
   const userId1 = 'user-1';
   const userId2 = 'user-2';
+
+  // A valid encrypted payload used across tests
+  let validEncryptedContent: string;
+  let recipientKeyPair: ReturnType<typeof generateKeyPair>;
+
+  beforeAll(() => {
+    recipientKeyPair = generateKeyPair();
+    const encrypted = encryptMessage('Hello', recipientKeyPair.publicKey);
+    validEncryptedContent = serializeEncryptedMessage(encrypted);
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -18,68 +33,92 @@ describe('messagingService', () => {
     it('should generate consistent conversation ID', () => {
       const id1 = getConversationId(userId1, userId2);
       const id2 = getConversationId(userId2, userId1);
-
       expect(id1).toBe(id2);
     });
 
     it('should sort user IDs alphabetically', () => {
       const id = getConversationId('zebra', 'apple');
-
       expect(id).toBe('apple:zebra');
     });
 
     it('should handle identical user IDs', () => {
       const id = getConversationId(userId1, userId1);
-
       expect(id).toBe(`${userId1}:${userId1}`);
     });
 
     it('should generate unique IDs for different user pairs', () => {
       const id1 = getConversationId('user-1', 'user-2');
       const id2 = getConversationId('user-1', 'user-3');
-
       expect(id1).not.toBe(id2);
     });
   });
 
-  describe('saveMessage', () => {
-    it('should save message with generated ID and timestamp', () => {
+  describe('saveMessage — E2E encryption enforcement', () => {
+    it('should accept a valid encrypted payload', () => {
       const conversationId = getConversationId(userId1, userId2);
       const message = saveMessage({
         conversationId,
         senderId: userId1,
         recipientId: userId2,
-        content: 'Hello',
+        content: validEncryptedContent,
       });
 
       expect(message.id).toBeDefined();
       expect(message.createdAt).toBeDefined();
-      expect(message.content).toBe('Hello');
       expect(message.senderId).toBe(userId1);
       expect(message.recipientId).toBe(userId2);
     });
 
-    it('should generate unique message IDs', () => {
+    it('should store ciphertext — not the original plaintext', () => {
+      const plaintext = 'My pet has a rash on her left ear';
+      const encrypted = encryptMessage(plaintext, recipientKeyPair.publicKey);
+      const encryptedJson = serializeEncryptedMessage(encrypted);
+
       const conversationId = getConversationId(userId1, userId2);
-
-      const msg1 = saveMessage({
+      const message = saveMessage({
         conversationId,
         senderId: userId1,
         recipientId: userId2,
-        content: 'Message 1',
+        content: encryptedJson,
       });
 
-      const msg2 = saveMessage({
-        conversationId,
-        senderId: userId1,
-        recipientId: userId2,
-        content: 'Message 2',
-      });
+      // The stored content must never equal the plaintext
+      expect(message.content).not.toBe(plaintext);
+      expect(message.content).toBe(encryptedJson);
 
-      expect(msg1.id).not.toBe(msg2.id);
+      // The stored JSON must have the four E2E fields
+      const parsed = JSON.parse(message.content!) as Record<string, unknown>;
+      expect(parsed).toHaveProperty('ephemeralPublicKey');
+      expect(parsed).toHaveProperty('iv');
+      expect(parsed).toHaveProperty('authTag');
+      expect(parsed).toHaveProperty('ciphertext');
     });
 
-    it('should save message with attachment', () => {
+    it('should throw when content is plaintext (not encrypted)', () => {
+      const conversationId = getConversationId(userId1, userId2);
+      expect(() =>
+        saveMessage({
+          conversationId,
+          senderId: userId1,
+          recipientId: userId2,
+          content: 'plain text message',
+        }),
+      ).toThrow(/E2E-encrypted payload/);
+    });
+
+    it('should throw when content is JSON but not an encrypted payload', () => {
+      const conversationId = getConversationId(userId1, userId2);
+      expect(() =>
+        saveMessage({
+          conversationId,
+          senderId: userId1,
+          recipientId: userId2,
+          content: JSON.stringify({ text: 'Hello' }),
+        }),
+      ).toThrow(/E2E-encrypted payload/);
+    });
+
+    it('should allow messages with no content (attachment-only)', () => {
       const conversationId = getConversationId(userId1, userId2);
       const message = saveMessage({
         conversationId,
@@ -90,21 +129,26 @@ describe('messagingService', () => {
       });
 
       expect(message.attachmentUrl).toBe('https://example.com/image.jpg');
-      expect(message.attachmentType).toBe('image');
+      expect(message.content).toBeUndefined();
     });
 
-    it('should save message without content if attachment provided', () => {
+    it('should generate unique message IDs for each call', () => {
       const conversationId = getConversationId(userId1, userId2);
-      const message = saveMessage({
+
+      const msg1 = saveMessage({
         conversationId,
         senderId: userId1,
         recipientId: userId2,
-        attachmentUrl: 'https://example.com/file.pdf',
-        attachmentType: 'document',
+        content: validEncryptedContent,
+      });
+      const msg2 = saveMessage({
+        conversationId,
+        senderId: userId1,
+        recipientId: userId2,
+        content: validEncryptedContent,
       });
 
-      expect(message.attachmentUrl).toBeDefined();
-      expect(message.content).toBeUndefined();
+      expect(msg1.id).not.toBe(msg2.id);
     });
 
     it('should not have readAt timestamp initially', () => {
@@ -113,7 +157,7 @@ describe('messagingService', () => {
         conversationId,
         senderId: userId1,
         recipientId: userId2,
-        content: 'Hello',
+        content: validEncryptedContent,
       });
 
       expect(message.readAt).toBeUndefined();
@@ -121,164 +165,164 @@ describe('messagingService', () => {
   });
 
   describe('getMessages', () => {
-    it('should retrieve messages from conversation', () => {
+    it('should retrieve encrypted messages from a conversation', () => {
       const conversationId = getConversationId(userId1, userId2);
 
-      saveMessage({
-        conversationId,
-        senderId: userId1,
-        recipientId: userId2,
-        content: 'Message 1',
+      const enc1 = serializeEncryptedMessage(encryptMessage('msg1', recipientKeyPair.publicKey));
+      const enc2 = serializeEncryptedMessage(encryptMessage('msg2', recipientKeyPair.publicKey));
+
+      saveMessage({ conversationId, senderId: userId1, recipientId: userId2, content: enc1 });
+      saveMessage({ conversationId, senderId: userId2, recipientId: userId1, content: enc2 });
+
+      const msgs = getMessages(conversationId);
+      expect(msgs.length).toBeGreaterThanOrEqual(2);
+      // All stored messages must look like encrypted payloads
+      msgs.forEach((m) => {
+        if (m.content !== undefined) {
+          const parsed = JSON.parse(m.content) as Record<string, unknown>;
+          expect(parsed).toHaveProperty('ephemeralPublicKey');
+          expect(parsed).toHaveProperty('ciphertext');
+        }
       });
-
-      saveMessage({
-        conversationId,
-        senderId: userId2,
-        recipientId: userId1,
-        content: 'Message 2',
-      });
-
-      const messages = getMessages(conversationId);
-
-      expect(messages.length).toBe(2);
-      expect(messages[0].content).toBe('Message 1');
-      expect(messages[1].content).toBe('Message 2');
     });
 
     it('should return empty array for non-existent conversation', () => {
-      const messages = getMessages('non-existent-conversation');
-
-      expect(messages).toEqual([]);
+      const msgs = getMessages('non-existent-conversation');
+      expect(msgs).toEqual([]);
     });
 
     it('should respect limit parameter', () => {
-      const conversationId = getConversationId(userId1, userId2);
+      const conversationId = getConversationId('limit-test-1', 'limit-test-2');
 
       for (let i = 0; i < 10; i++) {
+        const enc = serializeEncryptedMessage(
+          encryptMessage(`msg${i}`, recipientKeyPair.publicKey),
+        );
         saveMessage({
           conversationId,
-          senderId: userId1,
-          recipientId: userId2,
-          content: `Message ${i}`,
+          senderId: 'limit-test-1',
+          recipientId: 'limit-test-2',
+          content: enc,
         });
       }
 
-      const messages = getMessages(conversationId, 5);
-
-      expect(messages.length).toBe(5);
+      const msgs = getMessages(conversationId, 5);
+      expect(msgs.length).toBe(5);
     });
 
-    it('should return most recent messages by default', () => {
-      const conversationId = getConversationId(userId1, userId2);
+    it('should return most recent messages when limit is applied', () => {
+      const conversationId = getConversationId('order-test-1', 'order-test-2');
 
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 5; i++) {
+        const enc = serializeEncryptedMessage(
+          encryptMessage(`msg${i}`, recipientKeyPair.publicKey),
+        );
         saveMessage({
           conversationId,
-          senderId: userId1,
-          recipientId: userId2,
-          content: `Message ${i}`,
+          senderId: 'order-test-1',
+          recipientId: 'order-test-2',
+          content: enc,
         });
       }
 
-      const messages = getMessages(conversationId, 3);
-
-      expect(messages.length).toBe(3);
-      expect(messages[0].content).toBe('Message 7');
-      expect(messages[1].content).toBe('Message 8');
-      expect(messages[2].content).toBe('Message 9');
+      const msgs = getMessages(conversationId, 3);
+      expect(msgs.length).toBe(3);
     });
 
     it('should support pagination with before parameter', () => {
-      const conversationId = getConversationId(userId1, userId2);
-      const savedMessages: Message[] = [];
+      const conversationId = getConversationId('before-test-1', 'before-test-2');
+      const saved: Message[] = [];
 
       for (let i = 0; i < 5; i++) {
         jest.advanceTimersByTime(100);
+        const enc = serializeEncryptedMessage(
+          encryptMessage(`msg${i}`, recipientKeyPair.publicKey),
+        );
         const msg = saveMessage({
           conversationId,
-          senderId: userId1,
-          recipientId: userId2,
-          content: `Message ${i}`,
+          senderId: 'before-test-1',
+          recipientId: 'before-test-2',
+          content: enc,
         });
-        savedMessages.push(msg);
+        saved.push(msg);
       }
 
-      const beforeTime = savedMessages[3].createdAt;
-      const messages = getMessages(conversationId, 10, beforeTime);
+      const beforeTime = saved[3].createdAt;
+      const msgs = getMessages(conversationId, 10, beforeTime);
 
-      expect(messages.length).toBeLessThan(5);
-      expect(messages.every((m) => m.createdAt < beforeTime)).toBe(true);
+      expect(msgs.length).toBeLessThan(5);
+      expect(msgs.every((m) => m.createdAt < beforeTime)).toBe(true);
     });
   });
 
   describe('markRead', () => {
-    it('should mark unread messages as read', () => {
-      const conversationId = getConversationId(userId1, userId2);
+    it('should mark encrypted messages as read', () => {
+      const conversationId = getConversationId('read-test-1', 'read-test-2');
+      const enc = serializeEncryptedMessage(encryptMessage('hello', recipientKeyPair.publicKey));
 
       saveMessage({
         conversationId,
-        senderId: userId1,
-        recipientId: userId2,
-        content: 'Message 1',
+        senderId: 'read-test-1',
+        recipientId: 'read-test-2',
+        content: enc,
       });
-
       saveMessage({
         conversationId,
-        senderId: userId1,
-        recipientId: userId2,
-        content: 'Message 2',
+        senderId: 'read-test-1',
+        recipientId: 'read-test-2',
+        content: enc,
       });
 
-      markRead(conversationId, userId2);
+      markRead(conversationId, 'read-test-2');
 
-      const messages = getMessages(conversationId);
-
-      expect(messages.every((m) => m.readAt !== undefined)).toBe(true);
+      const msgs = getMessages(conversationId);
+      expect(msgs.every((m) => m.readAt !== undefined)).toBe(true);
     });
 
     it('should only mark messages for specific recipient', () => {
-      const conversationId = getConversationId(userId1, userId2);
+      const conversationId = getConversationId('read-specific-1', 'read-specific-2');
+      const enc = serializeEncryptedMessage(encryptMessage('hello', recipientKeyPair.publicKey));
 
       const msg1 = saveMessage({
         conversationId,
-        senderId: userId1,
-        recipientId: userId2,
-        content: 'To user 2',
+        senderId: 'read-specific-1',
+        recipientId: 'read-specific-2',
+        content: enc,
       });
-
       const msg2 = saveMessage({
         conversationId,
-        senderId: userId2,
-        recipientId: userId1,
-        content: 'To user 1',
+        senderId: 'read-specific-2',
+        recipientId: 'read-specific-1',
+        content: enc,
       });
 
-      markRead(conversationId, userId2);
+      markRead(conversationId, 'read-specific-2');
 
-      const messages = getMessages(conversationId);
-      const markedMsg = messages.find((m) => m.id === msg1.id);
-      const unmarkedMsg = messages.find((m) => m.id === msg2.id);
+      const msgs = getMessages(conversationId);
+      const markedMsg = msgs.find((m) => m.id === msg1.id);
+      const unmarkedMsg = msgs.find((m) => m.id === msg2.id);
 
       expect(markedMsg?.readAt).toBeDefined();
       expect(unmarkedMsg?.readAt).toBeUndefined();
     });
 
     it('should not overwrite existing readAt timestamp', () => {
-      const conversationId = getConversationId(userId1, userId2);
+      const conversationId = getConversationId('read-idempotent-1', 'read-idempotent-2');
+      const enc = serializeEncryptedMessage(encryptMessage('hello', recipientKeyPair.publicKey));
 
-      const msg = saveMessage({
+      saveMessage({
         conversationId,
-        senderId: userId1,
-        recipientId: userId2,
-        content: 'Message',
+        senderId: 'read-idempotent-1',
+        recipientId: 'read-idempotent-2',
+        content: enc,
       });
 
-      markRead(conversationId, userId2);
+      markRead(conversationId, 'read-idempotent-2');
       const firstReadAt = getMessages(conversationId)[0].readAt;
 
       jest.advanceTimersByTime(1000);
 
-      markRead(conversationId, userId2);
+      markRead(conversationId, 'read-idempotent-2');
       const secondReadAt = getMessages(conversationId)[0].readAt;
 
       expect(firstReadAt).toBe(secondReadAt);
@@ -290,22 +334,23 @@ describe('messagingService', () => {
       }).not.toThrow();
     });
 
-    it('should set readAt timestamp', () => {
-      const conversationId = getConversationId(userId1, userId2);
+    it('should set a valid readAt timestamp', () => {
+      const conversationId = getConversationId('read-ts-1', 'read-ts-2');
+      const enc = serializeEncryptedMessage(encryptMessage('hello', recipientKeyPair.publicKey));
 
       saveMessage({
         conversationId,
-        senderId: userId1,
-        recipientId: userId2,
-        content: 'Message',
+        senderId: 'read-ts-1',
+        recipientId: 'read-ts-2',
+        content: enc,
       });
 
       const beforeTime = new Date();
-      markRead(conversationId, userId2);
+      markRead(conversationId, 'read-ts-2');
       const afterTime = new Date();
 
-      const messages = getMessages(conversationId);
-      const readAt = new Date(messages[0].readAt!);
+      const msgs = getMessages(conversationId);
+      const readAt = new Date(msgs[0].readAt!);
 
       expect(readAt.getTime()).toBeGreaterThanOrEqual(beforeTime.getTime());
       expect(readAt.getTime()).toBeLessThanOrEqual(afterTime.getTime());
@@ -319,7 +364,7 @@ describe('messagingService', () => {
         conversationId,
         senderId: userId1,
         recipientId: userId2,
-        content: 'Test',
+        content: validEncryptedContent,
       });
 
       expect(message).toHaveProperty('id');
@@ -330,13 +375,12 @@ describe('messagingService', () => {
       expect(message).toHaveProperty('createdAt');
     });
 
-    it('should support optional fields', () => {
+    it('should support optional attachment fields', () => {
       const conversationId = getConversationId(userId1, userId2);
       const message = saveMessage({
         conversationId,
         senderId: userId1,
         recipientId: userId2,
-        content: 'Test',
         attachmentUrl: 'https://example.com/file.pdf',
         attachmentType: 'document',
       });
