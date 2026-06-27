@@ -228,7 +228,14 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
   };
 
   const renderReminder = ({ item }: { item: VaccinationReminder }) => (
-    <TouchableOpacity style={styles.card} onPress={() => openDetail(item)} activeOpacity={0.85}>
+    <TouchableOpacity
+      style={styles.card}
+      onPress={() => openDetail(item)}
+      activeOpacity={0.85}
+      accessibilityRole="button"
+      accessibilityLabel={`${item.vaccineName}, ${STATUS_LABELS[item.status]}`}
+      accessibilityHint="Opens vaccination details and reminder management"
+    >
       <View style={styles.cardHeader}>
         <Text style={styles.vaccineName}>{item.vaccineName}</Text>
         <Text style={[styles.status, styles[item.status]]}>{STATUS_LABELS[item.status]}</Text>
@@ -262,6 +269,9 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
           e.stopPropagation();
           openAdministered(item);
         }}
+        accessibilityRole="button"
+        accessibilityLabel={`Mark ${item.vaccineName} as administered`}
+        accessibilityHint="Opens a form to record the date, lot number, and manufacturer"
       >
         <Text style={styles.primaryButtonText}>Mark administered</Text>
       </TouchableOpacity>
@@ -270,7 +280,9 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Vaccination Schedule</Text>
+      <Text style={styles.title} accessibilityRole="header">
+        Vaccination Schedule
+      </Text>
       <Text style={styles.subtitle}>
         Track age-specific dog and cat vaccines, reminder dates, and vet-verified blockchain
         records.
@@ -282,14 +294,25 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
           placeholder="Pet ID"
           style={styles.petInput}
           autoCapitalize="none"
+          accessibilityLabel="Pet ID"
+          accessibilityHint="Enter the pet's identifier to load their vaccination schedule"
         />
-        <TouchableOpacity style={styles.secondaryButton} onPress={() => void loadReminders()}>
+        <TouchableOpacity
+          style={styles.secondaryButton}
+          onPress={() => void loadReminders()}
+          accessibilityRole="button"
+          accessibilityLabel="Load vaccinations"
+          accessibilityHint="Loads vaccination reminders for the entered pet ID"
+        >
           <Text style={styles.secondaryButtonText}>{loading ? 'Loading…' : 'Load'}</Text>
         </TouchableOpacity>
       </View>
       <TouchableOpacity
         style={styles.certificateButton}
         onPress={() => void handleExportCertificate()}
+        accessibilityRole="button"
+        accessibilityLabel="Export vaccination certificate"
+        accessibilityHint="Generates a PDF certificate and anchors it to the blockchain"
       >
         <Text style={styles.certificateButtonText}>Export certificate</Text>
       </TouchableOpacity>
@@ -333,12 +356,18 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
               <TouchableOpacity
                 style={styles.secondaryButton}
                 onPress={() => setModalVisible(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel recording"
+                accessibilityHint="Closes the form without saving"
               >
                 <Text style={styles.secondaryButtonText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.primaryButton}
                 onPress={() => void saveAdministered()}
+                accessibilityRole="button"
+                accessibilityLabel="Save and anchor vaccination"
+                accessibilityHint="Saves the vaccination record and anchors it to the blockchain"
               >
                 <Text style={styles.primaryButtonText}>Save & anchor</Text>
               </TouchableOpacity>
@@ -388,16 +417,29 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
               <TouchableOpacity
                 style={styles.secondaryButton}
                 onPress={() => setDetailVisible(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close details"
+                accessibilityHint="Closes vaccination details"
               >
                 <Text style={styles.secondaryButtonText}>Close</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.dismissButton} onPress={() => void dismissReminder()}>
+              <TouchableOpacity
+                style={styles.dismissButton}
+                onPress={() => void dismissReminder()}
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss reminder"
+                accessibilityHint="Cancels all scheduled notifications for this vaccination"
+              >
                 <Text style={styles.dismissButtonText}>Dismiss</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.primaryButton, rescheduling && styles.buttonDisabled]}
                 onPress={() => void rescheduleReminder()}
                 disabled={rescheduling}
+                accessibilityRole="button"
+                accessibilityLabel="Reschedule reminder"
+                accessibilityHint="Saves the new due date and updates notifications"
+                accessibilityState={{ disabled: rescheduling, busy: rescheduling }}
               >
                 <Text style={styles.primaryButtonText}>
                   {rescheduling ? 'Saving…' : 'Reschedule'}

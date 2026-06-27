@@ -39,6 +39,7 @@ import {
 import { scheduleMedicationReminder } from '../services/notificationService';
 import { formatLocalDate, formatLocalTime } from '../utils/dateLocale';
 import { useSecureScreen } from '../utils/secureScreen';
+import { useFontScale } from '../utils/useFontScale';
 
 type Tab = 'list' | 'daily' | 'weekly';
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -74,6 +75,9 @@ function weekDates(): Date[] {
 
 const MedicationScreen: React.FC = () => {
   useSecureScreen();
+
+  // ─── Dynamic font sizes (capped at 1.5× to prevent layout breakage) ────────
+  const fs = useFontScale();
 
   const [tab, setTab] = useState<Tab>('list');
   const [medications, setMedications] = useState<Medication[]>([]);
@@ -295,89 +299,121 @@ const MedicationScreen: React.FC = () => {
       return (
         <View style={styles.card}>
           <View style={styles.cardHeader}>
-            <Text style={styles.medName}>{item.name}</Text>
+            <Text style={[styles.medName, { fontSize: fs(16) }]}>{item.name}</Text>
             <View style={styles.cardActions}>
               {item.pendingApproval && (
                 <View style={styles.pendingVetReviewBadge}>
-                  <Text style={styles.pendingVetReviewText}>⏳ Pending vet review</Text>
+                  <Text style={[styles.pendingVetReviewText, { fontSize: fs(11) }]}>
+                    ⏳ Pending vet review
+                  </Text>
                 </View>
               )}
               {refillStatus !== 'unknown' && (
                 <View style={refillBadgeStyle}>
-                  <Text style={styles.refillBadgeText}>{refillBadgeLabel[refillStatus]}</Text>
+                  <Text style={[styles.refillBadgeText, { fontSize: fs(11) }]}>
+                    {refillBadgeLabel[refillStatus]}
+                  </Text>
                 </View>
               )}
-              <TouchableOpacity onPress={() => openEdit(item)} style={styles.actionBtn}>
-                <Text style={styles.actionBtnText}>Edit</Text>
+              <TouchableOpacity
+                onPress={() => openEdit(item)}
+                style={styles.actionBtn}
+                accessibilityRole="button"
+                accessibilityLabel={`Edit ${item.name}`}
+                accessibilityHint="Opens edit form for this medication"
+              >
+                <Text style={[styles.actionBtnText, { fontSize: fs(12) }]}>Edit</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={() => handleDelete(item.id)}
                 style={[styles.actionBtn, styles.deleteBtn]}
+                accessibilityRole="button"
+                accessibilityLabel={`Delete ${item.name}`}
+                accessibilityHint="Permanently removes this medication"
               >
-                <Text style={[styles.actionBtnText, styles.deleteBtnText]}>Delete</Text>
+                <Text style={[styles.actionBtnText, styles.deleteBtnText, { fontSize: fs(12) }]}>
+                  Delete
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
-          <Text style={styles.medDetail}>
+          <Text style={[styles.medDetail, { fontSize: fs(13) }]}>
             {item.dosage} · every {item.frequency}h
           </Text>
-          <Text style={styles.medDetail}>Started: {formatLocalDate(item.startDate)}</Text>
-          <Text style={styles.medDetail}>Pet ID: {item.petId}</Text>
+          <Text style={[styles.medDetail, { fontSize: fs(13) }]}>
+            Started: {formatLocalDate(item.startDate)}
+          </Text>
+          <Text style={[styles.medDetail, { fontSize: fs(13) }]}>Pet ID: {item.petId}</Text>
           {item.instructions ? (
-            <Text style={styles.medDetail}>Instructions: {item.instructions}</Text>
+            <Text style={[styles.medDetail, { fontSize: fs(13) }]}>
+              Instructions: {item.instructions}
+            </Text>
           ) : null}
           {item.prescriberInfo?.name ? (
-            <Text style={styles.medDetail}>
+            <Text style={[styles.medDetail, { fontSize: fs(13) }]}>
               Prescriber: {item.prescriberInfo.name}
               {item.prescriberInfo.contact ? ` • ${item.prescriberInfo.contact}` : ''}
             </Text>
           ) : null}
           {item.pharmacyInfo?.name ? (
-            <Text style={styles.medDetail}>
+            <Text style={[styles.medDetail, { fontSize: fs(13) }]}>
               Pharmacy: {item.pharmacyInfo.name}
               {item.pharmacyInfo.phone ? ` • ${item.pharmacyInfo.phone}` : ''}
             </Text>
           ) : null}
           {item.endDate ? (
-            <Text style={styles.medDetail}>Ends: {formatLocalDate(item.endDate)}</Text>
+            <Text style={[styles.medDetail, { fontSize: fs(13) }]}>
+              Ends: {formatLocalDate(item.endDate)}
+            </Text>
           ) : null}
           {supply !== undefined && (
-            <Text style={[styles.medDetail, lowStock && styles.lowStock]}>
+            <Text style={[styles.medDetail, lowStock && styles.lowStock, { fontSize: fs(13) }]}>
               Supply remaining: {supply} dose{supply !== 1 ? 's' : ''}
               {lowStock ? ' ⚠ Low stock' : ''}
             </Text>
           )}
           {item.estimatedRunOutDate ? (
-            <Text style={styles.medDetail}>
+            <Text style={[styles.medDetail, { fontSize: fs(13) }]}>
               Est. run-out: {formatLocalDate(item.estimatedRunOutDate)}
             </Text>
           ) : null}
           {item.lastRefillDate ? (
-            <Text style={styles.medDetail}>
+            <Text style={[styles.medDetail, { fontSize: fs(13) }]}>
               Last refilled: {formatLocalDate(item.lastRefillDate)}
             </Text>
           ) : null}
           {item.refillDate ? (
-            <Text style={styles.medDetail}>Refill by: {formatLocalDate(item.refillDate)}</Text>
+            <Text style={[styles.medDetail, { fontSize: fs(13) }]}>
+              Refill by: {formatLocalDate(item.refillDate)}
+            </Text>
           ) : null}
           <View style={styles.doseActions}>
             <TouchableOpacity
               style={styles.logBtn}
               onPress={() => void handleLogDose(item.id, false)}
+              accessibilityRole="button"
+              accessibilityLabel={`Log dose for ${item.name}`}
+              accessibilityHint="Records that this dose was taken now"
             >
-              <Text style={styles.logBtnText}>✓ Log Dose</Text>
+              <Text style={[styles.logBtnText, { fontSize: fs(13) }]}>✓ Log Dose</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.logBtn, styles.skipBtn]}
               onPress={() => void handleLogDose(item.id, true)}
+              accessibilityRole="button"
+              accessibilityLabel={`Skip dose for ${item.name}`}
+              accessibilityHint="Records that this dose was intentionally skipped"
             >
-              <Text style={styles.logBtnText}>✗ Skip</Text>
+              <Text style={[styles.logBtnText, { fontSize: fs(13) }]}>✗ Skip</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.logBtn, styles.refillBtn]}
               onPress={() => openRefillModal(item)}
+              accessibilityRole="button"
+              accessibilityLabel={`Refill ${item.name}`}
+              accessibilityHint="Opens refill form to update supply count"
             >
-              <Text style={styles.logBtnText}>+ Refill</Text>
+              <Text style={[styles.logBtnText, { fontSize: fs(13) }]}>+ Refill</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -398,9 +434,9 @@ const MedicationScreen: React.FC = () => {
         slots.sort((a, b) => a.time.getTime() - b.time.getTime());
         return (
           <View key={date.toDateString()} style={styles.dayBlock}>
-            <Text style={styles.dayLabel}>{label}</Text>
+            <Text style={[styles.dayLabel, { fontSize: fs(15) }]}>{label}</Text>
             {slots.length === 0 ? (
-              <Text style={styles.emptyText}>No doses scheduled</Text>
+              <Text style={[styles.emptyText, { fontSize: fs(14) }]}>No doses scheduled</Text>
             ) : (
               slots.map(({ med, time }) => {
                 const taken = isDoseTaken(med.id, time);
@@ -409,11 +445,13 @@ const MedicationScreen: React.FC = () => {
                     key={`${med.id}-${time.toISOString()}`}
                     style={[styles.slotRow, taken && styles.slotTaken]}
                   >
-                    <Text style={styles.slotTime}>{formatLocalTime(time)}</Text>
-                    <Text style={styles.slotName}>
+                    <Text style={[styles.slotTime, { fontSize: fs(13) }]}>
+                      {formatLocalTime(time)}
+                    </Text>
+                    <Text style={[styles.slotName, { fontSize: fs(13) }]}>
                       {med.name} · {med.dosage}
                     </Text>
-                    {taken && <Text style={styles.takenBadge}>✓</Text>}
+                    {taken && <Text style={[styles.takenBadge, { fontSize: fs(16) }]}>✓</Text>}
                   </View>
                 );
               })
@@ -428,7 +466,9 @@ const MedicationScreen: React.FC = () => {
     <Modal visible={modalVisible} animationType="slide" transparent onRequestClose={closeModal}>
       <View style={styles.modalOverlay}>
         <ScrollView style={styles.modalContent}>
-          <Text style={styles.modalTitle}>{editingMed ? 'Edit Medication' : 'Add Medication'}</Text>
+          <Text style={[styles.modalTitle, { fontSize: fs(18) }]}>
+            {editingMed ? 'Edit Medication' : 'Add Medication'}
+          </Text>
           {[
             { placeholder: 'Medication name *', key: 'name' as const },
             { placeholder: 'Dosage (e.g. 5mg) *', key: 'dosage' as const },
@@ -589,18 +629,32 @@ const MedicationScreen: React.FC = () => {
             onChangeText={(v) => setForm((f) => ({ ...f, notes: v }))}
           />
           <View style={styles.modalActions}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={closeModal}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={closeModal}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
+              accessibilityHint="Closes the form without saving"
+            >
+              <Text style={[styles.cancelBtnText, { fontSize: fs(14) }]}>Cancel</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.saveBtn} onPress={() => void handleSave()}>
-              <Text style={styles.saveBtnText}>Save</Text>
+            <TouchableOpacity
+              style={styles.saveBtn}
+              onPress={() => void handleSave()}
+              accessibilityRole="button"
+              accessibilityLabel="Save medication"
+              accessibilityHint="Saves the medication and returns to the list"
+            >
+              <Text style={[styles.saveBtnText, { fontSize: fs(14) }]}>Save</Text>
             </TouchableOpacity>
           </View>
 
           {/* Drug interaction warning */}
           {interactionResult?.hasInteractions && (
             <View style={styles.interactionWarning}>
-              <Text style={styles.interactionTitle}>⚠️ Drug Interaction Detected</Text>
+              <Text style={[styles.interactionTitle, { fontSize: fs(15) }]}>
+                ⚠️ Drug Interaction Detected
+              </Text>
               {(
                 ['contraindicated', 'severe', 'moderate', 'mild'] as InteractionSeverity[]
               ).map((severity) => {
@@ -702,9 +756,9 @@ const MedicationScreen: React.FC = () => {
     >
       <View style={styles.modalOverlay}>
         <View style={[styles.modalContent, { paddingBottom: 30 }]}>
-          <Text style={styles.modalTitle}>Mark Refill Complete</Text>
+          <Text style={[styles.modalTitle, { fontSize: fs(18) }]}>Mark Refill Complete</Text>
           {refillTargetMed && (
-            <Text style={[styles.medDetail, { marginBottom: 12 }]}>
+            <Text style={[styles.medDetail, { marginBottom: 12, fontSize: fs(13) }]}>
               {refillTargetMed.name} — enter new supply count
             </Text>
           )}
@@ -715,13 +769,27 @@ const MedicationScreen: React.FC = () => {
             value={newSupplyInput}
             onChangeText={setNewSupplyInput}
             autoFocus
+            accessibilityLabel="New supply count"
+            accessibilityHint="Enter the number of doses or pills received in the refill"
           />
           <View style={styles.modalActions}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => setRefillModalVisible(false)}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => setRefillModalVisible(false)}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel refill"
+              accessibilityHint="Closes the refill form without saving"
+            >
+              <Text style={[styles.cancelBtnText, { fontSize: fs(14) }]}>Cancel</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.saveBtn} onPress={() => void handleRefillComplete()}>
-              <Text style={styles.saveBtnText}>Confirm Refill</Text>
+            <TouchableOpacity
+              style={styles.saveBtn}
+              onPress={() => void handleRefillComplete()}
+              accessibilityRole="button"
+              accessibilityLabel="Confirm refill"
+              accessibilityHint="Saves the new supply count and updates the medication record"
+            >
+              <Text style={[styles.saveBtnText, { fontSize: fs(14) }]}>Confirm Refill</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -732,9 +800,15 @@ const MedicationScreen: React.FC = () => {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Medications</Text>
-        <TouchableOpacity style={styles.addBtn} onPress={openAdd}>
-          <Text style={styles.addBtnText}>+ Add</Text>
+        <Text style={[styles.headerTitle, { fontSize: fs(20) }]}>Medications</Text>
+        <TouchableOpacity
+          style={styles.addBtn}
+          onPress={openAdd}
+          accessibilityRole="button"
+          accessibilityLabel="Add medication"
+          accessibilityHint="Opens form to add a new medication"
+        >
+          <Text style={[styles.addBtnText, { fontSize: fs(14) }]}>+ Add</Text>
         </TouchableOpacity>
       </View>
       <View style={styles.tabs}>
@@ -743,8 +817,11 @@ const MedicationScreen: React.FC = () => {
             key={t}
             style={[styles.tab, tab === t && styles.activeTab]}
             onPress={() => setTab(t)}
+            accessibilityRole="tab"
+            accessibilityLabel={t.charAt(0).toUpperCase() + t.slice(1)}
+            accessibilityState={{ selected: tab === t }}
           >
-            <Text style={[styles.tabText, tab === t && styles.activeTabText]}>
+            <Text style={[styles.tabText, tab === t && styles.activeTabText, { fontSize: fs(14) }]}>
               {t.charAt(0).toUpperCase() + t.slice(1)}
             </Text>
           </TouchableOpacity>
@@ -762,7 +839,9 @@ const MedicationScreen: React.FC = () => {
           keyExtractor={(item) => item.id}
           renderItem={renderMedItem}
           contentContainerStyle={styles.listContent}
-          ListEmptyComponent={<Text style={styles.emptyText}>No medications added yet.</Text>}
+          ListEmptyComponent={
+            <Text style={[styles.emptyText, { fontSize: fs(14) }]}>No medications added yet.</Text>
+          }
           removeClippedSubviews
           maxToRenderPerBatch={10}
           windowSize={5}

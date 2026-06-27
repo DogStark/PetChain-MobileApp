@@ -6,6 +6,7 @@ const reactPlugin = require('eslint-plugin-react');
 const reactHooksPlugin = require('eslint-plugin-react-hooks');
 const importPlugin = require('eslint-plugin-import');
 const prettierPlugin = require('eslint-plugin-prettier');
+const noTouchableWithoutAccessibleText = require('./eslint-rules/no-touchable-without-accessible-text');
 let a11yPlugin;
 try {
   a11yPlugin = require('eslint-plugin-react-native-a11y');
@@ -48,6 +49,11 @@ module.exports = tseslint.config(
       'react-hooks': reactHooksPlugin,
       import: importPlugin,
       prettier: prettierPlugin,
+      'local-a11y': {
+        rules: {
+          'no-touchable-without-accessible-text': noTouchableWithoutAccessibleText,
+        },
+      },
       ...(a11yPlugin ? { 'react-native-a11y': a11yPlugin } : {}),
     },
     languageOptions: {
@@ -101,6 +107,11 @@ module.exports = tseslint.config(
       eqeqeq: ['error', 'always', { null: 'ignore' }],
       'prefer-const': 'error',
       'no-var': 'error',
+      // ── Accessibility ──────────────────────────────────────────────────────
+      // Warn whenever a TouchableOpacity/Pressable has no accessible text.
+      // This catches icon-only buttons that screen readers cannot describe.
+      // Upgrade to 'error' once full compliance is confirmed.
+      'local-a11y/no-touchable-without-accessible-text': 'warn',
       ...(a11yPlugin
         ? {
             'react-native-a11y/has-accessibility-props': 'error',

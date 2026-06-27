@@ -323,7 +323,13 @@ const ProfileScreen: React.FC = () => {
         onChangeText={(value) => setPref('reminderLeadTimeMinutes', Number(value) || 60)}
       />
 
-      <TouchableOpacity style={styles.saveButton} onPress={save}>
+      <TouchableOpacity
+        style={styles.saveButton}
+        onPress={save}
+        accessibilityRole="button"
+        accessibilityLabel="Save profile"
+        accessibilityHint="Saves your profile information"
+      >
         <Text style={styles.saveButtonText}>Save Profile</Text>
       </TouchableOpacity>
 
@@ -337,6 +343,9 @@ const ProfileScreen: React.FC = () => {
           <TouchableOpacity
             style={styles.smallButton}
             onPress={() => void handleShareReferralCode()}
+            accessibilityRole="button"
+            accessibilityLabel="Share referral code"
+            accessibilityHint="Shares your referral code so friends can join PetChain"
           >
             <Text style={styles.smallButtonText}>Share</Text>
           </TouchableOpacity>
@@ -360,6 +369,9 @@ const ProfileScreen: React.FC = () => {
           style={styles.actionButton}
           onPress={() => void handleExportBackup()}
           disabled={backupBusy}
+          accessibilityRole="button"
+          accessibilityLabel="Export backup"
+          accessibilityHint="Exports all your data as a JSON file you can save or share"
         >
           <Text style={styles.actionButtonText}>Export Backup</Text>
         </TouchableOpacity>
@@ -367,6 +379,9 @@ const ProfileScreen: React.FC = () => {
           style={styles.actionButtonSecondary}
           onPress={() => void handleCloudBackup()}
           disabled={backupBusy}
+          accessibilityRole="button"
+          accessibilityLabel="Cloud backup"
+          accessibilityHint="Saves your data to cloud storage"
         >
           <Text style={styles.actionButtonText}>Cloud Backup</Text>
         </TouchableOpacity>
@@ -374,6 +389,9 @@ const ProfileScreen: React.FC = () => {
           style={styles.actionButtonSecondary}
           onPress={() => void handleRestoreCloudBackup()}
           disabled={backupBusy}
+          accessibilityRole="button"
+          accessibilityLabel="Restore cloud backup"
+          accessibilityHint="Restores your data from the most recent cloud backup"
         >
           <Text style={styles.actionButtonText}>Restore Cloud Backup</Text>
         </TouchableOpacity>
@@ -392,6 +410,9 @@ const ProfileScreen: React.FC = () => {
           style={styles.actionButtonSecondary}
           onPress={() => void handleRestoreBackup()}
           disabled={backupBusy}
+          accessibilityRole="button"
+          accessibilityLabel="Restore pasted backup"
+          accessibilityHint="Restores your data from the JSON pasted in the text field above"
         >
           <Text style={styles.actionButtonText}>Restore Pasted Backup</Text>
         </TouchableOpacity>

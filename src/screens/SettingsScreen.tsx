@@ -98,6 +98,10 @@ const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ visible, emai
             style={[styles.btn, loading && styles.btnDisabled]}
             onPress={() => void handleSend()}
             disabled={loading}
+            accessibilityRole="button"
+            accessibilityLabel={t('changePassword.sendResetLink')}
+            accessibilityHint="Sends a password reset link to your registered email address"
+            accessibilityState={{ disabled: loading, busy: loading }}
           >
             {loading ? (
               <ActivityIndicator color="#fff" />
@@ -106,7 +110,13 @@ const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ visible, emai
             )}
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
+          <TouchableOpacity
+            style={styles.cancelBtn}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel={t('common.cancel')}
+            accessibilityHint="Closes the dialog without sending a reset link"
+          >
             <Text style={[styles.cancelText, { color: colors.secondaryText }]}>
               {t('common.cancel')}
             </Text>
@@ -528,6 +538,10 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
           style={[styles.btn, profileSaving && styles.btnDisabled]}
           onPress={() => void handleSaveProfile()}
           disabled={profileSaving}
+          accessibilityRole="button"
+          accessibilityLabel={t('settings.saveProfile')}
+          accessibilityHint="Saves your profile details including name, email, address, and emergency contact"
+          accessibilityState={{ disabled: profileSaving, busy: profileSaving }}
         >
           {profileSaving ? (
             <ActivityIndicator color="#fff" />
@@ -572,7 +586,13 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
       {/* ── Security Settings ── */}
       <SectionHeader title={t('settings.security')} />
       <View style={cardStyle}>
-        <TouchableOpacity style={styles.row} onPress={() => setShowChangePassword(true)}>
+        <TouchableOpacity
+          style={styles.row}
+          onPress={() => setShowChangePassword(true)}
+          accessibilityRole="button"
+          accessibilityLabel={t('settings.changePassword')}
+          accessibilityHint="Sends a password reset link to your email"
+        >
           <Text style={[styles.rowLabel, { color: colors.text }]}>
             {t('settings.changePassword')}
           </Text>
@@ -610,6 +630,14 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
               style={styles.row}
               onPress={() => void setThemeMode(option)}
               accessibilityRole="radio"
+              accessibilityLabel={
+                option === 'system'
+                  ? t('settings.themeSystem', 'Follow system')
+                  : option === 'light'
+                    ? t('settings.themeLight', 'Light')
+                    : t('settings.themeDark', 'Dark')
+              }
+              accessibilityHint="Sets the app colour theme"
               accessibilityState={{ checked: themeMode === option }}
             >
               <Text style={[styles.rowLabel, { color: colors.text }]}>
@@ -635,14 +663,26 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
       {/* ── Privacy & Data ── */}
       <SectionHeader title={t('settings.privacyData', 'Privacy & Data')} />
       <View style={cardStyle}>
-        <TouchableOpacity style={styles.row} onPress={() => void handleRequestDataExport()}>
+        <TouchableOpacity
+          style={styles.row}
+          onPress={() => void handleRequestDataExport()}
+          accessibilityRole="button"
+          accessibilityLabel={t('settings.exportData', 'Export My Data')}
+          accessibilityHint="Queues a full data export; you will receive a download link by email"
+        >
           <Text style={[styles.rowLabel, { color: colors.text }]}>
             {t('settings.exportData', 'Export My Data')}
           </Text>
           <Text style={[styles.chevron, { color: colors.placeholder }]}>›</Text>
         </TouchableOpacity>
         <RowSeparator />
-        <TouchableOpacity style={styles.row} onPress={() => void Linking.openURL(PRIVACY_URL)}>
+        <TouchableOpacity
+          style={styles.row}
+          onPress={() => void Linking.openURL(PRIVACY_URL)}
+          accessibilityRole="link"
+          accessibilityLabel={t('settings.privacyPolicy')}
+          accessibilityHint="Opens the PetChain privacy policy in your browser"
+        >
           <Text style={[styles.rowLabel, { color: colors.text }]}>
             {t('settings.privacyPolicy')}
           </Text>
@@ -663,7 +703,13 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
           <Text style={[styles.rowValue, { color: colors.secondaryText }]}>{BUILD_NUMBER}</Text>
         </View>
         <RowSeparator />
-        <TouchableOpacity style={styles.row} onPress={() => void Linking.openURL(TERMS_URL)}>
+        <TouchableOpacity
+          style={styles.row}
+          onPress={() => void Linking.openURL(TERMS_URL)}
+          accessibilityRole="link"
+          accessibilityLabel={t('settings.termsOfService')}
+          accessibilityHint="Opens the PetChain terms of service in your browser"
+        >
           <Text style={[styles.rowLabel, { color: colors.text }]}>
             {t('settings.termsOfService')}
           </Text>
@@ -676,6 +722,10 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
         style={[styles.logoutBtn, loggingOut && styles.btnDisabled]}
         onPress={handleLogout}
         disabled={loggingOut}
+        accessibilityRole="button"
+        accessibilityLabel={t('common.logout')}
+        accessibilityHint="Signs you out and returns to the login screen"
+        accessibilityState={{ disabled: loggingOut, busy: loggingOut }}
       >
         {loggingOut ? (
           <ActivityIndicator color="#d32f2f" />

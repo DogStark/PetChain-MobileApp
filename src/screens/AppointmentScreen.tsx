@@ -333,7 +333,13 @@ const AppointmentScreen: React.FC = () => {
 
   const renderItem = useCallback(
     ({ item }: { item: Appointment }) => (
-      <TouchableOpacity style={styles.card} onPress={() => setDetailAppt(item)}>
+      <TouchableOpacity
+        style={styles.card}
+        onPress={() => setDetailAppt(item)}
+        accessibilityRole="button"
+        accessibilityLabel={`${item.title}, ${item.petName}`}
+        accessibilityHint="Opens appointment details"
+      >
         <View style={styles.cardLeft}>
           <Text style={styles.cardTitle}>{item.title}</Text>
           <Text style={styles.cardSub}>{item.petName}</Text>
@@ -364,7 +370,13 @@ const AppointmentScreen: React.FC = () => {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Appointments</Text>
-        <TouchableOpacity style={styles.addBtn} onPress={() => setBookingVisible(true)}>
+        <TouchableOpacity
+          style={styles.addBtn}
+          onPress={() => setBookingVisible(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Book appointment"
+          accessibilityHint="Opens the appointment booking form"
+        >
           <Text style={styles.addBtnText}>+ Book</Text>
         </TouchableOpacity>
       </View>
@@ -376,6 +388,9 @@ const AppointmentScreen: React.FC = () => {
             key={t}
             style={[styles.tab, tab === t && styles.tabActive]}
             onPress={() => setTab(t)}
+            accessibilityRole="tab"
+            accessibilityLabel={t.charAt(0).toUpperCase() + t.slice(1)}
+            accessibilityState={{ selected: tab === t }}
           >
             <Text style={[styles.tabText, tab === t && styles.tabTextActive]}>
               {t.charAt(0).toUpperCase() + t.slice(1)}
@@ -426,6 +441,9 @@ const AppointmentScreen: React.FC = () => {
                 setBookingVisible(false);
                 setConflictState(null);
               }}
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+              accessibilityHint="Dismisses the booking form"
             >
               <Text style={styles.modalClose}>✕</Text>
             </TouchableOpacity>
@@ -457,6 +475,10 @@ const AppointmentScreen: React.FC = () => {
               style={[styles.primaryBtn, isCheckingConflicts && styles.btnDisabled]}
               onPress={() => void handleBook()}
               disabled={isCheckingConflicts}
+              accessibilityRole="button"
+              accessibilityLabel="Confirm booking"
+              accessibilityHint="Saves the appointment and checks for scheduling conflicts"
+              accessibilityState={{ disabled: isCheckingConflicts, busy: isCheckingConflicts }}
             >
               {isCheckingConflicts ? (
                 <ActivityIndicator color="#fff" />
@@ -520,14 +542,29 @@ const AppointmentScreen: React.FC = () => {
               <TouchableOpacity
                 style={styles.primaryBtn}
                 onPress={() => void handleUseSuggestedTime()}
+                accessibilityRole="button"
+                accessibilityLabel="Use suggested time"
+                accessibilityHint="Books the appointment at the next conflict-free slot"
               >
                 <Text style={styles.primaryBtnText}>Use Suggested Time</Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity style={styles.warningBtn} onPress={() => void handleProceedAnyway()}>
+            <TouchableOpacity
+              style={styles.warningBtn}
+              onPress={() => void handleProceedAnyway()}
+              accessibilityRole="button"
+              accessibilityLabel="Proceed anyway"
+              accessibilityHint="Books the appointment despite the detected conflicts"
+            >
               <Text style={styles.warningBtnText}>Proceed Anyway</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.secondaryBtn} onPress={handleCancelConflict}>
+            <TouchableOpacity
+              style={styles.secondaryBtn}
+              onPress={handleCancelConflict}
+              accessibilityRole="button"
+              accessibilityLabel="Pick a different time"
+              accessibilityHint="Closes the conflict dialog so you can enter a new date and time"
+            >
               <Text style={styles.secondaryBtnText}>Pick a Different Time</Text>
             </TouchableOpacity>
           </View>
@@ -540,7 +577,12 @@ const AppointmentScreen: React.FC = () => {
           <View style={styles.modalContainer}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Appointment Details</Text>
-              <TouchableOpacity onPress={() => setDetailAppt(null)}>
+              <TouchableOpacity
+                onPress={() => setDetailAppt(null)}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+                accessibilityHint="Closes appointment details"
+              >
                 <Text style={styles.modalClose}>✕</Text>
               </TouchableOpacity>
             </View>
@@ -562,12 +604,18 @@ const AppointmentScreen: React.FC = () => {
                       setRescheduleDate('');
                       setRescheduleVisible(true);
                     }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Reschedule appointment"
+                    accessibilityHint="Opens a form to pick a new date and time"
                   >
                     <Text style={styles.primaryBtnText}>Reschedule</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.dangerBtn}
                     onPress={() => handleCancel(detailAppt)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel appointment"
+                    accessibilityHint="Permanently cancels this appointment"
                   >
                     <Text style={styles.dangerBtnText}>Cancel Appointment</Text>
                   </TouchableOpacity>
@@ -598,6 +646,10 @@ const AppointmentScreen: React.FC = () => {
                   style={[styles.primaryBtn, isCheckingConflicts && styles.btnDisabled]}
                   onPress={() => void handleReschedule()}
                   disabled={isCheckingConflicts}
+                  accessibilityRole="button"
+                  accessibilityLabel="Confirm reschedule"
+                  accessibilityHint="Saves the new date and time for the appointment"
+                  accessibilityState={{ disabled: isCheckingConflicts, busy: isCheckingConflicts }}
                 >
                   {isCheckingConflicts ? (
                     <ActivityIndicator color="#fff" />
@@ -608,6 +660,9 @@ const AppointmentScreen: React.FC = () => {
                 <TouchableOpacity
                   style={styles.secondaryBtn}
                   onPress={() => setRescheduleVisible(false)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel reschedule"
+                  accessibilityHint="Closes the reschedule form without saving"
                 >
                   <Text style={styles.secondaryBtnText}>Cancel</Text>
                 </TouchableOpacity>

@@ -91,7 +91,13 @@ const LoginScreen: React.FC<Props> = ({ onSuccess, onRegister, onForgotPassword 
           testID="login-password-input"
         />
 
-        <TouchableOpacity onPress={onForgotPassword} style={styles.forgotLink}>
+        <TouchableOpacity
+          onPress={onForgotPassword}
+          style={styles.forgotLink}
+          accessibilityRole="button"
+          accessibilityLabel="Forgot password"
+          accessibilityHint="Opens password reset flow"
+        >
           <Text style={styles.link}>Forgot password?</Text>
         </TouchableOpacity>
 
@@ -100,6 +106,10 @@ const LoginScreen: React.FC<Props> = ({ onSuccess, onRegister, onForgotPassword 
           onPress={() => void handleLogin()}
           disabled={loading}
           testID="login-submit-button"
+          accessibilityRole="button"
+          accessibilityLabel="Sign in"
+          accessibilityHint="Submits your email and password to sign in"
+          accessibilityState={{ disabled: loading, busy: loading }}
         >
           {loading ? (
             <ActivityIndicator color="#fff" />
@@ -110,7 +120,12 @@ const LoginScreen: React.FC<Props> = ({ onSuccess, onRegister, onForgotPassword 
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>Don't have an account? </Text>
-          <TouchableOpacity onPress={onRegister}>
+          <TouchableOpacity
+            onPress={onRegister}
+            accessibilityRole="button"
+            accessibilityLabel="Register"
+            accessibilityHint="Opens the registration form to create a new account"
+          >
             <Text style={styles.link}>Register</Text>
           </TouchableOpacity>
         </View>

@@ -345,7 +345,13 @@ const VetDirectoryScreen: React.FC = () => {
           <TouchableOpacity
             style={[styles.filterBtn, activeFilterCount > 0 && styles.filterBtnActive]}
             onPress={openDrawer}
-            accessibilityLabel="Open filter drawer"
+            accessibilityRole="button"
+            accessibilityLabel={
+              activeFilterCount > 0
+                ? `Filters, ${activeFilterCount} active`
+                : 'Filters'
+            }
+            accessibilityHint="Opens filter options for the vet directory"
           >
             <Text
               style={[styles.filterBtnText, activeFilterCount > 0 && styles.filterBtnTextActive]}
@@ -376,7 +382,9 @@ const VetDirectoryScreen: React.FC = () => {
               <TouchableOpacity
                 style={styles.card}
                 onPress={() => void openProfile(item)}
+                accessibilityRole="button"
                 accessibilityLabel={`View profile of ${item.name}`}
+                accessibilityHint="Opens the vet's profile with credentials, ratings, and contact details"
               >
                 <View style={styles.cardInfo}>
                   <Text style={styles.vetName}>{item.name}</Text>
@@ -409,7 +417,12 @@ const VetDirectoryScreen: React.FC = () => {
             <View style={styles.drawer}>
               <View style={styles.drawerHeader}>
                 <Text style={styles.drawerTitle}>Filters</Text>
-                <TouchableOpacity onPress={() => setFilterDrawerOpen(false)}>
+                <TouchableOpacity
+                  onPress={() => setFilterDrawerOpen(false)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close filter drawer"
+                  accessibilityHint="Closes filter options without applying changes"
+                >
                   <Text style={styles.drawerClose}>✕</Text>
                 </TouchableOpacity>
               </View>
@@ -468,10 +481,19 @@ const VetDirectoryScreen: React.FC = () => {
                     setDraftSpecialties([]);
                     setDraftAvailableOnly(false);
                   }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Reset filters"
+                  accessibilityHint="Clears all filter selections to defaults"
                 >
                   <Text style={styles.drawerResetText}>Reset</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.drawerApplyBtn} onPress={applyFilters}>
+                <TouchableOpacity
+                  style={styles.drawerApplyBtn}
+                  onPress={applyFilters}
+                  accessibilityRole="button"
+                  accessibilityLabel="Apply filters"
+                  accessibilityHint="Applies distance radius, specialty, and availability filters to the vet directory"
+                >
                   <Text style={styles.drawerApplyText}>Apply Filters</Text>
                 </TouchableOpacity>
               </View>
@@ -487,7 +509,13 @@ const VetDirectoryScreen: React.FC = () => {
   if (screen === 'profile' && selectedVet) {
     return (
       <ScrollView style={styles.container} contentContainerStyle={styles.profileContent}>
-        <TouchableOpacity onPress={() => setScreen('directory')} style={styles.back}>
+        <TouchableOpacity
+          onPress={() => setScreen('directory')}
+          style={styles.back}
+          accessibilityRole="button"
+          accessibilityLabel="Back to vet directory"
+          accessibilityHint="Returns to the vet search list"
+        >
           <Text style={styles.backText}>‹ Back</Text>
         </TouchableOpacity>
         <Text style={styles.title}>{selectedVet.name}</Text>
@@ -517,7 +545,9 @@ const VetDirectoryScreen: React.FC = () => {
         <TouchableOpacity
           style={[styles.searchBtn, { marginTop: 24 }]}
           onPress={() => void openChat(selectedVet)}
+          accessibilityRole="button"
           accessibilityLabel={`Message ${selectedVet.name}`}
+          accessibilityHint="Opens a chat with this vet"
         >
           <Text style={styles.searchBtnText}>💬 Message</Text>
         </TouchableOpacity>
@@ -535,7 +565,13 @@ const VetDirectoryScreen: React.FC = () => {
         keyboardVerticalOffset={80}
       >
         <View style={styles.chatHeader}>
-          <TouchableOpacity onPress={() => setScreen('profile')} style={styles.back}>
+          <TouchableOpacity
+            onPress={() => setScreen('profile')}
+            style={styles.back}
+            accessibilityRole="button"
+            accessibilityLabel="Back to vet profile"
+            accessibilityHint="Returns to the vet profile screen"
+          >
             <Text style={styles.backText}>‹ Back</Text>
           </TouchableOpacity>
           <Text style={styles.chatTitle}>{selectedVet.name}</Text>

@@ -377,7 +377,12 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={onBack} accessibilityRole="button" accessibilityLabel="Back">
+        <TouchableOpacity
+          onPress={onBack}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          accessibilityHint="Returns to the previous screen"
+        >
           <Text style={styles.backText}>‹ Back</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
@@ -386,7 +391,8 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
         <TouchableOpacity
           onPress={() => setFiltersVisible(true)}
           accessibilityRole="button"
-          accessibilityLabel="Filters"
+          accessibilityLabel="Filter records"
+          accessibilityHint="Opens filter options for record type and date range"
         >
           <Text style={styles.filterBtn}>Filter</Text>
         </TouchableOpacity>
@@ -405,7 +411,13 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
           accessibilityLabel="Search medical records"
         />
         {isSearchMode ? (
-          <TouchableOpacity style={styles.clearBtn} onPress={clearSearch}>
+          <TouchableOpacity
+            style={styles.clearBtn}
+            onPress={clearSearch}
+            accessibilityRole="button"
+            accessibilityLabel="Clear search"
+            accessibilityHint="Clears the search query and shows all records"
+          >
             <Text style={styles.clearBtnText}>✕</Text>
           </TouchableOpacity>
         ) : (
@@ -413,6 +425,8 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
             style={styles.searchBtn}
             onPress={() => void handleSearch()}
             accessibilityRole="button"
+            accessibilityLabel="Search records"
+            accessibilityHint="Searches medical records matching the entered text"
           >
             <Text style={styles.searchBtnText}>Search</Text>
           </TouchableOpacity>
@@ -442,7 +456,13 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
               <Text style={styles.chipText}>To: {endDate}</Text>
             </View>
           ) : null}
-          <TouchableOpacity style={styles.chipClear} onPress={resetFilters}>
+          <TouchableOpacity
+            style={styles.chipClear}
+            onPress={resetFilters}
+            accessibilityRole="button"
+            accessibilityLabel="Clear all filters"
+            accessibilityHint="Removes all active filters and shows all records"
+          >
             <Text style={styles.chipClearText}>Clear</Text>
           </TouchableOpacity>
         </ScrollView>
@@ -486,7 +506,12 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
           <View style={styles.filterSheet}>
             <View style={styles.filterHeader}>
               <Text style={styles.filterTitle}>Filter Records</Text>
-              <TouchableOpacity onPress={() => setFiltersVisible(false)}>
+              <TouchableOpacity
+                onPress={() => setFiltersVisible(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close filters"
+                accessibilityHint="Closes the filter sheet without applying changes"
+              >
                 <Text style={styles.filterClose}>✕</Text>
               </TouchableOpacity>
             </View>
@@ -537,10 +562,22 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
               </View>
             </View>
 
-            <TouchableOpacity style={styles.applyBtn} onPress={applyFilters}>
+            <TouchableOpacity
+              style={styles.applyBtn}
+              onPress={applyFilters}
+              accessibilityRole="button"
+              accessibilityLabel="Apply filters"
+              accessibilityHint="Applies the selected record type and date range filters"
+            >
               <Text style={styles.applyBtnText}>Apply Filters</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.resetBtn} onPress={resetFilters}>
+            <TouchableOpacity
+              style={styles.resetBtn}
+              onPress={resetFilters}
+              accessibilityRole="button"
+              accessibilityLabel="Reset filters"
+              accessibilityHint="Clears all filter selections"
+            >
               <Text style={styles.resetBtnText}>Reset</Text>
             </TouchableOpacity>
           </View>
@@ -552,7 +589,12 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
         <Modal visible animationType="slide" onRequestClose={() => setDetailRecord(null)}>
           <View style={styles.container}>
             <View style={styles.header}>
-              <TouchableOpacity onPress={() => setDetailRecord(null)}>
+              <TouchableOpacity
+                onPress={() => setDetailRecord(null)}
+                accessibilityRole="button"
+                accessibilityLabel="Back"
+                accessibilityHint="Returns to the records list"
+              >
                 <Text style={styles.backText}>‹ Back</Text>
               </TouchableOpacity>
               <Text style={styles.headerTitle}>Record Details</Text>
