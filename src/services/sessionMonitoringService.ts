@@ -4,12 +4,25 @@
  * Tracks session lifecycle events, crash occurrences, and user flows.
  * Integrates with Sentry session tracking APIs for crash-free rate calculation.
  * Alerts when crash-free rate drops below 99.5%.
+ *
+ * This facade delegates inactivity detection to {@link InactivityTracker},
+ * token refresh to {@link scheduleTokenRefresh}, and device fingerprinting
+ * to {@link getDefaultDevice} — keeping each responsibility isolated and
+ * independently testable.
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import apiClient from './apiClient';
 import config from '../config';
+import { InactivityTracker, SESSION_TIMEOUT_MS } from './inactivityTracker';
+import { scheduleTokenRefresh } from './tokenRefreshScheduler';
+import { type DeviceMetadata, getDefaultDevice } from './deviceFingerprint';
+
+// ─── Re-exports (backwards-compatible public API) ─────────────────────────────
+
+export type { DeviceMetadata } from './deviceFingerprint';
+export type { SessionTimeoutWarningPayload } from './inactivityTracker';
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
 
@@ -27,9 +40,6 @@ export const CRASH_FREE_THRESHOLD = 99.5;
 
 /** Maximum events to buffer locally before flushing */
 const MAX_PENDING_EVENTS = 100;
-
-/** Session timeout in ms — sessions idle longer than this are auto-ended */
-const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,19 +75,6 @@ export type SessionEventType =
   | 'user_action'
   | 'network_error'
   | 'api_error';
-
-export interface DeviceMetadata {
-  /** Device model identifier, e.g. "iPhone 14 Pro", "Pixel 7" */
-  model: string;
-  /** OS name, e.g. "iOS", "Android" */
-  os: string;
-  /** OS version string, e.g. "17.2", "14" */
-  osVersion: string;
-  /** App version from config */
-  appVersion: string;
-  /** Platform: "ios" | "android" | "web" */
-  platform: string;
-}
 
 export interface SessionEvent {
   id: string;
@@ -142,19 +139,6 @@ export interface AlertPayload {
   timestamp: string;
 }
 
-// ─── Timeout warning configuration ───────────────────────────────────────────
-
-/** How many ms before session expiry to show the warning modal */
-const WARNING_BEFORE_EXPIRY_MS = 2 * 60 * 1000; // 2 minutes
-
-export interface SessionTimeoutWarningPayload {
-  /** Seconds remaining until auto-logout */
-  secondsRemaining: number;
-}
-
-type TimeoutWarningListener = (payload: SessionTimeoutWarningPayload) => void;
-type TimeoutExpiredListener = () => void;
-
 // ─── Error Class ──────────────────────────────────────────────────────────────
 
 export class SessionMonitoringError extends Error {
@@ -177,7 +161,7 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-// ─── Service ──────────────────────────────────────────────────────────────────
+// ─── Facade ───────────────────────────────────────────────────────────────────
 
 class SessionMonitoringService {
   private currentSession: Session | null = null;
@@ -185,13 +169,15 @@ class SessionMonitoringService {
   private statusListeners: Array<(status: SessionStatus) => void> = [];
   private alertListeners: Array<(alert: AlertPayload) => void> = [];
 
-  // ── Inactivity / timeout warning ──────────────────────────────────────────
-  private inactivityTimer: ReturnType<typeof setTimeout> | null = null;
-  private warningTimer: ReturnType<typeof setTimeout> | null = null;
-  private warningCountdownInterval: ReturnType<typeof setInterval> | null = null;
-  private timeoutWarningListeners: TimeoutWarningListener[] = [];
-  private timeoutExpiredListeners: TimeoutExpiredListener[] = [];
-  private warningActive = false;
+  /** Inactivity detection — delegated to InactivityTracker */
+  private readonly inactivity = new InactivityTracker();
+
+  constructor() {
+    // Wire InactivityTracker expiry to session end
+    this.inactivity.onExpired(() => {
+      this.endSession('ended').catch(() => {});
+    });
+  }
 
   // ── Session lifecycle ──────────────────────────────────────────────────────
 
@@ -200,7 +186,6 @@ class SessionMonitoringService {
    * Sends a Sentry-compatible session_start event to the backend.
    */
   async startSession(device: DeviceMetadata): Promise<string> {
-    // End any lingering session before starting a new one
     if (this.currentSession && this.currentSession.status === 'active') {
       await this.endSession('abnormal');
     }
@@ -238,7 +223,7 @@ class SessionMonitoringService {
       appVersion: device.appVersion,
     });
 
-    this._resetInactivityTimer();
+    this.inactivity.reset();
 
     return session.id;
   }
@@ -247,7 +232,7 @@ class SessionMonitoringService {
    * End the current session normally.
    */
   async endSession(status: Extract<SessionStatus, 'ended' | 'abnormal'> = 'ended'): Promise<void> {
-    this._clearTimers();
+    this.inactivity.clear();
     if (!this.currentSession) return;
 
     const now = Date.now();
@@ -286,7 +271,6 @@ class SessionMonitoringService {
 
   /**
    * Track a navigation event and update the active user flow.
-   * Call this whenever the user navigates to a new screen.
    */
   async trackNavigation(flow: UserFlowStep, screenName?: string): Promise<void> {
     if (!this.currentSession) return;
@@ -295,7 +279,7 @@ class SessionMonitoringService {
     this.currentSession.flowPath.push(flow);
     await this._persistCurrentSession();
 
-    this._resetInactivityTimer();
+    this.inactivity.reset();
 
     await this._trackEvent({
       type: 'navigation',
@@ -327,18 +311,16 @@ class SessionMonitoringService {
 
   /**
    * Report a fatal crash. Marks the session as crashed and sends a crash report.
-   * This is the Sentry-equivalent of `captureException` with session marking.
    */
   async reportCrash(error: Error, context?: Record<string, unknown>): Promise<void> {
     if (!this.currentSession) {
-      // Crash outside of a tracked session — still report it
       await this._sendCrashReport({
         sessionId: 'unknown',
         error: error.message,
         stack: error.stack,
         timestamp: Date.now(),
         appVersion: config.app.version,
-        device: this._getDefaultDevice(),
+        device: getDefaultDevice(),
         activeFlow: this.activeFlow,
         flowPath: [],
       });
@@ -373,7 +355,6 @@ class SessionMonitoringService {
 
     await this._sendCrashReport(crashReport);
 
-    // End the session as crashed
     await this.endSession('abnormal');
 
     this._notifyStatusListeners('crashed');
@@ -385,7 +366,7 @@ class SessionMonitoringService {
   async trackUserAction(action: string, data?: Record<string, unknown>): Promise<void> {
     if (!this.currentSession) return;
 
-    this._resetInactivityTimer();
+    this.inactivity.reset();
 
     await this._trackEvent({
       type: 'user_action',
@@ -398,7 +379,6 @@ class SessionMonitoringService {
 
   /**
    * Fetch crash-free session stats for a given app version.
-   * Calculates crash-free rate and identifies top crash-prone flows.
    */
   async getCrashFreeStats(appVersion?: string): Promise<CrashFreeStats> {
     try {
@@ -409,7 +389,6 @@ class SessionMonitoringService {
 
       const stats: CrashFreeStats = response.data.data;
 
-      // Fire alert if rate is below threshold
       if (stats.isBelowThreshold) {
         const alert: AlertPayload = {
           type: 'crash_free_rate_below_threshold',
@@ -435,7 +414,6 @@ class SessionMonitoringService {
 
   /**
    * Restore a session that was interrupted (e.g. app killed mid-session).
-   * Call this on app startup to detect abnormal terminations.
    */
   async recoverInterruptedSession(): Promise<Session | null> {
     try {
@@ -444,15 +422,12 @@ class SessionMonitoringService {
 
       const session: Session = JSON.parse(raw);
 
-      // If the session is still marked active but was started more than SESSION_TIMEOUT_MS ago,
-      // it was abnormally terminated (app killed, OOM crash, etc.)
       const isStale = Date.now() - session.startedAt > SESSION_TIMEOUT_MS;
       if (session.status === 'active' && isStale) {
         session.status = 'abnormal';
         session.endedAt = Date.now();
         session.durationMs = session.endedAt - session.startedAt;
 
-        // Report as an abnormal termination (Sentry: "abnormal" session)
         await this._sendToBackend('/monitoring/sessions/end', {
           sessionId: session.id,
           endedAt: new Date(session.endedAt).toISOString(),
@@ -476,10 +451,6 @@ class SessionMonitoringService {
 
   // ── Listeners ──────────────────────────────────────────────────────────────
 
-  /**
-   * Subscribe to session status changes.
-   * Returns an unsubscribe function.
-   */
   onStatusChange(listener: (status: SessionStatus) => void): () => void {
     this.statusListeners.push(listener);
     return () => {
@@ -487,10 +458,6 @@ class SessionMonitoringService {
     };
   }
 
-  /**
-   * Subscribe to crash-free rate alerts.
-   * Returns an unsubscribe function.
-   */
   onAlert(listener: (alert: AlertPayload) => void): () => void {
     this.alertListeners.push(listener);
     return () => {
@@ -500,57 +467,37 @@ class SessionMonitoringService {
 
   /**
    * Subscribe to session timeout warning events (fires 2 min before expiry).
-   * Receives a countdown payload updated every second.
-   * Returns an unsubscribe function.
+   * Delegates to InactivityTracker.
    */
-  onTimeoutWarning(listener: TimeoutWarningListener): () => void {
-    this.timeoutWarningListeners.push(listener);
-    return () => {
-      this.timeoutWarningListeners = this.timeoutWarningListeners.filter((l) => l !== listener);
-    };
+  onTimeoutWarning(listener: (payload: { secondsRemaining: number }) => void): () => void {
+    return this.inactivity.onWarning(listener);
   }
 
   /**
-   * Subscribe to session expiry (fires when the inactivity timeout has elapsed).
-   * Returns an unsubscribe function.
+   * Subscribe to session expiry events.
+   * Delegates to InactivityTracker.
    */
-  onTimeoutExpired(listener: TimeoutExpiredListener): () => void {
-    this.timeoutExpiredListeners.push(listener);
-    return () => {
-      this.timeoutExpiredListeners = this.timeoutExpiredListeners.filter((l) => l !== listener);
-    };
+  onTimeoutExpired(listener: () => void): () => void {
+    return this.inactivity.onExpired(listener);
   }
 
   /**
    * Extend the current session (call after the user taps "Stay logged in").
-   * Resets the inactivity timer and calls authService.refreshToken().
+   * Resets the inactivity timer and schedules a token refresh.
    */
   async extendSession(): Promise<void> {
     if (!this.currentSession) return;
-    this._resetInactivityTimer();
-    try {
-      const { refreshToken } = await import('./authService');
-      await refreshToken();
-    } catch {
-      // Non-fatal — session extension failure is not a crash
-    }
+    this.inactivity.reset();
+    await scheduleTokenRefresh();
   }
 
   // ── Biometric check timestamp tracking ───────────────────────────────────
 
-  /**
-   * Record the timestamp of the last successful biometric authentication.
-   * Used by screens to determine if re-authentication is needed.
-   */
   async setLastBiometricCheck(): Promise<void> {
     const now = Date.now().toString();
     await AsyncStorage.setItem(STORAGE_KEYS.LAST_BIOMETRIC_CHECK, now);
   }
 
-  /**
-   * Get the timestamp of the last biometric authentication.
-   * Returns the timestamp in ms since epoch, or 0 if never checked.
-   */
   async getLastBiometricCheck(): Promise<number> {
     try {
       const raw = await AsyncStorage.getItem(STORAGE_KEYS.LAST_BIOMETRIC_CHECK);
@@ -562,13 +509,9 @@ class SessionMonitoringService {
     }
   }
 
-  /**
-   * Check if the last biometric check is older than the given duration.
-   * @param durationMs - Duration in milliseconds (defaults to 5 minutes).
-   */
   async isBiometricCheckExpired(durationMs = 5 * 60 * 1000): Promise<boolean> {
     const lastCheck = await this.getLastBiometricCheck();
-    if (lastCheck === 0) return true; // Never checked
+    if (lastCheck === 0) return true;
     return Date.now() - lastCheck > durationMs;
   }
 
@@ -598,13 +541,9 @@ class SessionMonitoringService {
       data: partial.data,
     };
 
-    // Buffer locally
     await this._bufferEvent(event);
 
-    // Flush to backend (fire-and-forget — non-fatal if it fails)
-    this._flushEvents().catch(() => {
-      // Silently retain buffered events for next flush
-    });
+    this._flushEvents().catch(() => {});
   }
 
   private async _bufferEvent(event: SessionEvent): Promise<void> {
@@ -614,7 +553,6 @@ class SessionMonitoringService {
 
       events.push(event);
 
-      // Cap buffer size to avoid unbounded growth
       const trimmed = events.slice(-MAX_PENDING_EVENTS);
       await AsyncStorage.setItem(STORAGE_KEYS.PENDING_EVENTS, JSON.stringify(trimmed));
     } catch {
@@ -649,7 +587,6 @@ class SessionMonitoringService {
     try {
       await apiClient.post('/monitoring/crashes', report);
     } catch {
-      // Persist locally for retry on next launch
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEYS.CRASH_HISTORY);
         const history: CrashReport[] = raw ? JSON.parse(raw) : [];
@@ -684,70 +621,6 @@ class SessionMonitoringService {
 
   private _notifyAlertListeners(alert: AlertPayload): void {
     this.alertListeners.forEach((l) => l(alert));
-  }
-
-  private _getDefaultDevice(): DeviceMetadata {
-    return {
-      model: 'unknown',
-      os: 'unknown',
-      osVersion: 'unknown',
-      appVersion: config.app.version,
-      platform: 'unknown',
-    };
-  }
-
-  // ── Inactivity / warning timer helpers ────────────────────────────────────
-
-  private _clearTimers(): void {
-    if (this.inactivityTimer) {
-      clearTimeout(this.inactivityTimer);
-      this.inactivityTimer = null;
-    }
-    if (this.warningTimer) {
-      clearTimeout(this.warningTimer);
-      this.warningTimer = null;
-    }
-    if (this.warningCountdownInterval) {
-      clearInterval(this.warningCountdownInterval);
-      this.warningCountdownInterval = null;
-    }
-    this.warningActive = false;
-  }
-
-  private _resetInactivityTimer(): void {
-    if (!this.currentSession) return;
-    this._clearTimers();
-
-    const warningAt = SESSION_TIMEOUT_MS - WARNING_BEFORE_EXPIRY_MS;
-
-    // Schedule warning at (SESSION_TIMEOUT_MS - 2 minutes)
-    this.warningTimer = setTimeout(() => {
-      this._startWarningCountdown();
-    }, warningAt);
-  }
-
-  private _startWarningCountdown(): void {
-    if (!this.currentSession) return;
-    this.warningActive = true;
-    let secondsRemaining = Math.round(WARNING_BEFORE_EXPIRY_MS / 1000);
-
-    // Emit initial warning
-    this.timeoutWarningListeners.forEach((l) => l({ secondsRemaining }));
-
-    // Tick every second
-    this.warningCountdownInterval = setInterval(() => {
-      secondsRemaining -= 1;
-      this.timeoutWarningListeners.forEach((l) => l({ secondsRemaining }));
-
-      if (secondsRemaining <= 0) {
-        if (this.warningCountdownInterval) clearInterval(this.warningCountdownInterval);
-        this.warningCountdownInterval = null;
-        this.warningActive = false;
-        // Fire expiry — UI/caller should call authService.logout()
-        this.timeoutExpiredListeners.forEach((l) => l());
-        this.endSession('ended').catch(() => {});
-      }
-    }, 1000);
   }
 }
 
