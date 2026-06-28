@@ -1,6 +1,12 @@
 /**
  * Integration service that connects blockchain events to app state updates
  * This demonstrates how to use the blockchain event service in a React Native app
+ *
+ * @remarks
+ * This file is compiled with `strictNullChecks: true` (see tsconfig.strict.json).
+ * All nullable types are explicitly annotated and every potential null access is
+ * guarded. Do NOT add non-null assertions (`!`) without a comment explaining why
+ * the assertion is safe.
  */
 
 import { EventEmitter } from 'events';
@@ -64,7 +70,7 @@ export class BlockchainIntegrationService extends EventEmitter {
   private config: IntegrationConfig;
   private verificationStatuses = new Map<string, RecordVerificationStatus>();
   private pendingVerifications = new Set<string>();
-  private verificationInterval: NodeJS.Timeout | null = null;
+  private verificationInterval: ReturnType<typeof setInterval> | null = null;
   private isInitialized = false;
 
   constructor(customConfig?: Partial<IntegrationConfig>) {
@@ -355,7 +361,7 @@ export class BlockchainIntegrationService extends EventEmitter {
 
     this.verificationInterval = setInterval(() => {
       this.pollPendingVerifications();
-    }, this.config.verificationCheckInterval) as unknown as NodeJS.Timeout;
+    }, this.config.verificationCheckInterval);
 
     loggerService.debug('Started verification polling', {
       interval: this.config.verificationCheckInterval,
