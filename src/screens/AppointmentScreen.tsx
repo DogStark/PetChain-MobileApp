@@ -1,5 +1,5 @@
-import { useRoute } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useRoute } from '@react-navigation/native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -561,7 +561,11 @@ const AppointmentScreen: React.FC = () => {
             <EmptyState
               icon="calendar"
               title={tab === 'upcoming' ? 'No Upcoming Appointments' : 'No Past Appointments'}
-              description={tab === 'upcoming' ? 'Schedule your next vet visit or grooming session.' : 'You have no past appointment records.'}
+              description={
+                tab === 'upcoming'
+                  ? 'Schedule your next vet visit or grooming session.'
+                  : 'You have no past appointment records.'
+              }
               buttonText="Book appointment"
               onPress={() => setBookingVisible(true)}
             />
@@ -586,9 +590,7 @@ const AppointmentScreen: React.FC = () => {
             onPress={() => setShowArchived((v) => !v)}
             accessibilityLabel="Toggle show archived appointments"
           >
-            <Text style={styles.showArchivedText}>
-              {showArchived ? '☑' : '☐'} Show archived
-            </Text>
+            <Text style={styles.showArchivedText}>{showArchived ? '☑' : '☐'} Show archived</Text>
           </TouchableOpacity>
 
           {visibleRecent.map((item) => renderSwipeableItem(item))}
