@@ -55,7 +55,7 @@ interface PetContextValue {
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 
-const PetContext = createContext<PetContextValue | null>(null);
+export const PetContext = createContext<PetContextValue | null>(null);
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
