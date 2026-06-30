@@ -1,6 +1,8 @@
 /**
  * Jest mock for react-native-image-resizer.
  * Uses CommonJS exports so ts-jest resolves default correctly.
+ * NOTE: Do not add duplicate `const createResizedImage` declarations;
+ * it causes a SyntaxError ("already been declared").
  */
 
 const mockCreateResizedImage = jest.fn().mockResolvedValue({
@@ -14,11 +16,4 @@ const ImageResizer = { createResizedImage: mockCreateResizedImage };
 
 // Support both default import and named import patterns
 export default ImageResizer;
-export const createResizedImage = mockCreateResizedImage;
-const createResizedImage = jest.fn();
-
-module.exports = {
-  __esModule: true,
-  default: { createResizedImage },
-  createResizedImage,
-};
+export { mockCreateResizedImage as createResizedImage };
