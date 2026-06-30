@@ -1,7 +1,9 @@
 import type { BarCodeScannerResult } from 'expo-barcode-scanner';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Haptics from 'expo-haptics';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   Alert,
   Linking,
   Platform,
@@ -80,6 +82,12 @@ const QRScannerScreen: React.FC<QRScannerScreenProps> = ({
       const result = await scanQRCode(data);
 
       if (result.valid && result.petId) {
+        // Provide haptic feedback on successful scan
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+        // Announce to screen readers
+        AccessibilityInfo.announceForAccessibility('QR code detected');
+
         onScanSuccess(data);
       } else {
         const isExpiredOrUsed =
@@ -91,7 +99,10 @@ const QRScannerScreen: React.FC<QRScannerScreenProps> = ({
           isExpiredOrUsed ? 'Code No Longer Valid' : 'Invalid QR Code',
           result.error || 'This QR code is not a valid PetChain record.',
           [
-            { text: 'Try Again', onPress: () => setScanned(false) },
+            {
+              text: 'Try Again',
+              onPress: () => setScanned(false),
+            },
             { text: 'Manual Entry', onPress: onManualEntry },
             { text: 'Cancel', style: 'cancel', onPress: onClose },
           ],
@@ -107,7 +118,10 @@ const QRScannerScreen: React.FC<QRScannerScreenProps> = ({
       'Camera Permission Required',
       'Please enable camera access in your device settings.',
       [
-        { text: 'Open Settings', onPress: () => Linking.openSettings() },
+        {
+          text: 'Open Settings',
+          onPress: () => Linking.openSettings(),
+        },
         { text: 'Manual Entry', onPress: onManualEntry },
         { text: 'Cancel', style: 'cancel', onPress: onClose },
       ],
@@ -117,7 +131,11 @@ const QRScannerScreen: React.FC<QRScannerScreenProps> = ({
   const renderCameraView = () => {
     if (hasPermission === null) {
       return (
-        <View style={styles.permissionContainer}>
+        <View
+          style={styles.permissionContainer}
+          accessibilityLabel="Requesting camera permission"
+          accessibilityRole="text"
+        >
           <Text style={styles.permissionText}>Requesting camera permission...</Text>
         </View>
       );
@@ -125,9 +143,18 @@ const QRScannerScreen: React.FC<QRScannerScreenProps> = ({
 
     if (hasPermission === false) {
       return (
-        <View style={styles.permissionContainer}>
+        <View
+          style={styles.permissionContainer}
+          accessibilityLabel="Camera permission denied"
+          accessibilityRole="alert"
+        >
           <Text style={styles.permissionText}>Camera permission denied</Text>
-          <TouchableOpacity style={styles.permissionButton} onPress={handlePermissionDenied}>
+          <TouchableOpacity
+            style={styles.permissionButton}
+            onPress={handlePermissionDenied}
+            accessibilityLabel="Enable Camera"
+            accessibilityRole="button"
+          >
             <Text style={styles.permissionButtonText}>Enable Camera</Text>
           </TouchableOpacity>
         </View>
@@ -150,7 +177,11 @@ const QRScannerScreen: React.FC<QRScannerScreenProps> = ({
           }}
         >
           <View style={styles.overlay}>
-            <View style={styles.scanFrame}>
+            <View
+              style={styles.scanFrame}
+              accessibilityLabel="QR code scanner viewfinder — align QR code within the frame"
+              accessibilityRole="image"
+            >
               <View style={[styles.scanCorner, styles.topLeft]} />
               <View style={[styles.scanCorner, styles.topRight]} />
               <View style={[styles.scanCorner, styles.bottomLeft]} />
@@ -161,7 +192,13 @@ const QRScannerScreen: React.FC<QRScannerScreenProps> = ({
                 </View>
               )}
             </View>
-            <Text style={styles.scanText}>Align QR code within frame</Text>
+            <Text
+              style={styles.scanText}
+              accessibilityLabel="Align QR code within frame"
+              accessibilityRole="text"
+            >
+              Align QR code within frame
+            </Text>
           </View>
         </CameraView>
 
@@ -169,15 +206,16 @@ const QRScannerScreen: React.FC<QRScannerScreenProps> = ({
           <TouchableOpacity
             style={[styles.controlButton, torchEnabled && styles.controlButtonActive]}
             onPress={toggleTorch}
-            accessibilityLabel="Toggle flashlight"
+            accessibilityLabel={torchEnabled ? 'Turn off flashlight' : 'Turn on flashlight'}
             accessibilityRole="button"
+            accessibilityState={{ selected: torchEnabled }}
           >
             <Text style={styles.controlButtonText}>💡</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.controlButton}
             onPress={onManualEntry}
-            accessibilityLabel="Manual entry"
+            accessibilityLabel="Enter code manually"
             accessibilityRole="button"
           >
             <Text style={styles.controlButtonText}>📝</Text>
@@ -212,12 +250,30 @@ const QRScannerScreen: React.FC<QRScannerScreenProps> = ({
         >
           <Text style={styles.closeButtonText}>✕</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Scan QR Code</Text>
+        <Text
+          style={styles.headerTitle}
+          accessibilityLabel="Scan QR Code"
+          accessibilityRole="header"
+        >
+          Scan QR Code
+        </Text>
         <View style={styles.placeholder} />
       </View>
-      <View style={styles.scannerContainer}>{renderCameraView()}</View>
-      <View style={styles.footer}>
-        <Text style={styles.footerText}>Scan a PetChain QR code to access pet records</Text>
+      <View
+        style={styles.scannerContainer}
+        accessibilityLabel="QR code scanner"
+        accessibilityRole="image"
+      >
+        {renderCameraView()}
+      </View>
+      <View
+        style={styles.footer}
+        accessibilityLabel="Scan a PetChain QR code to access pet records, or enter a code manually"
+        accessibilityRole="text"
+      >
+        <Text style={styles.footerText}>
+          Scan a PetChain QR code to access pet records
+        </Text>
         <TouchableOpacity
           style={styles.manualEntryButton}
           onPress={onManualEntry}
