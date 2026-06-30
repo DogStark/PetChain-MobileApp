@@ -18,6 +18,7 @@ import {
 
 import LanguageSelector from '../components/LanguageSelector';
 import type { NotificationPreferences, User } from '../models/User';
+import { isHapticEnabled, setHapticEnabled } from '../utils/hapticFeedback';
 import {
   disableBiometricAuthentication,
   isBiometricAuthenticationAvailable,
@@ -161,6 +162,7 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [exportRequesting, setExportRequesting] = useState(false);
+  const [hapticEnabled, setHapticEnabledState] = useState(true);
   const [entitySyncStatuses, setEntitySyncStatuses] = useState<
     Record<SyncEntityType, EntitySyncRecord> | null
   >(null);
@@ -201,6 +203,10 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
       } catch {
         // Non-critical — sync status display degrades gracefully
       }
+
+      // Load haptic preference
+      const hapticOn = await isHapticEnabled();
+      setHapticEnabledState(hapticOn);
     })();
   }, []);
 
@@ -308,6 +314,13 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
     },
     [t],
   );
+
+  // ── Haptic toggle ──────────────────────────────────────────────────────────
+
+  const handleHapticToggle = useCallback(async (value: boolean) => {
+    setHapticEnabledState(value);
+    await setHapticEnabled(value);
+  }, []);
 
   // ── Data Export ────────────────────────────────────────────────────────────
 
@@ -649,6 +662,20 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
             </View>
           </>
         )}
+
+        {/* ── Haptic Feedback (Accessibility) ── */}
+        <RowSeparator />
+        <View style={styles.row}>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>
+            {t('settings.hapticFeedback', 'Haptic Feedback')}
+          </Text>
+          <Switch
+            value={hapticEnabled}
+            onValueChange={(v) => void handleHapticToggle(v)}
+            trackColor={{ false: colors.border, true: colors.primary }}
+            thumbColor={Platform.OS === 'android' ? '#fff' : undefined}
+          />
+        </View>
       </View>
 
       {/* ── Theme ── */}
