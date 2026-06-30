@@ -20,6 +20,14 @@ jest.mock('../../services/cacheService', () => ({
   invalidate: mockInvalidate,
 }));
 
+// ─── Mock pushService ─────────────────────────────────────────────────────────
+
+const mockSendToUser = jest.fn().mockResolvedValue(1);
+
+jest.mock('../../services/pushService', () => ({
+  sendToUser: mockSendToUser,
+}));
+
 // ─── Mock logger ──────────────────────────────────────────────────────────────
 
 jest.mock('../../utils/logger', () => ({
@@ -187,6 +195,240 @@ describe('resolveTemplate', () => {
     await resolveTemplate('medication_reminder', { medicationName: 'X', petName: 'Y' }, 'en');
 
     expect(mockQuery).not.toHaveBeenCalled();
+  });
+});
+
+// ─── sendNotification ────────────────────────────────────────────────────────
+
+describe('sendNotification', () => {
+  let sendNotification: (
+    userId: string,
+    key: string,
+    vars?: Record<string, string>,
+    options?: { topic: string; data?: Record<string, unknown> },
+  ) => Promise<{ enqueued: number; locale: string }>;
+
+  beforeAll(async () => {
+    ({ sendNotification } = await import('../../services/notificationTemplateService'));
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockCacheGet.mockResolvedValue(null);
+    mockSendToUser.mockResolvedValue(1);
+  });
+
+  /**
+   * sendNotification issues two DB queries in sequence:
+   *   1. SELECT preferred_language FROM users WHERE id = $1
+   *   2. SELECT * FROM notification_templates WHERE key = $1 AND locale = $2 ...
+   * (a second template query only happens if locale !== 'en' and falls back)
+   */
+  function mockUserThenTemplate(
+    preferredLanguage: string | undefined,
+    templateRows: Record<string, unknown>[],
+  ) {
+    mockQuery.mockResolvedValueOnce({ rows: [{ preferred_language: preferredLanguage }] });
+    mockQuery.mockResolvedValueOnce({ rows: templateRows });
+  }
+
+  it('selects the template matching the user preferred_language', async () => {
+    mockUserThenTemplate('es', [
+      makeRow({
+        key: 'vaccination_transfer',
+        locale: 'es',
+        title: '🐾 Recordatorios de vacunación transferidos',
+        body: 'Los recordatorios de vacunación de {{petName}} ya están activos en tu cuenta.',
+      }),
+    ]);
+
+    const result = await sendNotification(
+      'user-1',
+      'vaccination_transfer',
+      { petName: 'Rex' },
+      { topic: 'health_tips' },
+    );
+
+    expect(result.locale).toBe('es');
+    expect(mockSendToUser).toHaveBeenCalledWith(
+      'user-1',
+      'health_tips',
+      '🐾 Recordatorios de vacunación transferidos',
+      'Los recordatorios de vacunación de Rex ya están activos en tu cuenta.',
+      undefined,
+    );
+  });
+
+  it('falls back to English when the user locale has no template', async () => {
+    // 1) user lookup → 'fr', 2) fr template lookup → none, 3) en fallback → found
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ preferred_language: 'fr' }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [
+          makeRow({
+            key: 'vaccination_transfer',
+            locale: 'en',
+            title: '🐾 Vaccination reminders transferred',
+            body: 'Vaccination reminders for {{petName}} are now active on your account.',
+          }),
+        ],
+      });
+
+    const result = await sendNotification(
+      'user-2',
+      'vaccination_transfer',
+      { petName: 'Milo' },
+      { topic: 'health_tips' },
+    );
+
+    expect(result.locale).toBe('en');
+    expect(mockSendToUser).toHaveBeenCalledWith(
+      'user-2',
+      'health_tips',
+      '🐾 Vaccination reminders transferred',
+      'Vaccination reminders for Milo are now active on your account.',
+      undefined,
+    );
+  });
+
+  it('defaults to English when the user has no preferred_language set', async () => {
+    mockUserThenTemplate(undefined, [
+      makeRow({
+        key: 'vaccination_transfer',
+        locale: 'en',
+        title: '🐾 Vaccination reminders transferred',
+        body: 'Vaccination reminders for {{petName}} are now active on your account.',
+      }),
+    ]);
+
+    const result = await sendNotification(
+      'user-3',
+      'vaccination_transfer',
+      { petName: 'Milo' },
+      { topic: 'health_tips' },
+    );
+
+    expect(result.locale).toBe('en');
+  });
+
+  it('defaults to English when the user row is not found', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({
+      rows: [
+        makeRow({
+          key: 'vaccination_transfer',
+          locale: 'en',
+          title: '🐾 Vaccination reminders transferred',
+          body: 'Vaccination reminders for {{petName}} are now active on your account.',
+        }),
+      ],
+    });
+
+    const result = await sendNotification(
+      'missing-user',
+      'vaccination_transfer',
+      { petName: 'Milo' },
+      { topic: 'health_tips' },
+    );
+
+    expect(result.locale).toBe('en');
+  });
+
+  it('passes through the data payload to sendToUser', async () => {
+    mockUserThenTemplate('en', [
+      makeRow({
+        key: 'vaccination_transfer',
+        locale: 'en',
+        title: '🐾 Vaccination reminders transferred',
+        body: 'Vaccination reminders for {{petName}} are now active on your account.',
+      }),
+    ]);
+
+    await sendNotification(
+      'user-4',
+      'vaccination_transfer',
+      { petName: 'Milo' },
+      { topic: 'health_tips', data: { petId: 'pet-1' } },
+    );
+
+    expect(mockSendToUser).toHaveBeenCalledWith(
+      'user-4',
+      'health_tips',
+      expect.any(String),
+      expect.any(String),
+      { petId: 'pet-1' },
+    );
+  });
+
+  it('returns the enqueued count from pushService.sendToUser', async () => {
+    mockUserThenTemplate('en', [
+      makeRow({
+        key: 'vaccination_transfer',
+        locale: 'en',
+        title: 'T',
+        body: 'B {{petName}}',
+      }),
+    ]);
+    mockSendToUser.mockResolvedValue(3);
+
+    const result = await sendNotification(
+      'user-5',
+      'vaccination_transfer',
+      { petName: 'Milo' },
+      { topic: 'health_tips' },
+    );
+
+    expect(result.enqueued).toBe(3);
+  });
+
+  it('throws when no template exists for the key in any locale', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ preferred_language: 'es' }] })
+      .mockResolvedValueOnce({ rows: [] }) // es lookup
+      .mockResolvedValueOnce({ rows: [] }); // en fallback lookup
+
+    await expect(
+      sendNotification('user-6', 'nonexistent_key', {}, { topic: 'health_tips' }),
+    ).rejects.toThrow('No notification template found for key: "nonexistent_key"');
+
+    expect(mockSendToUser).not.toHaveBeenCalled();
+  });
+
+  it('throws when required variables are missing and does not send', async () => {
+    mockUserThenTemplate('en', [
+      makeRow({
+        key: 'vaccination_transfer',
+        locale: 'en',
+        title: 'T',
+        body: 'B {{petName}}',
+      }),
+    ]);
+
+    await expect(
+      sendNotification('user-7', 'vaccination_transfer', {}, { topic: 'health_tips' }),
+    ).rejects.toThrow('Missing template variables: petName');
+
+    expect(mockSendToUser).not.toHaveBeenCalled();
+  });
+
+  it('normalises a region-tagged user locale (es-MX → es)', async () => {
+    mockUserThenTemplate('es-MX', [
+      makeRow({
+        key: 'vaccination_transfer',
+        locale: 'es',
+        title: 'T',
+        body: 'B {{petName}}',
+      }),
+    ]);
+
+    const result = await sendNotification(
+      'user-8',
+      'vaccination_transfer',
+      { petName: 'Milo' },
+      { topic: 'health_tips' },
+    );
+
+    expect(result.locale).toBe('es');
   });
 });
 

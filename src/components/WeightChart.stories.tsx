@@ -84,6 +84,17 @@ const dataWithAnnotations: WeightDataPoint[] = [
   { date: '2026-05-01T00:00:00Z', weightKg: 5.1 },
 ];
 
+/** Accessible view with table toggle and screen reader labels. */
+export const AccessibleView: Story = {
+  args: {
+    data: sampleData,
+    petName: 'Buddy',
+    vetRecommendedRange: { min: 4.5, max: 5.5 },
+    onExport: action('onExport'),
+    height: 300,
+  },
+};
+
 /** Steady growth trend over 6 months with vet-recommended range. */
 export const SteadyGrowth: Story = {
   args: {

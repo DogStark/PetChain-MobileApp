@@ -2,6 +2,7 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import axios, { type AxiosResponse } from 'axios';
 import CryptoJS from 'crypto-js';
 
+import { CircuitBreaker, retryWithBackoff } from '../utils/circuitBreaker';
 import type { MedicalRecord } from './medicalRecordService';
 
 // ==============================
@@ -64,6 +65,13 @@ const HORIZON_URL =
 // Initialize Stellar Server
 let stellarServer: StellarSdk.Horizon.Server | null = null;
 
+// Circuit breaker for Horizon API calls (3 failures = open, 8s timeout)
+const horizonCircuitBreaker = new CircuitBreaker({
+  failureThreshold: 3,
+  successThreshold: 1,
+  timeout: 8000,
+});
+
 const getStellarServer = (): StellarSdk.Horizon.Server => {
   if (!stellarServer) {
     stellarServer = new StellarSdk.Horizon.Server(HORIZON_URL);
@@ -76,6 +84,16 @@ const getStellarServer = (): StellarSdk.Horizon.Server => {
 
 const responseCache = new Map<string, { data: unknown; expiresAt: number }>();
 const inFlightRequests = new Map<string, Promise<unknown>>();
+
+/**
+ * Get circuit breaker metrics for debugging/monitoring
+ */
+export const getCircuitBreakerMetrics = () => horizonCircuitBreaker.getMetrics();
+
+/**
+ * Reset circuit breaker (for manual intervention or testing)
+ */
+export const resetCircuitBreaker = () => horizonCircuitBreaker.reset();
 
 // ==============================
 // ERROR CLASS
@@ -324,6 +342,7 @@ export const getTransactionHistory = async (
 
 /**
  * Connect to Stellar network and get network info.
+ * Uses circuit breaker to handle degraded endpoint gracefully.
  */
 export const getStellarNetworkInfo = async (): Promise<{
   network: string;
@@ -342,19 +361,31 @@ export const getStellarNetworkInfo = async (): Promise<{
     latestLedger: number;
   }>(cacheKey, async () => {
     try {
-      const server = getStellarServer();
-      const ledgers = await server.ledgers().order('desc').limit(1).call();
-      const latestLedger = ledgers.records[0];
+      return await horizonCircuitBreaker.execute(async () => {
+        const server = getStellarServer();
+        const ledgers = await server.ledgers().order('desc').limit(1).call();
+        const latestLedger = ledgers.records[0];
 
-      return {
-        network: STELLAR_NETWORK,
-        horizonUrl: HORIZON_URL,
-        passphrase:
-          STELLAR_NETWORK === 'PUBLIC' ? StellarSdk.Networks.PUBLIC : StellarSdk.Networks.TESTNET,
-        currentLedger: latestLedger.sequence,
-        latestLedger: latestLedger.sequence,
-      };
+        return {
+          network: STELLAR_NETWORK,
+          horizonUrl: HORIZON_URL,
+          passphrase:
+            STELLAR_NETWORK === 'PUBLIC'
+              ? StellarSdk.Networks.PUBLIC
+              : StellarSdk.Networks.TESTNET,
+          currentLedger: latestLedger.sequence,
+          latestLedger: latestLedger.sequence,
+        };
+      });
     } catch (error) {
+      if (error && typeof error === 'object' && 'name' in error) {
+        if ((error as { name?: string }).name === 'CircuitBreakerOpenError') {
+          throw new BlockchainServiceError(
+            'Horizon service temporarily unavailable (circuit breaker open)',
+            'CIRCUIT_BREAKER_OPEN',
+          );
+        }
+      }
       handleBlockchainError(error);
       throw error;
     }
@@ -377,15 +408,26 @@ export const createStellarAccount = (): {
 
 /**
  * Get account details from Stellar network.
+ * Uses circuit breaker to handle degraded endpoint gracefully.
  */
 export const getStellarAccountDetails = async (
   publicKey: string,
 ): Promise<StellarSdk.Horizon.AccountResponse> => {
   try {
-    const server = getStellarServer();
-    const account = await server.loadAccount(publicKey);
-    return account;
+    return await horizonCircuitBreaker.execute(async () => {
+      const server = getStellarServer();
+      return await server.loadAccount(publicKey);
+    });
   } catch (error) {
+    if (error && typeof error === 'object' && 'name' in error) {
+      if ((error as { name?: string }).name === 'CircuitBreakerOpenError') {
+        throw new BlockchainServiceError(
+          'Horizon service temporarily unavailable (circuit breaker open)',
+          'CIRCUIT_BREAKER_OPEN',
+        );
+      }
+    }
+
     if (axios.isAxiosError(error) && error.response?.status === 404) {
       throw new BlockchainServiceError('Account not found on Stellar network', 'ACCOUNT_NOT_FOUND');
     }
@@ -411,16 +453,44 @@ export const fundTestnetAccount = async (publicKey: string): Promise<boolean> =>
 };
 
 /**
- * Submit a transaction to Stellar network.
+ * Submit a transaction to Stellar network with circuit breaker and exponential backoff retry.
+ * 
+ * - Wraps calls in circuit breaker (3 failures → open for 8s)
+ * - Retries on 503/504/429 with exponential backoff + jitter (max 3 attempts)
+ * - Returns typed errors so callers can distinguish network vs. logic failures
  */
 export const submitStellarTransaction = async (
   transaction: StellarSdk.Transaction,
 ): Promise<StellarSdk.Horizon.HorizonApi.SubmitTransactionResponse> => {
   try {
-    const server = getStellarServer();
-    const result = await server.submitTransaction(transaction);
-    return result;
+    // Wrap in circuit breaker to prevent hammering degraded endpoint
+    return await horizonCircuitBreaker.execute(async () => {
+      // Retry with exponential backoff for transient failures (503, 504, 429)
+      return await retryWithBackoff(
+        async () => {
+          const server = getStellarServer();
+          return await server.submitTransaction(transaction);
+        },
+        {
+          maxRetries: 3,
+          baseDelayMs: 100,
+          maxDelayMs: 8000,
+        },
+      );
+    });
   } catch (error) {
+    // Map circuit breaker errors to typed BlockchainServiceError
+    if (error && typeof error === 'object' && 'name' in error) {
+      if ((error as { name?: string }).name === 'CircuitBreakerOpenError') {
+        const cbError = error as { retryAfterMs?: number };
+        throw new BlockchainServiceError(
+          `Circuit breaker open - service temporarily unavailable. Retry after ${cbError.retryAfterMs}ms`,
+          'CIRCUIT_BREAKER_OPEN',
+        );
+      }
+    }
+
+    // Map Stellar transaction errors
     if (
       error &&
       (error as { response?: { data?: { extras?: { result_codes?: { transaction?: string } } } } })
@@ -435,6 +505,24 @@ export const submitStellarTransaction = async (
         'TRANSACTION_FAILED',
       );
     }
+
+    // Handle other axios/network errors
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const message = error.response?.data?.message || error.message;
+
+      // All retry attempts exhausted
+      if (status === 429 || status === 503 || status === 504) {
+        throw new BlockchainServiceError(
+          `Horizon service unavailable after retries (${status}): ${message}`,
+          'HORIZON_UNAVAILABLE',
+        );
+      }
+
+      throw new BlockchainServiceError(`Horizon API error (${status}): ${message}`, 'API_ERROR');
+    }
+
+    // Generic error fallback
     handleBlockchainError(error);
     throw error;
   }
@@ -442,6 +530,7 @@ export const submitStellarTransaction = async (
 
 /**
  * Build and submit a payment transaction.
+ * Wraps transaction building and submission in circuit breaker protection.
  */
 export const sendPayment = async (
   sourceSecretKey: string,
@@ -450,6 +539,7 @@ export const sendPayment = async (
   memo?: string,
 ): Promise<StellarSdk.Horizon.HorizonApi.SubmitTransactionResponse> => {
   try {
+    // Build transaction (no circuit breaker needed)
     const server = getStellarServer();
     const sourceKeypair = StellarSdk.Keypair.fromSecret(sourceSecretKey);
     const sourceAccount = await server.loadAccount(sourceKeypair.publicKey());
@@ -475,6 +565,7 @@ export const sendPayment = async (
     const builtTransaction = transaction.build();
     builtTransaction.sign(sourceKeypair);
 
+    // Submit with circuit breaker and retries
     return await submitStellarTransaction(builtTransaction);
   } catch (error) {
     handleBlockchainError(error);

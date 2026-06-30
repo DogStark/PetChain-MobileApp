@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import express from 'express';
 
 import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
+import { sendNotification } from '../../services/notificationTemplateService';
 import { ok, sendError } from '../../server/response';
 import {
   findNearbyMatches,
@@ -10,7 +11,6 @@ import {
   type LostFoundLocation,
   type LostFoundReport,
 } from '../../services/matchingService';
-import { sendToUser } from '../../services/pushService';
 
 const router = express.Router();
 router.use(authenticateJWT);
@@ -91,12 +91,14 @@ async function broadcastLostReport(report: StoredLostFoundReport, radiusKm: numb
 
   await Promise.all(
     nearbyUsers.map((userId) =>
-      sendToUser(
+      sendNotification(
         userId,
-        'sos_notifications',
-        'Lost pet alert near you',
-        `A lost pet has been reported nearby. Tap the app for details.`,
-        { reportId: report.id, route: 'LostFound' },
+        'lost_pet_alert',
+        { reportId: report.id },
+        {
+          topic: 'sos_notifications',
+          data: { reportId: report.id, route: 'LostFound' },
+        },
       ),
     ),
   );

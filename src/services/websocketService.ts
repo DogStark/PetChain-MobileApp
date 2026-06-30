@@ -1,6 +1,7 @@
 import CryptoJS from 'crypto-js';
 
 type Message = { type: string; data?: any };
+type Listener = (data: any) => void;
 
 function encryptPayload(obj: any) {
   const key = process.env.WS_PAYLOAD_KEY || process.env.JWT_SECRET || 'default-ws-key';
@@ -28,9 +29,17 @@ export class WebsocketService {
   private lastPong = Date.now();
   private sendTimestamps: number[] = [];
   private maxMessagesPerSecond = 5;
+  private listeners = new Map<string, Set<Listener>>();
 
   constructor(url: string) {
     this.url = url;
+  }
+
+  /** Subscribe to a message type. Returns an unsubscribe function. */
+  on(type: string, listener: Listener): () => void {
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type)!.add(listener);
+    return () => this.listeners.get(type)?.delete(listener);
   }
 
   connect(token?: string) {
@@ -49,6 +58,7 @@ export class WebsocketService {
     this.ws.onopen = () => {
       this.backoffMs = 500;
       this.startHeartbeat();
+      this._emit('connected', null);
     };
 
     this.ws.onmessage = (ev) => {
@@ -59,8 +69,7 @@ export class WebsocketService {
           this.lastPong = Date.now();
           return;
         }
-        // emit or handle messages (placeholder: console)
-        console.warn('WS message', msg);
+        this._emit(msg.type, msg.data);
       } catch (e) {
         console.warn('WS invalid message', e);
       }
@@ -68,6 +77,7 @@ export class WebsocketService {
 
     this.ws.onclose = () => {
       this.stopHeartbeat();
+      this._emit('disconnected', null);
       if (this.shouldReconnect) this.scheduleReconnect();
     };
 
@@ -75,6 +85,10 @@ export class WebsocketService {
       console.warn('WS error', err);
       // close will trigger reconnect
     };
+  }
+
+  private _emit(type: string, data: any) {
+    this.listeners.get(type)?.forEach((fn) => fn(data));
   }
 
   private scheduleReconnect() {

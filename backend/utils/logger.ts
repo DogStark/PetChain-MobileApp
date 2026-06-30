@@ -17,6 +17,7 @@ import path from 'path';
 // ─── Correlation ID store ─────────────────────────────────────────────────────
 
 export interface LogContext {
+  requestId?: string;
   correlationId?: string;
   userId?: string;
   service?: string;
@@ -27,6 +28,10 @@ export const correlationStore = new AsyncLocalStorage<LogContext>();
 
 export function getCorrelationId(): string | undefined {
   return correlationStore.getStore()?.correlationId;
+}
+
+export function getRequestId(): string | undefined {
+  return correlationStore.getStore()?.requestId;
 }
 
 export function runWithContext<T>(ctx: LogContext, fn: () => T): T {
@@ -48,14 +53,16 @@ type LoggerLike = {
 
 function makeFallbackLogger(): LoggerLike {
   const write = (level: string, msg: string, meta?: Record<string, unknown>) => {
+    const store = correlationStore.getStore();
     const entry = {
       timestamp: new Date().toISOString(),
       level,
+      requestId: store?.requestId,
+      service: store?.service ?? process.env.SERVICE_NAME ?? 'petchain-api',
       message: msg,
-      service: process.env.SERVICE_NAME ?? 'petchain-api',
       env: process.env.APP_ENV ?? 'development',
-      correlationId: correlationStore.getStore()?.correlationId,
-      userId: correlationStore.getStore()?.userId,
+      correlationId: store?.correlationId,
+      userId: store?.userId,
       ...(meta ?? {}),
     };
     const line = JSON.stringify(entry);
@@ -90,8 +97,9 @@ function createLogger(): LoggerLike {
         const entry: Record<string, unknown> = {
           timestamp: info.timestamp,
           level: info.level,
+          requestId: ctx.requestId,
+          service: ctx.service ?? process.env.SERVICE_NAME ?? 'petchain-api',
           message: info.message,
-          service: process.env.SERVICE_NAME ?? 'petchain-api',
           env: process.env.APP_ENV ?? 'development',
           correlationId: ctx.correlationId,
           userId: ctx.userId,

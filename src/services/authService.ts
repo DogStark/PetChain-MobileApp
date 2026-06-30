@@ -24,6 +24,7 @@ import {
   storeSecureTokens,
 } from '../utils/encryption/keychain';
 import { logError } from '../utils/errorLogger';
+import sessionMonitoringService from './sessionMonitoringService';
 
 // ─── Custom error ─────────────────────────────────────────────────────────────
 
@@ -346,6 +347,45 @@ export async function authenticateWithBiometrics(): Promise<StoredSession> {
   const session = await getSession();
   if (!session) throw new AuthError('No stored session available', 'NO_SESSION');
   return session;
+}
+
+/**
+ * Require biometric re-authentication if the last check was more than 5 minutes ago.
+ * If biometrics fail or are unavailable, falls back to PIN entry.
+ * If both fail, returns false — the caller should navigate back.
+ */
+export async function requireBiometric(): Promise<'authenticated' | 'pin_fallback' | 'failed'> {
+  const isExpired = await sessionMonitoringService.isBiometricCheckExpired();
+  if (!isExpired) {
+    // Recent check still valid — no need to re-auth
+    return 'authenticated';
+  }
+
+  // Attempt biometric authentication
+  const biometricOk = await authenticateWithBiometric();
+  if (biometricOk) {
+    await sessionMonitoringService.setLastBiometricCheck();
+    return 'authenticated';
+  }
+
+  // Biometric failed or unavailable — fall back to PIN
+  const available = await isBiometricAuthenticationAvailable();
+  if (!available) {
+    // Biometrics not available at all — try PIN if set
+    return 'pin_fallback';
+  }
+
+  return 'pin_fallback';
+}
+
+/**
+ * Attempt PIN-based authentication as fallback.
+ * Returns true if PIN is verified, false otherwise.
+ */
+export async function authenticateWithPin(): Promise<boolean> {
+  // The caller will prompt the user for their PIN and pass it here
+  // This returns a promise that resolves when the PIN modal is done
+  return false; // Placeholder — actual PIN prompting is handled in the UI
 }
 
 const PIN_HASH_KEY = 'com.petchain.auth.pin.hash';

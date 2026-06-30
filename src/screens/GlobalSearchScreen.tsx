@@ -12,7 +12,6 @@ import {
 import { useOfflineStatus } from '../components/OfflineIndicator';
 import {
   globalSearch,
-  debouncedSearch,
   type SearchResultItem,
   type SearchCategory,
 } from '../services/searchService';
@@ -46,7 +45,8 @@ const GlobalSearchScreen: React.FC<Props> = ({ onSelectResult, onQuickAction }) 
   const [fromCache, setFromCache] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<string[]>([]);
-  const cancelRef = useRef<(() => void) | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const { isOnline } = useOfflineStatus();
 
   // Load recents on mount
@@ -54,14 +54,48 @@ const GlobalSearchScreen: React.FC<Props> = ({ onSelectResult, onQuickAction }) 
     getRecentSearches().then(setRecents);
   }, []);
 
+  const performSearch = useCallback(
+    (searchText: string, searchCategory: SearchCategory) => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
+      setLoading(true);
+      globalSearch(searchText, searchCategory, undefined, controller.signal)
+        .then((res) => {
+          if (!controller.signal.aborted) {
+            setResults(res.items);
+            setFromCache(res.fromCache);
+            setLoading(false);
+          }
+        })
+        .catch((err) => {
+          if (!controller.signal.aborted) {
+            setLoading(false);
+          }
+        });
+    },
+    []
+  );
+
   const handleQueryChange = useCallback(
     (text: string) => {
       setQuery(text);
-      if (cancelRef.current) cancelRef.current();
+
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
 
       if (!text.trim()) {
         setResults([]);
         setSuggestions([]);
+        setLoading(false);
         return;
       }
 
@@ -69,28 +103,21 @@ const GlobalSearchScreen: React.FC<Props> = ({ onSelectResult, onQuickAction }) 
       setSuggestions(filterSuggestions(recents, text));
 
       setLoading(true);
-      cancelRef.current = debouncedSearch(text, category, (res) => {
-        setResults(res.items);
-        setFromCache(res.fromCache);
-        setLoading(false);
-      });
+      debounceTimerRef.current = setTimeout(() => {
+        performSearch(text, category);
+      }, 300);
     },
-    [category, recents],
+    [category, recents, performSearch],
   );
 
   const handleCategoryChange = useCallback(
     (newCategory: SearchCategory) => {
       setCategory(newCategory);
       if (query.trim()) {
-        setLoading(true);
-        globalSearch(query, newCategory).then((res) => {
-          setResults(res.items);
-          setFromCache(res.fromCache);
-          setLoading(false);
-        });
+        performSearch(query, newCategory);
       }
     },
-    [query],
+    [query, performSearch],
   );
 
   const commitSearch = useCallback(async (text: string) => {
@@ -105,15 +132,10 @@ const GlobalSearchScreen: React.FC<Props> = ({ onSelectResult, onQuickAction }) 
     (suggestion: string) => {
       setQuery(suggestion);
       setSuggestions([]);
-      setLoading(true);
-      globalSearch(suggestion, category).then((res) => {
-        setResults(res.items);
-        setFromCache(res.fromCache);
-        setLoading(false);
-      });
+      performSearch(suggestion, category);
       commitSearch(suggestion);
     },
-    [category, commitSearch],
+    [category, commitSearch, performSearch],
   );
 
   const handleRemoveRecent = useCallback(async (item: string) => {

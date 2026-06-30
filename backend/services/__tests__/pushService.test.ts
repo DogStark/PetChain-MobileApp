@@ -4,9 +4,8 @@ const mockRedisData: Record<string, unknown> = {};
 const mockSets: Record<string, Set<string>> = {};
 const mockLists: Record<string, string[]> = {};
 
-const redisMock = {
+const mockRedisClient = {
   set: jest.fn(async (key: string, val: string, ...args: unknown[]) => {
-    // NX flag: only set if not exists
     const nxIdx = args.indexOf('NX');
     if (nxIdx !== -1 && mockRedisData[key] !== undefined) return null;
     mockRedisData[key] = val;
@@ -54,10 +53,14 @@ const redisMock = {
     if (!h) return null;
     return Object.fromEntries(Object.entries(h).map(([k, v]) => [k, String(v)]));
   }),
+  zadd: jest.fn(async (_key: string, _score: number, _val: string) => 1),
+  zrangebyscore: jest.fn(async () => []),
+  zrem: jest.fn(async () => 1),
+  zrange: jest.fn(async () => []),
 };
 
 jest.mock('../../config/redis', () => ({
-  getRedisClient: () => redisMock,
+  getRedisClient: () => mockRedisClient,
   REDIS_KEY_PREFIX: 'petchain:',
 }));
 
@@ -91,10 +94,10 @@ const mockFetch = fetch as jest.MockedFunction<typeof fetch>;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function expoOkResponse() {
+function expoOkResponse(receiptId = 'receipt-test-1') {
   return {
     ok: true,
-    json: async () => ({ data: { status: 'ok' } }),
+    json: async () => ({ data: { status: 'ok', id: receiptId } }),
   } as unknown as ReturnType<typeof fetch>;
 }
 

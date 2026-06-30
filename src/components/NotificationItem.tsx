@@ -131,12 +131,12 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: '#4CAF50',
     marginTop: 6,
-    marginRight: 4,
+    marginEnd: 4,
     flexShrink: 0,
   },
   icon: {
     fontSize: 24,
-    marginRight: 12,
+    marginEnd: 12,
     marginTop: 2,
   },
   content: {
@@ -152,7 +152,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 15,
     color: '#111827',
-    marginRight: 8,
+    marginEnd: 8,
   },
   titleUnread: {
     fontWeight: '600',

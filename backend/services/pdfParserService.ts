@@ -15,6 +15,11 @@ import type {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export interface FieldConfidence {
+  value: number; // 0-1 score
+  source: 'extracted' | 'inferred' | 'empty';
+}
+
 export interface ExtractedVetRecord {
   vetName?: string;
   vetClinic?: string;
@@ -29,6 +34,19 @@ export interface ExtractedVetRecord {
   notes?: string;
   confidence: number; // 0-1 score indicating extraction confidence
   warnings: string[]; // Issues encountered during parsing
+  fieldConfidence?: {
+    vetName?: FieldConfidence;
+    vetClinic?: FieldConfidence;
+    vetPhone?: FieldConfidence;
+    vetEmail?: FieldConfidence;
+    visitDate?: FieldConfidence;
+    nextVisitDate?: FieldConfidence;
+    diagnoses?: FieldConfidence;
+    treatments?: FieldConfidence;
+    prescriptions?: FieldConfidence;
+    vaccinations?: FieldConfidence;
+    notes?: FieldConfidence;
+  };
 }
 
 export interface PdfParseResult {
@@ -368,50 +386,82 @@ function isScannedDocument(text: string): boolean {
  * Extract vet information from text
  */
 function extractVetInfo(text: string): {
-  vetName?: string;
-  vetClinic?: string;
-  vetPhone?: string;
-  vetEmail?: string;
+  data: {
+    vetName?: string;
+    vetClinic?: string;
+    vetPhone?: string;
+    vetEmail?: string;
+  };
+  confidence: {
+    vetName?: FieldConfidence;
+    vetClinic?: FieldConfidence;
+    vetPhone?: FieldConfidence;
+    vetEmail?: FieldConfidence;
+  };
 } {
-  const result: {
+  const data: {
     vetName?: string;
     vetClinic?: string;
     vetPhone?: string;
     vetEmail?: string;
   } = {};
+  const confidence: {
+    vetName?: FieldConfidence;
+    vetClinic?: FieldConfidence;
+    vetPhone?: FieldConfidence;
+    vetEmail?: FieldConfidence;
+  } = {};
 
   // Extract vet name
   const vetNameMatch = text.match(PATTERNS.vetName);
   if (vetNameMatch) {
-    result.vetName = vetNameMatch[0].replace(/^(?:Dr\.?|Veterinarian|Vet)\s+/i, '').trim();
+    data.vetName = vetNameMatch[0].replace(/^(?:Dr\.?|Veterinarian|Vet)\s+/i, '').trim();
+    // High confidence if preceded by "Dr." or "DVM"
+    const hasTitle = /Dr\.?|DVM/i.test(vetNameMatch[0]);
+    confidence.vetName = { value: hasTitle ? 0.85 : 0.6, source: 'extracted' };
   }
 
   // Extract clinic name
   const clinicMatch = text.match(PATTERNS.clinic);
   if (clinicMatch) {
-    result.vetClinic = clinicMatch[0].trim();
+    data.vetClinic = clinicMatch[0].trim();
+    // High confidence if contains known clinic keywords
+    const hasKeywords = /(Veterinary|Animal|Hospital|Clinic)/i.test(clinicMatch[0]);
+    confidence.vetClinic = { value: hasKeywords ? 0.8 : 0.55, source: 'extracted' };
   }
 
   // Extract phone
   const phoneMatch = text.match(PATTERNS.phone);
   if (phoneMatch) {
-    result.vetPhone = phoneMatch[0].trim();
+    data.vetPhone = phoneMatch[0].trim();
+    // High confidence for valid phone formats
+    const isValidFormat = /^\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}$/.test(
+      phoneMatch[0],
+    );
+    confidence.vetPhone = { value: isValidFormat ? 0.9 : 0.65, source: 'extracted' };
   }
 
   // Extract email
   const emailMatch = text.match(PATTERNS.email);
   if (emailMatch) {
-    result.vetEmail = emailMatch[0].trim();
+    data.vetEmail = emailMatch[0].trim();
+    // High confidence for valid email format
+    const isValidEmail = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(emailMatch[0]);
+    confidence.vetEmail = { value: isValidEmail ? 0.9 : 0.6, source: 'extracted' };
   }
 
-  return result;
+  return { data, confidence };
 }
 
 /**
  * Extract dates from text
  */
-function extractDates(text: string): { visitDate?: string; nextVisitDate?: string } {
-  const result: { visitDate?: string; nextVisitDate?: string } = {};
+function extractDates(text: string): {
+  data: { visitDate?: string; nextVisitDate?: string };
+  confidence: { visitDate?: FieldConfidence; nextVisitDate?: FieldConfidence };
+} {
+  const data: { visitDate?: string; nextVisitDate?: string } = {};
+  const confidence: { visitDate?: FieldConfidence; nextVisitDate?: FieldConfidence } = {};
 
   // Look for visit date patterns
   const visitDateMatch = text.match(
@@ -420,7 +470,11 @@ function extractDates(text: string): { visitDate?: string; nextVisitDate?: strin
   if (visitDateMatch) {
     const dateStr = visitDateMatch[1].trim();
     const normalized = normalizeDate(dateStr);
-    if (normalized) result.visitDate = normalized;
+    if (normalized) {
+      data.visitDate = normalized;
+      // High confidence if explicitly labeled
+      confidence.visitDate = { value: 0.85, source: 'extracted' };
+    }
   }
 
   // Look for next visit patterns
@@ -428,27 +482,36 @@ function extractDates(text: string): { visitDate?: string; nextVisitDate?: strin
   if (nextVisitMatch) {
     const dateStr = nextVisitMatch[1].trim();
     const normalized = normalizeDate(dateStr);
-    if (normalized) result.nextVisitDate = normalized;
-  }
-
-  // Fallback: extract first date as visit date if not found
-  if (!result.visitDate) {
-    const dateMatches = text.match(PATTERNS.date);
-    if (dateMatches) {
-      const normalized = normalizeDate(dateMatches[0]);
-      if (normalized) result.visitDate = normalized;
+    if (normalized) {
+      data.nextVisitDate = normalized;
+      // High confidence if explicitly labeled
+      confidence.nextVisitDate = { value: 0.8, source: 'extracted' };
     }
   }
 
-  return result;
+  // Fallback: extract first date as visit date if not found
+  if (!data.visitDate) {
+    const dateMatches = text.match(PATTERNS.date);
+    if (dateMatches) {
+      const normalized = normalizeDate(dateMatches[0]);
+      if (normalized) {
+        data.visitDate = normalized;
+        // Lower confidence for inferred date
+        confidence.visitDate = { value: 0.5, source: 'inferred' };
+      }
+    }
+  }
+
+  return { data, confidence };
 }
 
 /**
  * Extract diagnoses from text
  */
-function extractDiagnoses(text: string): Diagnosis[] {
+function extractDiagnoses(text: string): { data: Diagnosis[]; confidence: FieldConfidence } {
   const diagnoses: Diagnosis[] = [];
   const seen = new Set<string>();
+  let explicitMatches = 0;
 
   // Look for explicit diagnosis sections
   const diagnosisMatches = text.match(PATTERNS.diagnosis);
@@ -463,6 +526,7 @@ function extractDiagnoses(text: string): Diagnosis[] {
           severity: 'unknown',
         });
         seen.add(diagText.toLowerCase());
+        explicitMatches++;
       }
     });
   }
@@ -482,13 +546,27 @@ function extractDiagnoses(text: string): Diagnosis[] {
     });
   });
 
-  return diagnoses.slice(0, 10); // Limit to 10 diagnoses
+  const limitedDiagnoses = diagnoses.slice(0, 10);
+  
+  // Calculate confidence: high if explicitly labeled, lower if keyword-matched
+  let confidenceValue = 0.3; // Base for empty
+  if (limitedDiagnoses.length > 0) {
+    confidenceValue = explicitMatches > 0 ? 0.75 : 0.5;
+  }
+
+  return {
+    data: limitedDiagnoses,
+    confidence: {
+      value: confidenceValue,
+      source: limitedDiagnoses.length > 0 ? 'extracted' : 'empty',
+    },
+  };
 }
 
 /**
  * Extract treatments from text
  */
-function extractTreatments(text: string): Treatment[] {
+function extractTreatments(text: string): { data: Treatment[]; confidence: FieldConfidence } {
   const treatments: Treatment[] = [];
   const seen = new Set<string>();
 
@@ -508,15 +586,27 @@ function extractTreatments(text: string): Treatment[] {
     });
   }
 
-  return treatments.slice(0, 5); // Limit to 5 treatments
+  const limitedTreatments = treatments.slice(0, 5);
+  
+  return {
+    data: limitedTreatments,
+    confidence: {
+      value: limitedTreatments.length > 0 ? 0.7 : 0.3,
+      source: limitedTreatments.length > 0 ? 'extracted' : 'empty',
+    },
+  };
 }
 
 /**
  * Extract prescriptions from text
  */
-function extractPrescriptions(text: string): Prescription[] {
+function extractPrescriptions(text: string): {
+  data: Prescription[];
+  confidence: FieldConfidence;
+} {
   const prescriptions: Prescription[] = [];
   const seen = new Set<string>();
+  let explicitMatches = 0;
 
   // Look for medication patterns
   const medMatches = text.match(PATTERNS.medication);
@@ -543,6 +633,7 @@ function extractPrescriptions(text: string): Prescription[] {
             frequency,
           });
           seen.add(medText.toLowerCase());
+          explicitMatches++;
         }
       }
     });
@@ -562,15 +653,33 @@ function extractPrescriptions(text: string): Prescription[] {
     });
   });
 
-  return prescriptions.slice(0, 10); // Limit to 10 prescriptions
+  const limitedPrescriptions = prescriptions.slice(0, 10);
+  
+  // Calculate confidence: high if explicitly structured, medium if keyword-matched
+  let confidenceValue = 0.3;
+  if (limitedPrescriptions.length > 0) {
+    confidenceValue = explicitMatches > 0 ? 0.8 : 0.55;
+  }
+
+  return {
+    data: limitedPrescriptions,
+    confidence: {
+      value: confidenceValue,
+      source: limitedPrescriptions.length > 0 ? 'extracted' : 'empty',
+    },
+  };
 }
 
 /**
  * Extract vaccinations from text
  */
-function extractVaccinations(text: string): VaccinationRecord[] {
+function extractVaccinations(text: string): {
+  data: VaccinationRecord[];
+  confidence: FieldConfidence;
+} {
   const vaccinations: VaccinationRecord[] = [];
   const seen = new Set<string>();
+  let explicitMatches = 0;
 
   // Look for explicit vaccination sections
   const vaccMatches = text.match(PATTERNS.vaccination);
@@ -582,6 +691,7 @@ function extractVaccinations(text: string): VaccinationRecord[] {
           vaccineName: vaccText,
         });
         seen.add(vaccText.toLowerCase());
+        explicitMatches++;
       }
     });
   }
@@ -600,7 +710,21 @@ function extractVaccinations(text: string): VaccinationRecord[] {
     });
   });
 
-  return vaccinations.slice(0, 10); // Limit to 10 vaccinations
+  const limitedVaccinations = vaccinations.slice(0, 10);
+  
+  // Calculate confidence
+  let confidenceValue = 0.3;
+  if (limitedVaccinations.length > 0) {
+    confidenceValue = explicitMatches > 0 ? 0.75 : 0.5;
+  }
+
+  return {
+    data: limitedVaccinations,
+    confidence: {
+      value: confidenceValue,
+      source: limitedVaccinations.length > 0 ? 'extracted' : 'empty',
+    },
+  };
 }
 
 // ─── Main Parser Function ─────────────────────────────────────────────────────
@@ -620,30 +744,43 @@ export function parseVetRecordText(text: string): ExtractedVetRecord {
   // Extract all components
   const vetInfo = extractVetInfo(text);
   const dates = extractDates(text);
-  const diagnoses = extractDiagnoses(text);
-  const treatments = extractTreatments(text);
-  const prescriptions = extractPrescriptions(text);
-  const vaccinations = extractVaccinations(text);
+  const diagnosesResult = extractDiagnoses(text);
+  const treatmentsResult = extractTreatments(text);
+  const prescriptionsResult = extractPrescriptions(text);
+  const vaccinationsResult = extractVaccinations(text);
 
   // Validate required fields
-  if (!dates.visitDate) {
+  if (!dates.data.visitDate) {
     warnings.push('Could not extract visit date. Please verify manually.');
   }
 
-  if (diagnoses.length === 0 && treatments.length === 0 && prescriptions.length === 0) {
+  if (
+    diagnosesResult.data.length === 0 &&
+    treatmentsResult.data.length === 0 &&
+    prescriptionsResult.data.length === 0
+  ) {
     warnings.push('No medical information found. Document may not be a valid vet record.');
   }
 
   const result: ExtractedVetRecord = {
-    ...vetInfo,
-    ...dates,
-    diagnoses,
-    treatments,
-    prescriptions,
-    vaccinations,
+    ...vetInfo.data,
+    ...dates.data,
+    diagnoses: diagnosesResult.data,
+    treatments: treatmentsResult.data,
+    prescriptions: prescriptionsResult.data,
+    vaccinations: vaccinationsResult.data,
     notes: text.slice(0, 500), // Store first 500 chars as notes
     warnings,
     confidence: 0,
+    fieldConfidence: {
+      ...vetInfo.confidence,
+      ...dates.confidence,
+      diagnoses: diagnosesResult.confidence,
+      treatments: treatmentsResult.confidence,
+      prescriptions: prescriptionsResult.confidence,
+      vaccinations: vaccinationsResult.confidence,
+      notes: { value: 0.5, source: 'extracted' },
+    },
   };
 
   result.confidence = calculateConfidence(result);

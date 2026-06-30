@@ -262,7 +262,20 @@ The test suite is integrated into the CI/CD pipeline:
   uses: codecov/codecov-action@v3
   with:
     files: ./coverage/lcov.info
+
+- name: Check for empty test files
+  run: npm run check:empty-tests
 ```
+
+### Empty test file guard
+
+CI fails if any file under `**/__tests__/**/*.test.ts` is empty or contains fewer than three `it` / `test` / `describe` blocks. Run locally with:
+
+```bash
+npm run check:empty-tests
+```
+
+**Escape hatch:** intentionally stubbed test files may include a suppression comment such as `// TODO: #602` until real tests land.
 
 ## Best Practices
 
@@ -296,6 +309,16 @@ When adding new features:
 ### Coverage not meeting threshold
 - Add tests for uncovered branches
 - Use coverage report to identify gaps
+
+## Stellar Migration Integration Tests
+
+PostgreSQL-backed checkpoint reconciliation tests live in `backend/tests/integration/`. Run them separately:
+
+```bash
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres npm run test:integration
+```
+
+These tests set `RUN_INTEGRATION_TESTS=true` via `jest.integration.config.js` and are not part of the default `npm test` CI job.
 
 ## Resources
 

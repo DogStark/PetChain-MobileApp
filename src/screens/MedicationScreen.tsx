@@ -3,6 +3,7 @@ import {
   Alert,
   FlatList,
   Modal,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,8 +12,12 @@ import {
   View,
 } from 'react-native';
 
+import { EmptyState } from '../components/EmptyState';
 import { SkeletonCard } from '../components/SkeletonCard';
+import { useTheme } from '../context/ThemeContext';
+import { useToast } from '../context/ToastContext';
 import { useMinimumLoadingTime } from '../hooks/useMinimumLoadingTime';
+import { useMultiStepFormFocus } from '../hooks/useMultiStepFormFocus';
 import {
   checkDrugInteractions,
   getSeverityLabel,
@@ -42,6 +47,13 @@ import { useSecureScreen } from '../utils/secureScreen';
 
 type Tab = 'list' | 'daily' | 'weekly';
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const MEDICATION_FORM_STEPS = [
+  { title: 'Basic information' },
+  { title: 'Medication details' },
+  { title: 'Provider information' },
+  { title: 'Supply & notes' },
+];
 
 const EMPTY_FORM: Omit<Medication, 'id'> = {
   petId: '',
@@ -75,10 +87,14 @@ function weekDates(): Date[] {
 const MedicationScreen: React.FC = () => {
   useSecureScreen();
 
+  const { colors } = useTheme();
+  const { show: showToast } = useToast();
+
   const [tab, setTab] = useState<Tab>('list');
   const [medications, setMedications] = useState<Medication[]>([]);
   const [doseLogs, setDoseLogs] = useState<DoseLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingMed, setEditingMed] = useState<Medication | null>(null);
   const [form, setForm] = useState<Omit<Medication, 'id'>>(EMPTY_FORM);
@@ -92,8 +108,25 @@ const MedicationScreen: React.FC = () => {
   const [refillTargetMed, setRefillTargetMed] = useState<Medication | null>(null);
   const [newSupplyInput, setNewSupplyInput] = useState('');
 
+  const {
+    currentStep: formStep,
+    totalSteps: formTotalSteps,
+    stepHeadingRef: formHeadingRef,
+    stepAnnouncement: formStepAnnouncement,
+    registerFirstInteractive: registerFormFirstInteractive,
+    registerFieldRef: registerFormFieldRef,
+    goNext: goFormNext,
+    goBack: goFormBack,
+    resetSteps: resetFormSteps,
+    focusFirstError: focusFormError,
+    isFirstStep: isFormFirstStep,
+    isLastStep: isFormLastStep,
+  } = useMultiStepFormFocus(MEDICATION_FORM_STEPS);
+
   // Enforce minimum 300ms display for skeleton
   const displayLoading = useMinimumLoadingTime(isLoading, { minLoadingTime: 300 });
+
+  const hasData = medications.length > 0 || doseLogs.length > 0;
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -101,30 +134,77 @@ const MedicationScreen: React.FC = () => {
       const [meds, logs] = await Promise.all([getMedications(), getDoseLogs()]);
       setMedications(meds);
       setDoseLogs(logs);
+    } catch (err) {
+      // Only surface a toast if we already have cached data on screen — an
+      // initial-load failure with no data falls through to the empty state.
+      if (hasData) {
+        showToast("Couldn't refresh — showing cached data", { variant: 'error' });
+      }
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [hasData, showToast]);
 
   useEffect(() => {
     void loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    await loadData();
+    setIsRefreshing(false);
   }, [loadData]);
 
   const openAdd = () => {
     setEditingMed(null);
     setForm(EMPTY_FORM);
+    resetFormSteps();
     setModalVisible(true);
   };
-  const openEdit = useCallback((med: Medication) => {
-    setEditingMed(med);
-    setForm({ ...med });
-    setModalVisible(true);
-  }, []);
-  const closeModal = () => setModalVisible(false);
+  const openEdit = useCallback(
+    (med: Medication) => {
+      setEditingMed(med);
+      setForm({ ...med });
+      resetFormSteps();
+      setModalVisible(true);
+    },
+    [resetFormSteps],
+  );
+  const closeModal = () => {
+    setModalVisible(false);
+    resetFormSteps();
+  };
+
+  const validateMedicationStep = (): boolean => {
+    if (formStep === 0) {
+      if (!form.name.trim()) {
+        focusFormError('name', 'Medication name is required.');
+        return false;
+      }
+      if (!form.dosage.trim()) {
+        focusFormError('dosage', 'Dosage is required.');
+        return false;
+      }
+      if (!form.petId.trim()) {
+        focusFormError('petId', 'Pet ID is required.');
+        return false;
+      }
+    }
+    return true;
+  };
 
   const handleSave = async () => {
-    if (!form.petId.trim() || !form.name.trim() || !form.dosage.trim()) {
-      Alert.alert('Validation', 'Pet ID, name, and dosage are required.');
+    if (!form.petId.trim()) {
+      focusFormError('petId', 'Pet ID is required.', 0);
+      return;
+    }
+    if (!form.name.trim()) {
+      focusFormError('name', 'Medication name is required.', 0);
+      return;
+    }
+    if (!form.dosage.trim()) {
+      focusFormError('dosage', 'Dosage is required.', 0);
       return;
     }
 
@@ -297,6 +377,11 @@ const MedicationScreen: React.FC = () => {
           <View style={styles.cardHeader}>
             <Text style={styles.medName}>{item.name}</Text>
             <View style={styles.cardActions}>
+              {item.pendingApproval && (
+                <View style={styles.pendingVetReviewBadge}>
+                  <Text style={styles.pendingVetReviewText}>⏳ Pending vet review</Text>
+                </View>
+              )}
               {refillStatus !== 'unknown' && (
                 <View style={refillBadgeStyle}>
                   <Text style={styles.refillBadgeText}>{refillBadgeLabel[refillStatus]}</Text>
@@ -419,215 +504,254 @@ const MedicationScreen: React.FC = () => {
     </ScrollView>
   );
 
+  const renderFormInput = (
+    key: string,
+    placeholder: string,
+    options?: {
+      value?: string;
+      onChangeText?: (v: string) => void;
+      keyboardType?: 'default' | 'numeric';
+      multiline?: boolean;
+      isFirstInteractive?: boolean;
+    },
+  ) => (
+    <TextInput
+      key={key}
+      ref={(ref) => {
+        registerFormFieldRef(key, ref);
+        if (options?.isFirstInteractive) {
+          registerFormFirstInteractive(formStep, ref);
+        }
+      }}
+      style={[styles.input, options?.multiline && styles.textArea]}
+      placeholder={placeholder}
+      value={options?.value}
+      onChangeText={options?.onChangeText}
+      keyboardType={options?.keyboardType}
+      multiline={options?.multiline}
+      accessibilityLabel={placeholder.replace(' *', '')}
+    />
+  );
+
   const renderModal = () => (
     <Modal visible={modalVisible} animationType="slide" transparent onRequestClose={closeModal}>
       <View style={styles.modalOverlay}>
         <ScrollView style={styles.modalContent}>
           <Text style={styles.modalTitle}>{editingMed ? 'Edit Medication' : 'Add Medication'}</Text>
-          {[
-            { placeholder: 'Medication name *', key: 'name' as const },
-            { placeholder: 'Dosage (e.g. 5mg) *', key: 'dosage' as const },
-            { placeholder: 'Pet ID *', key: 'petId' as const },
-          ].map(({ placeholder, key }) => (
-            <TextInput
-              key={key}
-              style={styles.input}
-              placeholder={placeholder}
-              value={form[key] as string}
-              onChangeText={(v) => setForm((f) => ({ ...f, [key]: v }))}
-            />
-          ))}
-          <TextInput
-            style={styles.input}
-            placeholder="Frequency (hours between doses)"
-            keyboardType="numeric"
-            value={String(form.frequency)}
-            onChangeText={(v) => setForm((f) => ({ ...f, frequency: Number(v) || 8 }))}
+          <MultiStepFormHeader
+            stepHeadingRef={formHeadingRef}
+            announcement={formStepAnnouncement}
+            currentStep={formStep}
+            totalSteps={formTotalSteps}
           />
-          <TextInput
-            style={styles.input}
-            placeholder="Start date (YYYY-MM-DD)"
-            value={form.startDate.slice(0, 10)}
-            onChangeText={(v) => setForm((f) => ({ ...f, startDate: new Date(v).toISOString() }))}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="End date (YYYY-MM-DD)"
-            value={form.endDate?.slice(0, 10) ?? ''}
-            onChangeText={(v) =>
-              setForm((f) => ({
-                ...f,
-                endDate: v ? new Date(v).toISOString() : '',
-              }))
-            }
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Refill date (YYYY-MM-DD)"
-            value={form.refillDate?.slice(0, 10) ?? ''}
-            onChangeText={(v) =>
-              setForm((f) => ({
-                ...f,
-                refillDate: v ? new Date(v).toISOString() : '',
-              }))
-            }
-          />
-          <TextInput
-            style={[styles.input, styles.textArea]}
-            placeholder="Instructions"
-            multiline
-            value={form.instructions ?? ''}
-            onChangeText={(v) => setForm((f) => ({ ...f, instructions: v }))}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Prescriber name"
-            value={form.prescriberInfo?.name ?? ''}
-            onChangeText={(v) =>
-              setForm((f) => ({
-                ...f,
-                prescriberInfo: { ...f.prescriberInfo, name: v },
-              }))
-            }
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Prescriber contact"
-            value={form.prescriberInfo?.contact ?? ''}
-            onChangeText={(v) =>
-              setForm((f) => ({
-                ...f,
-                prescriberInfo: { ...f.prescriberInfo, contact: v },
-              }))
-            }
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Prescriber clinic"
-            value={form.prescriberInfo?.clinic ?? ''}
-            onChangeText={(v) =>
-              setForm((f) => ({
-                ...f,
-                prescriberInfo: { ...f.prescriberInfo, clinic: v },
-              }))
-            }
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Pharmacy name"
-            value={form.pharmacyInfo?.name ?? ''}
-            onChangeText={(v) =>
-              setForm((f) => ({
-                ...f,
-                pharmacyInfo: { ...f.pharmacyInfo, name: v },
-              }))
-            }
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Pharmacy phone"
-            value={form.pharmacyInfo?.phone ?? ''}
-            onChangeText={(v) =>
-              setForm((f) => ({
-                ...f,
-                pharmacyInfo: { ...f.pharmacyInfo, phone: v },
-              }))
-            }
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Pharmacy address"
-            value={form.pharmacyInfo?.address ?? ''}
-            onChangeText={(v) =>
-              setForm((f) => ({
-                ...f,
-                pharmacyInfo: { ...f.pharmacyInfo, address: v },
-              }))
-            }
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Total pills"
-            keyboardType="numeric"
-            value={form.totalPills !== undefined ? String(form.totalPills) : ''}
-            onChangeText={(v) => setForm((f) => ({ ...f, totalPills: v ? Number(v) : undefined }))}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Remaining pills"
-            keyboardType="numeric"
-            value={form.remainingPills !== undefined ? String(form.remainingPills) : ''}
-            onChangeText={(v) =>
-              setForm((f) => ({
-                ...f,
-                remainingPills: v ? Number(v) : undefined,
-              }))
-            }
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Current supply (doses on hand — used for refill reminders)"
-            keyboardType="numeric"
-            value={form.currentSupply !== undefined ? String(form.currentSupply) : ''}
-            onChangeText={(v) =>
-              setForm((f) => ({
-                ...f,
-                currentSupply: v ? Number(v) : undefined,
-              }))
-            }
-          />
-          <TextInput
-            style={[styles.input, styles.textArea]}
-            placeholder="Notes"
-            multiline
-            value={form.notes ?? ''}
-            onChangeText={(v) => setForm((f) => ({ ...f, notes: v }))}
-          />
+          {formStep === 0 && (
+            <>
+              {renderFormInput('name', 'Medication name *', {
+                value: form.name,
+                onChangeText: (v) => setForm((f) => ({ ...f, name: v })),
+                isFirstInteractive: true,
+              })}
+              {renderFormInput('dosage', 'Dosage (e.g. 5mg) *', {
+                value: form.dosage,
+                onChangeText: (v) => setForm((f) => ({ ...f, dosage: v })),
+              })}
+              {renderFormInput('petId', 'Pet ID *', {
+                value: form.petId,
+                onChangeText: (v) => setForm((f) => ({ ...f, petId: v })),
+              })}
+              {renderFormInput('frequency', 'Frequency (hours between doses)', {
+                value: String(form.frequency),
+                onChangeText: (v) => setForm((f) => ({ ...f, frequency: Number(v) || 8 })),
+                keyboardType: 'numeric',
+              })}
+            </>
+          )}
+          {formStep === 1 && (
+            <>
+              {renderFormInput('startDate', 'Start date (YYYY-MM-DD)', {
+                value: form.startDate.slice(0, 10),
+                onChangeText: (v) =>
+                  setForm((f) => ({ ...f, startDate: new Date(v).toISOString() })),
+                isFirstInteractive: true,
+              })}
+              {renderFormInput('endDate', 'End date (YYYY-MM-DD)', {
+                value: form.endDate?.slice(0, 10) ?? '',
+                onChangeText: (v) =>
+                  setForm((f) => ({
+                    ...f,
+                    endDate: v ? new Date(v).toISOString() : '',
+                  })),
+              })}
+              {renderFormInput('refillDate', 'Refill date (YYYY-MM-DD)', {
+                value: form.refillDate?.slice(0, 10) ?? '',
+                onChangeText: (v) =>
+                  setForm((f) => ({
+                    ...f,
+                    refillDate: v ? new Date(v).toISOString() : '',
+                  })),
+              })}
+              {renderFormInput('instructions', 'Instructions', {
+                value: form.instructions ?? '',
+                onChangeText: (v) => setForm((f) => ({ ...f, instructions: v })),
+                multiline: true,
+              })}
+            </>
+          )}
+          {formStep === 2 && (
+            <>
+              {renderFormInput('prescriberName', 'Prescriber name', {
+                value: form.prescriberInfo?.name ?? '',
+                onChangeText: (v) =>
+                  setForm((f) => ({
+                    ...f,
+                    prescriberInfo: { ...f.prescriberInfo, name: v },
+                  })),
+                isFirstInteractive: true,
+              })}
+              {renderFormInput('prescriberContact', 'Prescriber contact', {
+                value: form.prescriberInfo?.contact ?? '',
+                onChangeText: (v) =>
+                  setForm((f) => ({
+                    ...f,
+                    prescriberInfo: { ...f.prescriberInfo, contact: v },
+                  })),
+              })}
+              {renderFormInput('prescriberClinic', 'Prescriber clinic', {
+                value: form.prescriberInfo?.clinic ?? '',
+                onChangeText: (v) =>
+                  setForm((f) => ({
+                    ...f,
+                    prescriberInfo: { ...f.prescriberInfo, clinic: v },
+                  })),
+              })}
+              {renderFormInput('pharmacyName', 'Pharmacy name', {
+                value: form.pharmacyInfo?.name ?? '',
+                onChangeText: (v) =>
+                  setForm((f) => ({
+                    ...f,
+                    pharmacyInfo: { ...f.pharmacyInfo, name: v },
+                  })),
+              })}
+              {renderFormInput('pharmacyPhone', 'Pharmacy phone', {
+                value: form.pharmacyInfo?.phone ?? '',
+                onChangeText: (v) =>
+                  setForm((f) => ({
+                    ...f,
+                    pharmacyInfo: { ...f.pharmacyInfo, phone: v },
+                  })),
+              })}
+              {renderFormInput('pharmacyAddress', 'Pharmacy address', {
+                value: form.pharmacyInfo?.address ?? '',
+                onChangeText: (v) =>
+                  setForm((f) => ({
+                    ...f,
+                    pharmacyInfo: { ...f.pharmacyInfo, address: v },
+                  })),
+              })}
+            </>
+          )}
+          {formStep === 3 && (
+            <>
+              {renderFormInput('totalPills', 'Total pills', {
+                value: form.totalPills !== undefined ? String(form.totalPills) : '',
+                onChangeText: (v) =>
+                  setForm((f) => ({ ...f, totalPills: v ? Number(v) : undefined })),
+                keyboardType: 'numeric',
+                isFirstInteractive: true,
+              })}
+              {renderFormInput('remainingPills', 'Remaining pills', {
+                value: form.remainingPills !== undefined ? String(form.remainingPills) : '',
+                onChangeText: (v) =>
+                  setForm((f) => ({
+                    ...f,
+                    remainingPills: v ? Number(v) : undefined,
+                  })),
+                keyboardType: 'numeric',
+              })}
+              {renderFormInput('currentSupply', 'Current supply (doses on hand)', {
+                value: form.currentSupply !== undefined ? String(form.currentSupply) : '',
+                onChangeText: (v) =>
+                  setForm((f) => ({
+                    ...f,
+                    currentSupply: v ? Number(v) : undefined,
+                  })),
+                keyboardType: 'numeric',
+              })}
+              {renderFormInput('notes', 'Notes', {
+                value: form.notes ?? '',
+                onChangeText: (v) => setForm((f) => ({ ...f, notes: v })),
+                multiline: true,
+              })}
+            </>
+          )}
           <View style={styles.modalActions}>
             <TouchableOpacity style={styles.cancelBtn} onPress={closeModal}>
               <Text style={styles.cancelBtnText}>Cancel</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.saveBtn} onPress={() => void handleSave()}>
-              <Text style={styles.saveBtnText}>Save</Text>
-            </TouchableOpacity>
+            {!isFormFirstStep && (
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={goFormBack}
+                accessibilityRole="button"
+                accessibilityLabel="Go to previous step"
+              >
+                <Text style={styles.cancelBtnText}>Back</Text>
+              </TouchableOpacity>
+            )}
+            {!isFormLastStep ? (
+              <TouchableOpacity
+                style={styles.saveBtn}
+                onPress={() => {
+                  if (validateMedicationStep()) goFormNext();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Go to next step"
+              >
+                <Text style={styles.saveBtnText}>Next</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={styles.saveBtn} onPress={() => void handleSave()}>
+                <Text style={styles.saveBtnText}>Save</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           {/* Drug interaction warning */}
           {interactionResult?.hasInteractions && (
             <View style={styles.interactionWarning}>
               <Text style={styles.interactionTitle}>⚠️ Drug Interaction Detected</Text>
-              {(
-                ['contraindicated', 'severe', 'moderate', 'mild'] as InteractionSeverity[]
-              ).map((severity) => {
-                const group = interactionResult.interactions.filter(
-                  (i: DrugInteraction) => i.severity === severity,
-                );
-                if (group.length === 0) return null;
-                return (
-                  <View key={severity} style={styles.severityGroup}>
-                    <View
-                      style={[
-                        styles.severityBadge,
-                        severity === 'contraindicated' && styles.badgeContraindicated,
-                        severity === 'severe' && styles.badgeSevere,
-                        severity === 'moderate' && styles.badgeModerate,
-                        severity === 'mild' && styles.badgeMild,
-                      ]}
-                    >
-                      <Text style={styles.severityBadgeText}>{getSeverityLabel(severity)}</Text>
-                    </View>
-                    {group.map((i: DrugInteraction, idx: number) => (
-                      <View key={idx} style={styles.interactionItem}>
-                        <Text style={styles.interactionDrugs}>
-                          {i.drugA} + {i.drugB}
-                        </Text>
-                        <Text style={styles.interactionDesc}>{i.description}</Text>
-                        <Text style={styles.interactionRec}>{i.recommendation}</Text>
+              {(['contraindicated', 'severe', 'moderate', 'mild'] as InteractionSeverity[]).map(
+                (severity) => {
+                  const group = interactionResult.interactions.filter(
+                    (i: DrugInteraction) => i.severity === severity,
+                  );
+                  if (group.length === 0) return null;
+                  return (
+                    <View key={severity} style={styles.severityGroup}>
+                      <View
+                        style={[
+                          styles.severityBadge,
+                          severity === 'contraindicated' && styles.badgeContraindicated,
+                          severity === 'severe' && styles.badgeSevere,
+                          severity === 'moderate' && styles.badgeModerate,
+                          severity === 'mild' && styles.badgeMild,
+                        ]}
+                      >
+                        <Text style={styles.severityBadgeText}>{getSeverityLabel(severity)}</Text>
                       </View>
-                    ))}
-                  </View>
-                );
-              })}
+                      {group.map((i: DrugInteraction, idx: number) => (
+                        <View key={idx} style={styles.interactionItem}>
+                          <Text style={styles.interactionDrugs}>
+                            {i.drugA} + {i.drugB}
+                          </Text>
+                          <Text style={styles.interactionDesc}>{i.description}</Text>
+                          <Text style={styles.interactionRec}>{i.recommendation}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  );
+                },
+              )}
 
               {/* Contraindicated acknowledgement gate */}
               {interactionResult.interactions.some((i) => i.severity === 'contraindicated') &&
@@ -757,7 +881,15 @@ const MedicationScreen: React.FC = () => {
           keyExtractor={(item) => item.id}
           renderItem={renderMedItem}
           contentContainerStyle={styles.listContent}
-          ListEmptyComponent={<Text style={styles.emptyText}>No medications added yet.</Text>}
+          ListEmptyComponent={
+            <EmptyState
+              icon="medkit"
+              title="No Medications"
+              description="Keep track of your pet's prescriptions, dosages, and refill schedules."
+              buttonText="Add medication"
+              onPress={openAdd}
+            />
+          }
           removeClippedSubviews
           maxToRenderPerBatch={10}
           windowSize={5}
@@ -843,6 +975,14 @@ const styles = StyleSheet.create({
   refillBadgeWarning: { backgroundColor: '#fff8e1' },
   refillBadgeUrgent: { backgroundColor: '#fdecea' },
   refillBadgeText: { fontSize: 11, fontWeight: '700' },
+  pendingVetReviewBadge: {
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginRight: 4,
+    backgroundColor: '#FFF3E0',
+  },
+  pendingVetReviewText: { fontSize: 11, fontWeight: '700', color: '#E65100' },
   logBtn: {
     flex: 1,
     backgroundColor: '#4CAF50',

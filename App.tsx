@@ -11,6 +11,7 @@ import ThemeTransitionView from './src/components/ThemeTransitionView';
 import UpdatePrompt from './src/components/UpdatePrompt';
 import { PetProvider } from './src/context/PetContext';
 import { ThemeProvider } from './src/context/ThemeContext';
+import { ToastProvider } from './src/context/ToastContext';
 import i18n, { isRTL } from './src/i18n';
 import AppNavigator, { handleNotificationDeepLink } from './src/navigation/AppNavigator';
 import LockScreen from './src/screens/LockScreen';
@@ -142,23 +143,25 @@ function App() {
 
   return (
     <ThemeProvider>
-      <PetProvider>
-        <ErrorBoundary>
-          <ThemeTransitionView>
-            <View style={styles.root}>
-              <OfflineIndicator />
-              <AppNavigator />
-              <UpdatePrompt
-                visible={updateStatus.visible}
-                variant={updateStatus.visible ? updateStatus.variant : 'optional'}
-                storeUrl={updateStatus.visible ? updateStatus.storeUrl : undefined}
-                onUpdate={handleUpdate}
-                onDismiss={handleDismiss}
-              />
-            </View>
-          </ThemeTransitionView>
-        </ErrorBoundary>
-      </PetProvider>
+      <ToastProvider>
+        <PetProvider>
+          <ErrorBoundary>
+            <ThemeTransitionView>
+              <View style={styles.root}>
+                <OfflineIndicator />
+                <AppNavigator />
+                <UpdatePrompt
+                  visible={updateStatus.visible}
+                  variant={updateStatus.visible ? updateStatus.variant : 'optional'}
+                  storeUrl={updateStatus.visible ? updateStatus.storeUrl : undefined}
+                  onUpdate={handleUpdate}
+                  onDismiss={handleDismiss}
+                />
+              </View>
+            </ThemeTransitionView>
+          </ErrorBoundary>
+        </PetProvider>
+      </ToastProvider>
     </ThemeProvider>
   );
 }

@@ -6,6 +6,7 @@ const reactPlugin = require('eslint-plugin-react');
 const reactHooksPlugin = require('eslint-plugin-react-hooks');
 const importPlugin = require('eslint-plugin-import');
 const prettierPlugin = require('eslint-plugin-prettier');
+const securityPlugin = require('eslint-plugin-security');
 let a11yPlugin;
 try {
   a11yPlugin = require('eslint-plugin-react-native-a11y');
@@ -15,6 +16,19 @@ try {
 }
 
 module.exports = tseslint.config(
+  // Security plugin — recommended ruleset
+  {
+    plugins: { security: securityPlugin },
+    rules: {
+      ...securityPlugin.configs.recommended.rules,
+      // Disable rules that produce excessive noise in a TypeScript/React Native codebase
+      // or overlap with TypeScript's own type safety guarantees:
+      'security/detect-object-injection': 'off', // Too many false-positives with typed array/object access
+      'security/detect-non-literal-regexp': 'off', // Flagged in tests; patterns are developer-controlled
+      'security/detect-unsafe-regex': 'warn',
+      'security/detect-no-csrf-before-method-override': 'off', // Not applicable (we use express csrf separately)
+    },
+  },
   {
     ignores: [
       'node_modules/**',

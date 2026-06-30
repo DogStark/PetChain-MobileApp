@@ -76,6 +76,7 @@ async function toPetResponse(p: StoredPet | DBPet) {
     createdAt: 'created_at' in p ? p.created_at : (p as StoredPet).createdAt,
     updatedAt: 'updated_at' in p ? p.updated_at : (p as StoredPet).updatedAt,
     owner: await ownerSummary(ownerId),
+    metadata: (p as StoredPet).metadata ?? {},
   };
 }
 
@@ -376,6 +377,10 @@ router.put('/:id', async (req: AuthenticatedRequest, res) => {
     // Only admin can change owner
     ...(body.ownerId !== undefined && req.user!.role === UserRole.ADMIN
       ? { ownerId: String(body.ownerId) }
+      : {}),
+    // Allow owners to update pet metadata (step goals, custom config)
+    ...(body.metadata !== undefined
+      ? { metadata: { ...(pet.metadata ?? {}), ...body.metadata } }
       : {}),
     updatedAt: t,
   };

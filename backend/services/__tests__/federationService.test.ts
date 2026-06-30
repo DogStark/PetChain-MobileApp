@@ -14,14 +14,29 @@ jest.mock('@stellar/stellar-sdk', () => {
       fromSecret: jest.fn((sec: string) => mockKeypair('GPUBKEY123', sec)),
       fromPublicKey: jest.fn((pub: string) => mockKeypair(pub, '')),
     },
+    Federation: {
+      Server: {
+        resolve: jest.fn(),
+      },
+    },
   };
 });
+
+jest.mock('../cacheService', () => ({
+  get: jest.fn(),
+  set: jest.fn().mockResolvedValue(undefined),
+}));
+
+import * as StellarSdk from '@stellar/stellar-sdk';
+import { get as cacheGet, set as cacheSet } from '../cacheService';
 
 import {
   claimFederatedAddress,
   getSignedRecord,
   getVetFederationRecord,
   lookupFederation,
+  resolveFederationAddress,
+  resolveFederationAddressWithCacheControl,
   revokeVetCredential,
   signMedicalRecord,
   verifyRecordSignature,
@@ -29,6 +44,15 @@ import {
 
 const CREDENTIAL_HASH = 'abc123def456';
 const RECORD_PAYLOAD = { id: 'mr-1', petId: 'p-1', type: 'vaccination' };
+
+const mockCacheGet = cacheGet as jest.Mock;
+const mockCacheSet = cacheSet as jest.Mock;
+const mockResolve = StellarSdk.Federation.Server.resolve as jest.Mock;
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockCacheGet.mockResolvedValue(null); // default: cache miss
+});
 
 describe('federationService', () => {
   describe('claimFederatedAddress', () => {
@@ -76,6 +100,100 @@ describe('federationService', () => {
       claimFederatedAddress('vet-revlookup', 'dr.revlookup', CREDENTIAL_HASH);
       revokeVetCredential('vet-revlookup');
       expect(lookupFederation('dr.revlookup*petchain.app', 'name')).toBeNull();
+    });
+  });
+
+  describe('resolveFederationAddress — caching', () => {
+    const address = 'user*petchain.app';
+    const resolvedRecord = { account_id: 'GPUBKEYRESOLVED', memo_type: 'text', memo: 'user-1' };
+
+    it('returns cached result on cache hit (no upstream call)', async () => {
+      const cached = { result: { stellar_address: address, account_id: 'GPUBKEYCACHED' } };
+      mockCacheGet.mockResolvedValue(cached);
+
+      const result = await resolveFederationAddress(address);
+
+      expect(result).toEqual(cached.result);
+      expect(mockResolve).not.toHaveBeenCalled();
+    });
+
+    it('calls upstream and caches result on cache miss', async () => {
+      mockCacheGet.mockResolvedValue(null);
+      mockResolve.mockResolvedValue(resolvedRecord);
+
+      const result = await resolveFederationAddress(address);
+
+      expect(mockResolve).toHaveBeenCalledWith(address);
+      expect(result?.account_id).toBe('GPUBKEYRESOLVED');
+      expect(mockCacheSet).toHaveBeenCalledWith(
+        expect.stringContaining(address),
+        { result: expect.objectContaining({ account_id: 'GPUBKEYRESOLVED' }) },
+        15 * 60,
+      );
+    });
+
+    it('caches negative result for 2 minutes when address not found', async () => {
+      mockCacheGet.mockResolvedValue(null);
+      mockResolve.mockRejectedValue(new Error('Not found'));
+
+      const result = await resolveFederationAddress(address);
+
+      expect(result).toBeNull();
+      expect(mockCacheSet).toHaveBeenCalledWith(
+        expect.stringContaining(address),
+        { result: null },
+        2 * 60,
+      );
+    });
+
+    it('serves cached negative result without calling upstream', async () => {
+      mockCacheGet.mockResolvedValue({ result: null });
+
+      const result = await resolveFederationAddress(address);
+
+      expect(result).toBeNull();
+      expect(mockResolve).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resolveFederationAddressWithCacheControl', () => {
+    const address = 'vet*hospital.example';
+    const resolvedRecord = { account_id: 'GPUBKEYCC', memo_type: 'text', memo: undefined };
+
+    it('uses the lower of Cache-Control max-age and 15-min TTL', async () => {
+      mockCacheGet.mockResolvedValue(null);
+      mockResolve.mockResolvedValue(resolvedRecord);
+
+      await resolveFederationAddressWithCacheControl(address, 300); // 5 min from server
+
+      expect(mockCacheSet).toHaveBeenCalledWith(
+        expect.stringContaining(address),
+        expect.any(Object),
+        300, // 5 min < 15 min → use 5 min
+      );
+    });
+
+    it('caps at 15 min when server Cache-Control is larger', async () => {
+      mockCacheGet.mockResolvedValue(null);
+      mockResolve.mockResolvedValue(resolvedRecord);
+
+      await resolveFederationAddressWithCacheControl(address, 3600); // 1 hour from server
+
+      expect(mockCacheSet).toHaveBeenCalledWith(
+        expect.stringContaining(address),
+        expect.any(Object),
+        15 * 60, // capped at 15 min
+      );
+    });
+
+    it('returns cached hit without upstream call', async () => {
+      const cached = { result: { stellar_address: address, account_id: 'GPUBKEYHIT' } };
+      mockCacheGet.mockResolvedValue(cached);
+
+      const result = await resolveFederationAddressWithCacheControl(address, 300);
+
+      expect(result).toEqual(cached.result);
+      expect(mockResolve).not.toHaveBeenCalled();
     });
   });
 

@@ -1,0 +1,139 @@
+name: Backend CI — Tests & Coverage
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── OpenAPI spec validation ──────────────────────────────────────────────
+  openapi-spec-validation:
+    name: OpenAPI Spec Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Check openapi.json is in sync with TypeScript spec source
+        run: npm run openapi:check
+
+      - name: Validate openapi.json against OpenAPI 3.0 JSON Schema
+        run: npm run openapi:validate
+
+  backend-test:
+    name: Backend Tests & Coverage
+    runs-on: ubuntu-latest
+    needs: openapi-spec-validation
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: petchain_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/petchain_test
+      NODE_ENV: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Run backend tests with coverage
+        id: test
+        run: |
+          npm run test:ci -- \
+            --testPathPattern="backend/" \
+            --coverageDirectory=coverage/backend \
+            --coverageThreshold='{"global":{"lines":70,"functions":70,"branches":70,"statements":70}}' \
+            2>&1 | tee test-output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-report
+          path: coverage/backend/
+          retention-days: 14
+
+      - name: Post coverage summary as PR comment
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let summary = '## Backend Coverage Report\n\n';
+
+            try {
+              const raw = fs.readFileSync('coverage/backend/coverage-summary.json', 'utf8');
+              const data = JSON.parse(raw).total;
+              const pct = (k) => `${data[k].pct}%`;
+              const icon = (k) => (data[k].pct >= 70 ? '✅' : '❌');
+
+              summary += '| Metric | Coverage | Threshold |\n';
+              summary += '|--------|----------|-----------|\n';
+              summary += `| ${icon('statements')} Statements | ${pct('statements')} | 70% |\n`;
+              summary += `| ${icon('branches')} Branches | ${pct('branches')} | 70% |\n`;
+              summary += `| ${icon('functions')} Functions | ${pct('functions')} | 70% |\n`;
+              summary += `| ${icon('lines')} Lines | ${pct('lines')} | 70% |\n`;
+            } catch {
+              summary += '_Coverage summary not available — see artifact for details._\n';
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(
+              (c) => c.user.login === 'github-actions[bot]' && c.body.startsWith('## Backend Coverage Report'),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: summary,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: summary,
+              });
+            }

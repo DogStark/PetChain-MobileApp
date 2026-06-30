@@ -56,6 +56,14 @@ export interface Medication {
   estimatedRunOutDate?: string;
   /** IDs of the scheduled refill-reminder push notifications for this medication. */
   refillNotificationIds?: string[];
+
+  // ── Vet approval tracking ────────────────────────────────────────────────────
+  /** Indicates if this dosage is pending vet approval. */
+  pendingApproval?: boolean;
+  /** ID of the associated dosage approval request. */
+  approvalRequestId?: string;
+  /** Vet ID who will review the dosage. */
+  reviewingVetId?: string;
 }
 
 export interface CreateMedicationInput extends Omit<Medication, 'id' | 'createdAt' | 'updatedAt'> {

@@ -20,6 +20,8 @@ import {
   getDrugsForSpecies,
   lookupDrug,
 } from '../utils/dosageCalculator';
+import { requestVetApproval, type DosageApprovalRequest } from '../services/dosageApprovalService';
+import { createNote } from '../services/noteService';
 
 const SPECIES_OPTIONS: { label: string; value: Species }[] = [
   { label: 'Dog', value: 'dog' },
@@ -55,6 +57,16 @@ interface VetOverride {
   justification: string;
 }
 
+interface VetApprovalModalData {
+  petId: string;
+  petName: string;
+  vetId: string;
+  frequency: number;
+  startDate: string;
+  endDate?: string;
+  instructions?: string;
+}
+
 const DosageCalculatorScreen: React.FC = () => {
   const [species, setSpecies] = useState<Species>('dog');
   const [weightKg, setWeightKg] = useState('');
@@ -70,6 +82,16 @@ const DosageCalculatorScreen: React.FC = () => {
     justification: '',
   });
   const [confirmedOverride, setConfirmedOverride] = useState<VetOverride | null>(null);
+  const [approvalModalVisible, setApprovalModalVisible] = useState(false);
+  const [approvalData, setApprovalData] = useState<VetApprovalModalData>({
+    petId: '',
+    petName: '',
+    vetId: '',
+    frequency: 24,
+    startDate: new Date().toISOString(),
+  });
+  const [pendingApprovalRequest, setPendingApprovalRequest] = useState<DosageApprovalRequest | null>(null);
+  const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
 
   const availableDrugs = useMemo(() => getDrugsForSpecies(species), [species]);
   const selectedDrug = useMemo(
@@ -167,6 +189,81 @@ const DosageCalculatorScreen: React.FC = () => {
       ],
     );
   }, [vetOverride]);
+
+  const handleRequestVetApproval = useCallback(() => {
+    if (!result) return;
+    setApprovalData({
+      petId: '',
+      petName: '',
+      vetId: '',
+      frequency: 24,
+      startDate: new Date().toISOString(),
+    });
+    setApprovalModalVisible(true);
+  }, [result]);
+
+  const handleSubmitApprovalRequest = useCallback(async () => {
+    if (!result || !selectedDrug) return;
+
+    if (!approvalData.petId.trim() || !approvalData.petName.trim() || !approvalData.vetId.trim()) {
+      Alert.alert('Missing Information', 'Please fill in all required fields.');
+      return;
+    }
+
+    const weight = parseFloat(weightKg);
+    if (isNaN(weight) || weight <= 0) {
+      Alert.alert('Invalid Weight', 'Please enter a valid pet weight.');
+      return;
+    }
+
+    setIsSubmittingApproval(true);
+    try {
+      const request = await requestVetApproval({
+        petId: approvalData.petId,
+        petName: approvalData.petName,
+        petWeight: weight,
+        drugName: selectedDrug.name,
+        dosageResult: result,
+        vetId: approvalData.vetId,
+        medicationData: {
+          id: `med_${Date.now()}`,
+          frequency: approvalData.frequency,
+          startDate: approvalData.startDate,
+          endDate: approvalData.endDate,
+          instructions: approvalData.instructions,
+        },
+      });
+
+      await createNote({
+        vetId: approvalData.vetId,
+        petId: approvalData.petId,
+        subjective: `Dosage calculation approval requested for ${selectedDrug.name}`,
+        objective: `Pet weight: ${weight} kg. Calculated dose: ${result.dose} ${result.unit} (${result.doseInMg} mg total). Safety level: ${result.safetyLevel}.`,
+        assessment: `Dosage calculator determined ${result.safetyLevel} range. ${result.warnings.length > 0 ? `Warnings: ${result.warnings.join('; ')}` : 'No warnings.'}`,
+        plan: `Pending vet review and approval. Request ID: ${request.id}`,
+        attachments: [],
+        accessControls: [
+          { role: 'owner', entityId: approvalData.petId, permission: 'read' },
+          { role: 'vet', entityId: approvalData.vetId, permission: 'edit' },
+        ],
+      });
+
+      setPendingApprovalRequest(request);
+      setApprovalModalVisible(false);
+
+      Alert.alert(
+        'Approval Request Sent',
+        `Your dosage calculation has been sent to the veterinarian for review. You'll be notified once they approve or modify the dosage.`,
+      );
+    } catch (error) {
+      Alert.alert(
+        'Request Failed',
+        error instanceof Error ? error.message : 'Failed to send approval request.',
+      );
+    } finally {
+      setIsSubmittingApproval(false);
+    }
+  }, [result, selectedDrug, approvalData, weightKg]);
 
   const renderSpeciesSelector = () => (
     <View style={styles.section}>
@@ -296,6 +393,18 @@ const DosageCalculatorScreen: React.FC = () => {
 
         {renderWarnings(result.warnings, 'Dosage Warnings')}
 
+        {pendingApprovalRequest && (
+          <View style={styles.pendingApprovalBadge}>
+            <Text style={styles.pendingApprovalTitle}>⏳ Pending Vet Review</Text>
+            <Text style={styles.pendingApprovalText}>
+              Request sent to veterinarian on {new Date(pendingApprovalRequest.requestedAt).toLocaleDateString()}
+            </Text>
+            <Text style={styles.pendingApprovalText}>
+              Request ID: {pendingApprovalRequest.id}
+            </Text>
+          </View>
+        )}
+
         {confirmedOverride && (
           <View style={styles.overrideConfirmed}>
             <Text style={styles.overrideConfirmedTitle}>Vet Override Active</Text>
@@ -309,16 +418,29 @@ const DosageCalculatorScreen: React.FC = () => {
         )}
 
         {result.safetyLevel !== 'safe' && (
+          <View style={styles.actionButtonRow}>
+            <TouchableOpacity
+              style={styles.overrideBtn}
+              onPress={() => {
+                setVetOverride({ dose: String(result.dose), unit: result.unit, justification: '' });
+                setVetOverrideVisible(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Open vet override dialog"
+            >
+              <Text style={styles.overrideBtnText}>Vet Override</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {!pendingApprovalRequest && (
           <TouchableOpacity
-            style={styles.overrideBtn}
-            onPress={() => {
-              setVetOverride({ dose: String(result.dose), unit: result.unit, justification: '' });
-              setVetOverrideVisible(true);
-            }}
+            style={styles.requestApprovalBtn}
+            onPress={handleRequestVetApproval}
             accessibilityRole="button"
-            accessibilityLabel="Open vet override dialog"
+            accessibilityLabel="Request vet approval for this dosage"
           >
-            <Text style={styles.overrideBtnText}>Vet Override</Text>
+            <Text style={styles.requestApprovalBtnText}>📋 Request Vet Approval</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -389,6 +511,92 @@ const DosageCalculatorScreen: React.FC = () => {
     </Modal>
   );
 
+  const renderVetApprovalModal = () => (
+    <Modal
+      visible={approvalModalVisible}
+      animationType="slide"
+      transparent
+      onRequestClose={() => setApprovalModalVisible(false)}
+    >
+      <View style={styles.modalOverlay}>
+        <ScrollView style={styles.modalContent}>
+          <Text style={styles.modalTitle}>Request Vet Approval</Text>
+          <Text style={styles.modalSubtitle}>
+            Send this dosage calculation to your veterinarian for review and approval before adding
+            it to the medication schedule.
+          </Text>
+
+          <Text style={styles.inputLabel}>Pet ID *</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter pet ID"
+            value={approvalData.petId}
+            onChangeText={(v) => setApprovalData((prev) => ({ ...prev, petId: v }))}
+            accessibilityLabel="Pet ID"
+          />
+
+          <Text style={styles.inputLabel}>Pet Name *</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter pet name"
+            value={approvalData.petName}
+            onChangeText={(v) => setApprovalData((prev) => ({ ...prev, petName: v }))}
+            accessibilityLabel="Pet name"
+          />
+
+          <Text style={styles.inputLabel}>Veterinarian ID *</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter vet ID"
+            value={approvalData.vetId}
+            onChangeText={(v) => setApprovalData((prev) => ({ ...prev, vetId: v }))}
+            accessibilityLabel="Veterinarian ID"
+          />
+
+          <Text style={styles.inputLabel}>Frequency (hours between doses)</Text>
+          <TextInput
+            style={styles.input}
+            keyboardType="numeric"
+            placeholder="e.g. 12"
+            value={String(approvalData.frequency)}
+            onChangeText={(v) => setApprovalData((prev) => ({ ...prev, frequency: parseInt(v) || 24 }))}
+            accessibilityLabel="Medication frequency in hours"
+          />
+
+          <Text style={styles.inputLabel}>Additional Instructions</Text>
+          <TextInput
+            style={[styles.input, styles.textArea]}
+            placeholder="Any special instructions..."
+            multiline
+            numberOfLines={3}
+            value={approvalData.instructions}
+            onChangeText={(v) => setApprovalData((prev) => ({ ...prev, instructions: v }))}
+            accessibilityLabel="Medication instructions"
+          />
+
+          <View style={styles.modalActions}>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => setApprovalModalVisible(false)}
+              disabled={isSubmittingApproval}
+            >
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.saveBtn, isSubmittingApproval && styles.saveBtnDisabled]}
+              onPress={handleSubmitApprovalRequest}
+              disabled={isSubmittingApproval}
+            >
+              <Text style={styles.saveBtnText}>
+                {isSubmittingApproval ? 'Sending...' : 'Send Request'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.header}>
@@ -412,6 +620,7 @@ const DosageCalculatorScreen: React.FC = () => {
 
       {renderResult()}
       {renderVetOverrideModal()}
+      {renderVetApprovalModal()}
     </ScrollView>
   );
 };
@@ -524,6 +733,26 @@ const styles = StyleSheet.create({
   },
   overrideBtnText: { color: '#1565C0', fontWeight: '600', fontSize: 13 },
   emptyText: { fontSize: 13, color: '#999', textAlign: 'center', paddingVertical: 10 },
+  pendingApprovalBadge: {
+    backgroundColor: '#FFF3E0',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 10,
+    borderLeftWidth: 4,
+    borderLeftColor: '#FF9800',
+  },
+  pendingApprovalTitle: { fontSize: 13, fontWeight: '700', color: '#E65100', marginBottom: 4 },
+  pendingApprovalText: { fontSize: 12, color: '#5D4037', marginBottom: 2 },
+  actionButtonRow: { marginTop: 4 },
+  requestApprovalBtn: {
+    backgroundColor: '#1976D2',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  requestApprovalBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+  saveBtnDisabled: { backgroundColor: '#90CAF9', opacity: 0.6 },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',

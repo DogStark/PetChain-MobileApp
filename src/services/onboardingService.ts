@@ -1,4 +1,5 @@
 import analyticsService from './analyticsService';
+import { type LanguageCode } from '../i18n';
 import { encryptedAsyncStorage } from '../utils/encryptedAsyncStorage';
 
 export type OnboardingVariant = 'A' | 'B';
@@ -10,6 +11,7 @@ export interface OnboardingState {
   variant: OnboardingVariant;
   completed: boolean;
   startedAt: number;
+  language?: LanguageCode;
 }
 
 const STORAGE_KEY = 'onboarding_state';
@@ -108,6 +110,16 @@ function completionPercentage(state: OnboardingState): number {
   return Math.round((done / TOTAL_STEPS) * 100);
 }
 
+async function saveLanguage(lang: LanguageCode): Promise<void> {
+  const state = (await load()) ?? (await init());
+  await save({ ...state, language: lang });
+}
+
+async function getSavedLanguage(): Promise<LanguageCode | null> {
+  const state = await load();
+  return state?.language ?? null;
+}
+
 const onboardingService = {
   init,
   load,
@@ -117,6 +129,8 @@ const onboardingService = {
   complete,
   reset,
   completionPercentage,
+  saveLanguage,
+  getSavedLanguage,
   TOTAL_STEPS,
 };
 export default onboardingService;

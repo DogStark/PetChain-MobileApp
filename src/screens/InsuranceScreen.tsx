@@ -3,6 +3,8 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Linking,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -30,11 +32,53 @@ const STATUS_COLOR: Record<ClaimStatus, string> = {
   denied: '#e53e3e',
 };
 
+const TIMELINE_STEPS: { status: ClaimStatus; label: string }[] = [
+  { status: 'submitted', label: 'Submitted' },
+  { status: 'under_review', label: 'Under Review' },
+  { status: 'approved', label: 'Approved' },
+];
+
+const STATUS_ORDER: ClaimStatus[] = ['submitted', 'under_review', 'approved'];
+
+/** Claims have no per-step timestamps, so derive a best-effort timeline from
+ * the claim's submittedAt/updatedAt and current status. */
+function buildTimeline(claim: InsuranceClaim) {
+  const currentIndex = STATUS_ORDER.indexOf(claim.status === 'denied' ? 'under_review' : claim.status);
+  return TIMELINE_STEPS.map((step, i) => {
+    const stepIndex = STATUS_ORDER.indexOf(step.status);
+    const reached = claim.status === 'denied' ? stepIndex <= 1 : stepIndex <= currentIndex;
+    const isCurrent = claim.status !== 'denied' && stepIndex === currentIndex;
+    return {
+      ...step,
+      reached,
+      isCurrent,
+      date: reached ? (i === 0 ? claim.submittedAt : claim.updatedAt) : null,
+    };
+  });
+}
+
+function expectedCompletionDate(claim: InsuranceClaim): string {
+  const submitted = new Date(claim.submittedAt);
+  submitted.setDate(submitted.getDate() + 14);
+  return submitted.toLocaleDateString();
+}
+
+function buildAppealMailto(claim: InsuranceClaim): string {
+  const subject = encodeURIComponent(`Appeal for denied claim #${claim.id.slice(0, 8).toUpperCase()}`);
+  const body = encodeURIComponent(
+    `Hello,\n\nI would like to appeal the denial of my insurance claim #${claim.id
+      .slice(0, 8)
+      .toUpperCase()} for "${claim.description}" (amount: $${claim.amount}).\n\nPlease review my case.\n\nThank you.`,
+  );
+  return `mailto:claims-appeals@petchain.app?subject=${subject}&body=${body}`;
+}
+
 const InsuranceScreen: React.FC = () => {
   const [screen, setScreen] = useState<Screen>('policies');
   const [policies, setPolicies] = useState<InsurancePolicy[]>([]);
   const [claims, setClaimsData] = useState<InsuranceClaim[]>([]);
   const [loading, setLoading] = useState(true);
+  const [claimDetail, setClaimDetail] = useState<InsuranceClaim | null>(null);
 
   // New claim form
   const [selectedPolicyId, setSelectedPolicyId] = useState('');
@@ -177,7 +221,11 @@ const InsuranceScreen: React.FC = () => {
           keyExtractor={(c) => c.id}
           contentContainerStyle={styles.list}
           renderItem={({ item }) => (
-            <View style={styles.card}>
+            <TouchableOpacity
+              style={styles.card}
+              onPress={() => setClaimDetail(item)}
+              accessibilityLabel={`View timeline for claim ${item.id.slice(0, 8)}`}
+            >
               <Text style={styles.cardTitle}>#{item.id.slice(0, 8).toUpperCase()}</Text>
               <Text style={styles.cardSub}>{item.description}</Text>
               <Text style={styles.cardSub}>Amount: ${item.amount}</Text>
@@ -189,7 +237,7 @@ const InsuranceScreen: React.FC = () => {
                   {item.status.replace('_', ' ')}
                 </Text>
               </View>
-            </View>
+            </TouchableOpacity>
           )}
           ListEmptyComponent={<Text style={styles.empty}>No claims yet.</Text>}
         />
@@ -204,6 +252,89 @@ const InsuranceScreen: React.FC = () => {
         >
           <Text style={styles.btnText}>+ Submit Claim</Text>
         </TouchableOpacity>
+
+        <Modal
+          visible={claimDetail !== null}
+          animationType="slide"
+          onRequestClose={() => setClaimDetail(null)}
+        >
+          {claimDetail && (
+            <ScrollView style={styles.container} contentContainerStyle={styles.detailContent}>
+              <TouchableOpacity onPress={() => setClaimDetail(null)} style={styles.back}>
+                <Text style={styles.backText}>‹ Back</Text>
+              </TouchableOpacity>
+              <Text style={styles.title}>Claim #{claimDetail.id.slice(0, 8).toUpperCase()}</Text>
+              <Text style={styles.cardSub}>{claimDetail.description}</Text>
+
+              <View style={styles.timeline}>
+                {buildTimeline(claimDetail).map((step, i) => (
+                  <View key={step.status} style={styles.timelineRow}>
+                    <View style={styles.timelineMarkerCol}>
+                      <View
+                        style={[
+                          styles.timelineDot,
+                          step.reached && styles.timelineDotDone,
+                          step.isCurrent && styles.timelineDotActive,
+                        ]}
+                      />
+                      {i < buildTimeline(claimDetail).length - 1 && (
+                        <View
+                          style={[styles.timelineLine, step.reached && styles.timelineLineDone]}
+                        />
+                      )}
+                    </View>
+                    <View style={styles.timelineTextCol}>
+                      <Text
+                        style={[
+                          styles.timelineLabel,
+                          !step.reached && styles.timelineLabelPending,
+                        ]}
+                      >
+                        {step.label}
+                      </Text>
+                      {step.date && (
+                        <Text style={styles.timelineDate}>
+                          {new Date(step.date).toLocaleDateString()}
+                        </Text>
+                      )}
+                      {step.isCurrent && claimDetail.status === 'under_review' && (
+                        <Text style={styles.timelineEta}>
+                          Expected completion: {expectedCompletionDate(claimDetail)}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                ))}
+
+                {claimDetail.status === 'denied' && (
+                  <View style={styles.timelineRow}>
+                    <View style={styles.timelineMarkerCol}>
+                      <View style={[styles.timelineDot, styles.timelineDotDenied]} />
+                    </View>
+                    <View style={styles.timelineTextCol}>
+                      <Text style={[styles.timelineLabel, styles.timelineLabelDenied]}>
+                        Rejected
+                      </Text>
+                      <Text style={styles.timelineDate}>
+                        {new Date(claimDetail.updatedAt).toLocaleDateString()}
+                      </Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              {claimDetail.status === 'denied' && (
+                <TouchableOpacity
+                  style={styles.appealBtn}
+                  onPress={() => void Linking.openURL(buildAppealMailto(claimDetail))}
+                  accessibilityLabel="Appeal denied claim"
+                >
+                  <Text style={styles.appealBtnText}>Appeal</Text>
+                </TouchableOpacity>
+              )}
+            </ScrollView>
+          )}
+        </Modal>
       </View>
     );
   }
@@ -338,6 +469,37 @@ const styles = StyleSheet.create({
   },
   policyOptionActive: { borderColor: '#4299e1', backgroundColor: '#ebf8ff' },
   policyOptionText: { fontSize: 14, color: '#2d3748' },
+  detailContent: { padding: 16, paddingBottom: 40 },
+  timeline: { marginTop: 24 },
+  timelineRow: { flexDirection: 'row' },
+  timelineMarkerCol: { width: 24, alignItems: 'center' },
+  timelineDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#e2e8f0',
+    borderWidth: 2,
+    borderColor: '#cbd5e0',
+  },
+  timelineDotDone: { backgroundColor: '#48bb78', borderColor: '#48bb78' },
+  timelineDotActive: { backgroundColor: '#4299e1', borderColor: '#4299e1' },
+  timelineDotDenied: { backgroundColor: '#e53e3e', borderColor: '#e53e3e' },
+  timelineLine: { flex: 1, width: 2, minHeight: 28, backgroundColor: '#e2e8f0', marginTop: 2 },
+  timelineLineDone: { backgroundColor: '#48bb78' },
+  timelineTextCol: { flex: 1, paddingLeft: 12, paddingBottom: 20 },
+  timelineLabel: { fontSize: 15, fontWeight: '700', color: '#1a202c' },
+  timelineLabelPending: { color: '#a0aec0', fontWeight: '600' },
+  timelineLabelDenied: { color: '#e53e3e' },
+  timelineDate: { fontSize: 12, color: '#718096', marginTop: 2 },
+  timelineEta: { fontSize: 12, color: '#4299e1', marginTop: 4, fontWeight: '600' },
+  appealBtn: {
+    marginTop: 12,
+    backgroundColor: '#e53e3e',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  appealBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
 });
 
 export default InsuranceScreen;

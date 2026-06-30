@@ -11,6 +11,10 @@ import {
   Platform,
 } from 'react-native';
 
+import HealthScoreChart, {
+  type HealthScoreDataPoint,
+  type MedicalEvent,
+} from '../components/HealthScoreChart';
 import WeightChart, { type WeightDataPoint } from '../components/WeightChart';
 import type { Appointment } from '../models/Appointment';
 import { AppointmentStatus } from '../models/Appointment';
@@ -18,6 +22,7 @@ import type { HealthMetricEntry } from '../models/HealthMetric';
 import type { Medication } from '../models/Medication';
 import { getUpcomingAppointments } from '../services/appointmentService';
 import { getHealthMetrics, activityLevelToScore } from '../services/healthMetricService';
+import healthScoringServiceV2 from '../services/healthScoringServiceV2';
 import type { MedicalRecord } from '../services/medicalRecordService';
 import { getMedicalRecords } from '../services/medicalRecordService';
 import { getMedications, isMedicationActive } from '../services/medicationService';
@@ -39,6 +44,8 @@ interface DashboardData {
   latestMetric: HealthMetricEntry | null;
   healthScore: number | null;
   weightHistory: WeightDataPoint[];
+  healthScoreHistory: HealthScoreDataPoint[];
+  medicalEvents: MedicalEvent[];
 }
 
 // ─── Health Score Calculation ──────────────────────────────────────────────
@@ -110,22 +117,31 @@ function appointmentTypeLabel(type: string): string {
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
 
-function SectionHeader({ title, icon }: { title: string; icon: string }) {
+// Memoized because it receives simple scalar props and is rendered multiple times
+const SectionHeader = React.memo(function SectionHeader({
+  title,
+  icon,
+}: {
+  title: string;
+  icon: string;
+}) {
   return (
     <View style={styles.sectionHeader}>
       <Text style={styles.sectionIcon}>{icon}</Text>
       <Text style={styles.sectionTitle}>{title}</Text>
     </View>
   );
-}
+});
 
+// Note: Card is not memoized because it accepts React.ReactNode children, which are always new objects on parent render, making React.memo ineffective here.
 function Card({ children }: { children: React.ReactNode }) {
   return <View style={styles.card}>{children}</View>;
 }
 
-function EmptyState({ message }: { message: string }) {
+// Memoized to avoid re-rendering when parent re-renders due to other state changes
+const EmptyState = React.memo(function EmptyState({ message }: { message: string }) {
   return <Text style={styles.emptyText}>{message}</Text>;
-}
+});
 
 // ─── Main Screen ─────────────────────────────────────────────────────────────
 
@@ -139,13 +155,15 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
     latestMetric: null,
     healthScore: null,
     weightHistory: [],
+    healthScoreHistory: [],
+    medicalEvents: [],
   });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [recordsResp, medications, appointments, metrics] = await Promise.all([
+      const [recordsResp, medications, appointments, metrics, scoreHistory] = await Promise.all([
         getMedicalRecords(petId, { limit: 100 }).catch(() => ({
           data: [] as MedicalRecord[],
           total: 0,
@@ -156,6 +174,9 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
         getMedications().catch(() => [] as Medication[]),
         getUpcomingAppointments(petId).catch(() => [] as Appointment[]),
         getHealthMetrics(petId).catch(() => [] as HealthMetricEntry[]),
+        healthScoringServiceV2
+          .getScoreHistory(petId, 365)
+          .catch(() => [] as HealthScoreDataPoint[]),
       ]);
 
       const activeMeds = medications.filter((m) => isMedicationActive(m));
@@ -180,6 +201,20 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
           note: m.notes,
         }));
 
+      // Build medical events from records for chart annotations
+      const medicalEvents: MedicalEvent[] = sortedRecords
+        .filter((r) => r.type === 'vaccination' || r.type === 'treatment' || r.type === 'diagnosis')
+        .map((r) => ({
+          date: r.date,
+          type: r.type as 'vaccination' | 'treatment' | 'diagnosis',
+          label:
+            r.type === 'vaccination'
+              ? 'Vaccination'
+              : r.type === 'treatment'
+                ? 'Treatment'
+                : 'Diagnosis',
+        }));
+
       setData({
         recentRecords: sortedRecords.slice(0, 3),
         activeMedications: activeMeds.slice(0, 5),
@@ -192,6 +227,8 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
         latestMetric,
         healthScore,
         weightHistory,
+        healthScoreHistory: scoreHistory,
+        medicalEvents,
       });
     } finally {
       setLoading(false);
@@ -203,10 +240,12 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
     void load();
   }, [load]);
 
-  const onRefresh = () => {
+  // Stabilized with useCallback to prevent re-creating this function on every render,
+  // which would cause the RefreshControl to see a new prop unnecessarily
+  const onRefresh = useCallback(() => {
     setRefreshing(true);
     void load();
-  };
+  }, [load]);
 
   const handleExportChart = useCallback(async () => {
     try {
@@ -235,6 +274,8 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
     latestMetric,
     healthScore,
     weightHistory,
+    healthScoreHistory,
+    medicalEvents,
   } = data;
 
   return (
@@ -305,6 +346,19 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
           )}
         </Card>
 
+        {/* ── Health Score Trend ─────────────────────────────────── */}
+        {healthScoreHistory.length > 0 && (
+          <>
+            <SectionHeader title="Health Score History" icon="📊" />
+            <HealthScoreChart
+              data={healthScoreHistory}
+              medicalEvents={medicalEvents}
+              onExport={handleExportChart}
+              height={300}
+            />
+          </>
+        )}
+
         {/* ── Latest Metrics ─────────────────────────────────────── */}
         {latestMetric && (
           <>
@@ -343,6 +397,7 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
             <SectionHeader title="Weight & Growth" icon="📈" />
             <WeightChart
               data={data.weightHistory}
+              petName={petName}
               vetRecommendedRange={{ min: 4.5, max: 5.5 }}
               onExport={handleExportChart}
               height={300}

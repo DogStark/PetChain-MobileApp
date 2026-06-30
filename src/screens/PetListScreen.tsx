@@ -1,15 +1,18 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { HeaderOfflineStatus, useOfflineStatus } from '../components/OfflineIndicator';
 import { OptimizedImage } from '../components/OptimizedImage';
 import PaywallModal from '../components/PaywallModal';
 import PetAggregateView from '../components/PetAggregateView';
 import PetSelectorBar from '../components/PetSelectorBar';
+import { EmptyState } from '../components/EmptyState';
 import { RetryError } from '../components/RetryError';
 import { SkeletonCard } from '../components/SkeletonCard';
 import SOSButton from '../components/SOSButton';
 import { usePetContext } from '../context/PetContext';
+import { useTheme } from '../context/ThemeContext';
+import { useToast } from '../context/ToastContext';
 import { useMinimumLoadingTime } from '../hooks/useMinimumLoadingTime';
 import petService, { type Pet } from '../services/petService';
 import subscriptionService, { type SubscriptionStatus } from '../services/subscriptionService';
@@ -25,12 +28,15 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
   const [pets, setPets] = useState<Pet[]>([]);
   const offlineStatus = useOfflineStatus();
   const { refreshPets } = usePetContext();
+  const { colors } = useTheme();
+  const { show: showToast } = useToast();
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus>({
     isPremium: false,
     plan: 'free',
     expiresAt: null,
   });
   const [showPaywall, setShowPaywall] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const loadPets = useCallback(async () => {
     const data = await petService.getAllPets();
@@ -58,6 +64,22 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
         /* keep free default */
       });
   }, []);
+
+  const hasData = pets.length > 0;
+
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    const result = await execute();
+    void refreshPets();
+
+    // If the refresh failed but we already had data on screen, don't let
+    // the inline RetryError replace the list — surface a toast instead and
+    // keep showing the cached pets.
+    if (result === undefined && hasData) {
+      showToast("Couldn't refresh — showing cached data", { variant: 'error' });
+    }
+    setIsRefreshing(false);
+  }, [execute, refreshPets, hasData, showToast]);
 
   const handleAddPet = useCallback(() => {
     const atLimit =
@@ -160,7 +182,7 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
       {/* Aggregate view — Issue #151/#82 */}
       <PetAggregateView onSelectPet={onSelectPet} />
 
-      {retryState.error ? (
+      {retryState.error && !hasData ? (
         <RetryError
           error={retryState.error}
           onRetry={() => {
@@ -184,15 +206,22 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
           getItemLayout={getItemLayout}
           contentContainerStyle={styles.list}
           ListEmptyComponent={
-            <Text style={styles.empty} accessibilityLiveRegion="polite">
-              No pets yet. Add one!
-            </Text>
+            <EmptyState
+              icon="paw"
+              title="No Pets Yet"
+              description="Get started by adding your first pet's profile to PetChain."
+              buttonText="Add your first pet"
+              onPress={handleAddPet}
+            />
           }
-          onRefresh={() => {
-            void execute();
-            void refreshPets();
-          }}
-          refreshing={retryState.loading}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={handleRefresh}
+              colors={[colors.primary]}
+              tintColor={colors.primary}
+            />
+          }
           removeClippedSubviews
           maxToRenderPerBatch={10}
           windowSize={5}

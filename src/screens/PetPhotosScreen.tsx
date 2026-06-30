@@ -10,7 +10,7 @@
  * and photoService to handle strip/compress/upload/delete operations.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -25,8 +25,11 @@ import {
 } from 'react-native';
 import { launchImageLibrary } from 'react-native-image-picker';
 
+import { OptimizedImage } from '../components/OptimizedImage';
 import photoService, { type PetPhoto, type PhotoQuality } from '../services/photoService';
 import { logError } from '../utils/errorLogger';
+
+const PAGE_SIZE = 20;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -45,31 +48,55 @@ interface Props {
 const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
   const [photos, setPhotos] = useState<PetPhoto[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const pageRef = useRef(0);
   const [uploading, setUploading] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState<PetPhoto | null>(null);
   const [quality, setQuality] = useState<PhotoQuality>('medium');
 
-  // ---- Load photos ---------------------------------------------------------
-  const loadPhotos = useCallback(async () => {
-    try {
-      setLoading(true);
-      const list = await photoService.listPhotos(petId);
-      setPhotos(list);
-    } catch (err) {
-      logError(err instanceof Error ? err : new Error(String(err)), {
-        screen: 'PetPhotosScreen',
-        action: 'loadPhotos',
-        petId,
-      });
-      Alert.alert('Error', 'Failed to load photos. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  }, [petId]);
+  // ---- Load photos (paginated) ---------------------------------------------
+  const loadPhotos = useCallback(
+    async (reset = false) => {
+      if (!reset && (!hasMore || loadingMore)) return;
+      const page = reset ? 0 : pageRef.current;
+      if (reset) {
+        setLoading(true);
+      } else {
+        setLoadingMore(true);
+      }
+      try {
+        const slice = await photoService.listPhotos(petId, { page, limit: PAGE_SIZE });
+        setPhotos((prev) => (reset ? slice : [...prev, ...slice]));
+        setHasMore(slice.length === PAGE_SIZE);
+        pageRef.current = page + 1;
+      } catch (err) {
+        logError(err instanceof Error ? err : new Error(String(err)), {
+          screen: 'PetPhotosScreen',
+          action: 'loadPhotos',
+          petId,
+        });
+        Alert.alert('Error', 'Failed to load photos. Please try again.');
+      } finally {
+        if (reset) {
+          setLoading(false);
+        } else {
+          setLoadingMore(false);
+        }
+      }
+    },
+    [petId, hasMore, loadingMore],
+  );
 
   useEffect(() => {
-    void loadPhotos();
-  }, [loadPhotos]);
+    void loadPhotos(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [petId]);
+
+  // Prefetch next page when 5 items from end
+  const handleEndReached = useCallback(() => {
+    if (hasMore && !loadingMore) void loadPhotos();
+  }, [hasMore, loadingMore, loadPhotos]);
 
   // ---- Upload a new photo --------------------------------------------------
   const handleUpload = useCallback(() => {
@@ -86,7 +113,7 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
           localUri: asset.uri,
           quality,
         });
-        await loadPhotos();
+        await loadPhotos(true);
       } catch (err) {
         logError(err instanceof Error ? err : new Error(String(err)), {
           screen: 'PetPhotosScreen',
@@ -115,7 +142,7 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
             try {
               await photoService.deletePhoto(photo.id);
               setSelectedPhoto(null);
-              await loadPhotos();
+              await loadPhotos(true);
             } catch (err) {
               logError(err instanceof Error ? err : new Error(String(err)), {
                 screen: 'PetPhotosScreen',
@@ -193,6 +220,11 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
           keyExtractor={(item) => item.id}
           numColumns={3}
           contentContainerStyle={styles.grid}
+          onEndReachedThreshold={5 / PAGE_SIZE}
+          onEndReached={handleEndReached}
+          ListFooterComponent={
+            loadingMore ? <ActivityIndicator style={styles.loader} color="#4A90E2" /> : null
+          }
           renderItem={({ item }) => (
             <TouchableOpacity
               style={styles.thumb}
@@ -200,7 +232,12 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
               accessibilityRole="button"
               accessibilityLabel={item.caption ?? 'Pet photo'}
             >
-              <Image source={{ uri: item.thumbnailUrl }} style={styles.thumbImage} />
+              <OptimizedImage
+                uri={item.url}
+                thumbnailUri={item.thumbnailUrl}
+                useThumbnailFirst
+                style={styles.thumbImage}
+              />
             </TouchableOpacity>
           )}
         />

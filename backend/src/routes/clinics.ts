@@ -19,6 +19,11 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 
 export type ClinicType = 'general' | 'emergency' | 'specialist' | 'pharmacy';
 
+export interface ClinicSchedule {
+  open: string; // "HH:MM"
+  close: string; // "HH:MM"
+}
+
 export interface VetClinic {
   id: string;
   name: string;
@@ -29,6 +34,7 @@ export interface VetClinic {
   type: ClinicType;
   available24h: boolean;
   rating?: number;
+  schedule?: Record<string, ClinicSchedule>;
   updatedAt: string;
 }
 
@@ -70,6 +76,14 @@ const clinicStore: VetClinic[] = [
     type: 'general',
     available24h: false,
     rating: 4.5,
+    schedule: {
+      monday: { open: '08:00', close: '18:00' },
+      tuesday: { open: '08:00', close: '18:00' },
+      wednesday: { open: '08:00', close: '18:00' },
+      thursday: { open: '08:00', close: '18:00' },
+      friday: { open: '08:00', close: '18:00' },
+      saturday: { open: '09:00', close: '14:00' },
+    },
     updatedAt: new Date().toISOString(),
   },
   {
@@ -82,6 +96,13 @@ const clinicStore: VetClinic[] = [
     type: 'specialist',
     available24h: false,
     rating: 4.9,
+    schedule: {
+      monday: { open: '09:00', close: '17:00' },
+      tuesday: { open: '09:00', close: '17:00' },
+      wednesday: { open: '09:00', close: '17:00' },
+      thursday: { open: '09:00', close: '17:00' },
+      friday: { open: '09:00', close: '17:00' },
+    },
     updatedAt: new Date().toISOString(),
   },
   {
@@ -94,6 +115,15 @@ const clinicStore: VetClinic[] = [
     type: 'pharmacy',
     available24h: false,
     rating: 4.3,
+    schedule: {
+      monday: { open: '08:00', close: '20:00' },
+      tuesday: { open: '08:00', close: '20:00' },
+      wednesday: { open: '08:00', close: '20:00' },
+      thursday: { open: '08:00', close: '20:00' },
+      friday: { open: '08:00', close: '20:00' },
+      saturday: { open: '08:00', close: '20:00' },
+      sunday: { open: '10:00', close: '16:00' },
+    },
     updatedAt: new Date().toISOString(),
   },
   {

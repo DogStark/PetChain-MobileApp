@@ -113,4 +113,47 @@ router.post('/v2/update/:petId', authenticate, async (req: Request, res: Respons
   }
 });
 
+/**
+ * Get health score history for a pet
+ * GET /api/health-scoring/v2/history/:petId?days=30
+ */
+router.get('/v2/history/:petId', authenticate, async (req: Request, res: Response) => {
+  try {
+    // Verify user owns the pet
+    const petResult = await query('SELECT * FROM pets WHERE id = $1 AND owner_id = $2', [
+      String(req.params.petId),
+      (req as any).user.id,
+    ]);
+
+    if (petResult.rows.length === 0) {
+      return res.status(403).json({ error: 'Pet not found or not owned by user' });
+    }
+
+    const days = parseInt(String(req.query.days || '30'), 10);
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const historyResult = await query(
+      `SELECT v2_score, v2_explanation, confidence_min, confidence_max, calculated_at
+       FROM health_score_history
+       WHERE pet_id = $1 AND calculated_at >= $2
+       ORDER BY calculated_at ASC`,
+      [String(req.params.petId), cutoffDate],
+    );
+
+    const history = historyResult.rows.map((row) => ({
+      score: row.v2_score,
+      date: row.calculated_at,
+      explanation: row.v2_explanation,
+      confidenceMin: row.confidence_min,
+      confidenceMax: row.confidence_max,
+    }));
+
+    res.json(history);
+  } catch (error) {
+    console.error('Error fetching health score history:', error);
+    res.status(500).json({ error: 'Failed to fetch health score history' });
+  }
+});
+
 export default router;

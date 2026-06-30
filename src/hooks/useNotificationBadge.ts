@@ -2,11 +2,13 @@
  * useNotificationBadge
  *
  * Returns the current unread notification count and a refresh function.
- * Polls on mount and whenever `refresh()` is called (e.g. after navigation focus).
+ * Subscribes to notificationStore changes so the badge updates immediately
+ * whenever notifications are added, read, or deleted — including while
+ * NotificationCenterScreen is open.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getUnreadCount } from '../services/notificationStore';
+import { getUnreadCount, subscribeToNotificationChanges } from '../services/notificationStore';
 
 export function useNotificationBadge(): { count: number; refresh: () => void } {
   const [count, setCount] = useState(0);
@@ -28,6 +30,8 @@ export function useNotificationBadge(): { count: number; refresh: () => void } {
 
   useEffect(() => {
     refresh();
+    // Re-run whenever any write operation fires in the store
+    return subscribeToNotificationChanges(refresh);
   }, [refresh]);
 
   return { count, refresh };

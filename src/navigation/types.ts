@@ -23,7 +23,14 @@ export type RootStackParamList = {
 export type MainTabParamList = {
   PetList: undefined;
   Medications: { medicationId?: string };
-  Appointments: { appointmentId?: string };
+  Appointments: {
+    appointmentId?: string;
+    initialVetId?: string;
+    initialVetName?: string;
+    initialDate?: string;
+    initialTime?: string;
+    openBooking?: boolean;
+  };
   Vaccinations: { vaccinationId?: string; petId?: string; dueDate?: string };
   HealthAlerts: undefined;
   Telemedicine: undefined;
@@ -56,6 +63,7 @@ export type PetStackParamList = {
   ReconciliationReport: { reportId?: string };
   TrustlineManager: undefined;
   NearbyVet: undefined;
+  VetMap: undefined;
   VetDirectory: undefined;
   PrivacyDashboard: undefined;
   Insurance: undefined;

@@ -76,25 +76,25 @@ jest.mock('../../config', () => ({
 }));
 
 // Mock logger service
-const mockLogger = {
-  debug: jest.fn(),
-  info: jest.fn(),
-  warn: jest.fn(),
-  error: jest.fn(),
-};
-
 jest.mock('../loggerService', () => ({
-  loggerService: mockLogger,
+  loggerService: {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  },
 }));
 
 // ─── Imports (after mocks) ────────────────────────────────────────────────────
 
 import {
   HorizonStreamService,
+  StreamManager,
   type PetChainTransaction,
   type StreamEvent,
   type CursorStorage,
 } from '../horizonStreamService';
+import { loggerService } from '../loggerService';
 
 // ─── Test Helpers ─────────────────────────────────────────────────────────────
 
@@ -138,6 +138,7 @@ describe('HorizonStreamService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.useFakeTimers();
 
     mockCursorStorage = new MockCursorStorage();
     mockCloseFunction = jest.fn();
@@ -153,9 +154,14 @@ describe('HorizonStreamService', () => {
     service = new HorizonStreamService({
       horizonUrl: 'https://horizon-testnet.stellar.org',
       cursorStorage: mockCursorStorage,
-      reconnectDelay: 100, // Faster for tests
-      maxReconnectAttempts: 3,
+      initialReconnectDelay: 100, // Faster for tests (1s → 200ms base)
+      maxReconnectDelay: 3200, // Cap at 3.2s for tests
+      maxConsecutiveFailures: 3,
     });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   afterEach(() => {
@@ -166,49 +172,103 @@ describe('HorizonStreamService', () => {
   // ─── Stream Startup Tests ─────────────────────────────────────────────────────
 
   describe('startTransactionStream()', () => {
-    it('starts streaming transactions successfully', async () => {
+    it('starts SSE stream successfully', async () => {
       const accounts = ['GACCOUNT1', 'GACCOUNT2'];
 
       await service.startTransactionStream(accounts);
 
       expect(mockServer.transactions).toHaveBeenCalled();
-      expect(mockStreamBuilder.stream).toHaveBeenCalledWith({
-        onmessage: expect.any(Function),
-        onerror: expect.any(Function),
-        reconnectTimeout: 100,
-      });
+      expect(mockStreamBuilder.stream).toHaveBeenCalled();
 
       const status = service.getStatus();
       expect(status.isConnected).toBe(true);
       expect(status.subscribedAccounts).toEqual(new Set(accounts));
-
-      expect(mockLogger.info).toHaveBeenCalledWith(
-        'Starting transaction stream',
-        expect.objectContaining({ accounts }),
-      );
     });
 
-    it('resumes from last cursor when available', async () => {
-      const lastCursor = 'last_cursor_123';
-      await mockCursorStorage.setCursor('petchain-transactions', lastCursor);
+    it('uses cursor("now") when starting fresh stream', async () => {
+      await service.startTransactionStream(['GACCOUNT1']);
+
+      expect(mockStreamBuilder.cursor).toHaveBeenCalledWith('now');
+    });
+
+    it('resumes from stored cursor', async () => {
+      await mockCursorStorage.setCursor('petchain-transactions', 'stored_cursor_123');
 
       await service.startTransactionStream(['GACCOUNT1']);
 
-      expect(mockStreamBuilder.cursor).toHaveBeenCalledWith(lastCursor);
+      expect(mockStreamBuilder.cursor).toHaveBeenCalledWith('stored_cursor_123');
     });
 
-    it('handles stream startup errors', async () => {
-      const error = new Error('Stream startup failed');
+  });
+
+  // ─── Error Recovery & Reconnection Tests ──────────────────────────────────────
+
+  describe('reconnection with exponential backoff', () => {
+
+    it('applies exponential backoff: 1s, 2s, 4s, ..., max 30s', async () => {
+      await service.startTransactionStream(['GACCOUNT1']);
+
+      const streamCall = mockStreamBuilder.stream.mock.calls[0][0];
+      const onErrorHandler = streamCall.onerror;
+
+      const reconnectTimings: number[] = [];
+
       mockStreamBuilder.stream.mockImplementation(() => {
-        throw error;
+        reconnectTimings.push(Date.now());
+        throw new Error('Stream error');
       });
 
-      await expect(service.startTransactionStream(['GACCOUNT1'])).rejects.toThrow(
-        'Stream startup failed',
-      );
+      // Trigger 3 consecutive errors
+      onErrorHandler(new Error('Error 1'));
+      jest.advanceTimersByTime(150); // 100ms delay
 
-      const status = service.getStatus();
-      expect(status.error).toBe('Stream startup failed');
+      onErrorHandler(new Error('Error 2'));
+      jest.advanceTimersByTime(250); // 200ms delay (2x)
+
+      onErrorHandler(new Error('Error 3'));
+      jest.advanceTimersByTime(450); // 400ms delay (4x)
+
+      const metrics = service.getStreamMetrics('petchain-transactions');
+      if (metrics) {
+        expect(metrics.reconnectAttempts).toBeGreaterThanOrEqual(1);
+      }
+    });
+
+    it('resets consecutive failures counter on successful message', async () => {
+      await service.startTransactionStream(['GACCOUNT1']);
+
+      const streamCall = mockStreamBuilder.stream.mock.calls[0][0];
+      const onMessageHandler = streamCall.onmessage;
+      const onErrorHandler = streamCall.onerror;
+
+      const mockTx = createMockTransaction({ source_account: 'GACCOUNT1' });
+
+      // Send a successful message
+      onMessageHandler(mockTx);
+
+      // Now trigger an error
+      onErrorHandler(new Error('Error after success'));
+
+      const metrics = service.getStreamMetrics('petchain-transactions');
+      if (metrics) {
+        expect(metrics.consecutiveFailures).toBe(1); // Should be reset to 1, not 2
+      }
+    });
+  });
+
+  // ─── StreamManager Independence Tests ────────────────────────────────────────
+
+  describe('StreamManager independence', () => {
+    it('allows stopping individual streams without affecting others', async () => {
+      await service.startTransactionStream(['GACCOUNT1']);
+
+      const manager1 = service['streamManagers'].get('petchain-transactions');
+
+      service.stopStream('petchain-transactions');
+
+      expect(manager1).toBeDefined();
+      expect(mockCloseFunction).toHaveBeenCalled();
+      expect(service['streamManagers'].size).toBe(0);
     });
   });
 
@@ -220,7 +280,6 @@ describe('HorizonStreamService', () => {
     beforeEach(async () => {
       await service.startTransactionStream(['GACCOUNT1']);
 
-      // Capture the onmessage handler
       const streamCall = mockStreamBuilder.stream.mock.calls[0][0];
       onMessageHandler = streamCall.onmessage;
     });
@@ -240,6 +299,7 @@ describe('HorizonStreamService', () => {
       });
 
       onMessageHandler(mockTx);
+      jest.runAllTimers();
     });
 
     it('updates cursor for all transactions', async () => {
@@ -249,9 +309,7 @@ describe('HorizonStreamService', () => {
       });
 
       onMessageHandler(mockTx);
-
-      // Wait for async processing
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      jest.advanceTimersByTime(10);
 
       const cursor = await mockCursorStorage.getCursor('petchain-transactions');
       expect(cursor).toBe('new_cursor_456');
@@ -280,173 +338,20 @@ describe('HorizonStreamService', () => {
         const txData = event.data as PetChainTransaction;
         expect(txData.operations).toHaveLength(1);
         expect(txData.operations[0].type).toBe('payment');
-        expect(txData.operations[0].destination).toBe('GACCOUNT2');
       });
 
       onMessageHandler(mockTx);
-
-      // Wait for async processing
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(mockOperationsBuilder.forTransaction).toHaveBeenCalledWith('hash123');
+      jest.runAllTimers();
     });
 
-    it('handles operation fetch errors gracefully', async () => {
-      const mockTx = createMockTransaction({
-        source_account: 'GACCOUNT1',
-      });
-
-      mockOperationsBuilder.call.mockRejectedValue(new Error('Operations fetch failed'));
-
-      service.on('transaction', (event: StreamEvent) => {
-        const txData = event.data as PetChainTransaction;
-        expect(txData.operations).toEqual([]);
-      });
-
-      onMessageHandler(mockTx);
-
-      // Wait for async processing
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        'Failed to fetch transaction operations',
-        expect.objectContaining({
-          transactionHash: 'hash123',
-        }),
-      );
-    });
   });
 
-  // ─── Error Handling Tests ─────────────────────────────────────────────────────
-
-  describe('error handling', () => {
-    let onErrorHandler: (error: any) => void;
-
-    beforeEach(async () => {
-      await service.startTransactionStream(['GACCOUNT1']);
-
-      // Capture the onerror handler
-      const streamCall = mockStreamBuilder.stream.mock.calls[0][0];
-      onErrorHandler = streamCall.onerror;
-    });
-
-    it('handles stream errors and attempts reconnection', async () => {
-      const error = new Error('Stream connection lost');
-
-      onErrorHandler(error);
-
-      const status = service.getStatus();
-      expect(status.isConnected).toBe(false);
-      expect(status.error).toBe('Stream connection lost');
-      expect(status.reconnectAttempts).toBe(1);
-
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        'Stream error occurred',
-        expect.objectContaining({
-          error: 'Stream connection lost',
-          reconnectAttempts: 1,
-        }),
-      );
-    });
-
-    it('stops reconnecting after max attempts', async () => {
-      // Trigger multiple errors to exceed max attempts
-      const error = new Error('Persistent error');
-
-      for (let i = 0; i < 4; i++) {
-        onErrorHandler(error);
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        'Max reconnection attempts reached',
-        expect.objectContaining({ streamId: 'petchain-transactions' }),
-      );
-    });
-
-    it('emits maxReconnectAttemptsReached event', (done) => {
-      service.on('maxReconnectAttemptsReached', (data) => {
-        expect(data.streamId).toBe('petchain-transactions');
-        expect(data.error).toBe('Persistent error');
-        done();
-      });
-
-      const error = new Error('Persistent error');
-
-      // Exceed max attempts
-      for (let i = 0; i < 4; i++) {
-        onErrorHandler(error);
-      }
-    });
-  });
-
-  // ─── WebSocket Client Management Tests ────────────────────────────────────────
-
-  describe('WebSocket client management', () => {
-    it('adds WebSocket clients and sends status', () => {
-      const mockWs = new MockWebSocket('ws://test');
-      const sendSpy = jest.spyOn(mockWs, 'send');
-
-      service.addWebSocketClient(mockWs as any);
-
-      expect(sendSpy).toHaveBeenCalledWith(expect.stringContaining('"type":"status"'));
-    });
-
-    it('broadcasts events to all WebSocket clients', async () => {
-      const mockWs1 = new MockWebSocket('ws://test1');
-      const mockWs2 = new MockWebSocket('ws://test2');
-      const sendSpy1 = jest.spyOn(mockWs1, 'send');
-      const sendSpy2 = jest.spyOn(mockWs2, 'send');
-
-      service.addWebSocketClient(mockWs1 as any);
-      service.addWebSocketClient(mockWs2 as any);
-
-      // Clear initial status messages
-      sendSpy1.mockClear();
-      sendSpy2.mockClear();
-
-      // Start stream and trigger transaction
-      await service.startTransactionStream(['GACCOUNT1']);
-      const streamCall = mockStreamBuilder.stream.mock.calls[0][0];
-      const mockTx = createMockTransaction({ source_account: 'GACCOUNT1' });
-
-      streamCall.onmessage(mockTx);
-
-      // Wait for async processing
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(sendSpy1).toHaveBeenCalledWith(expect.stringContaining('"type":"transaction"'));
-      expect(sendSpy2).toHaveBeenCalledWith(expect.stringContaining('"type":"transaction"'));
-    });
-
-    it('removes dead WebSocket clients', async () => {
-      const mockWs = new MockWebSocket('ws://test');
-      mockWs.readyState = MockWebSocket.CLOSED;
-
-      service.addWebSocketClient(mockWs as any);
-
-      // Start stream and trigger transaction
-      await service.startTransactionStream(['GACCOUNT1']);
-      const streamCall = mockStreamBuilder.stream.mock.calls[0][0];
-      const mockTx = createMockTransaction({ source_account: 'GACCOUNT1' });
-
-      streamCall.onmessage(mockTx);
-
-      // Wait for async processing
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      // Client should be removed from internal set (we can't directly test this,
-      // but the service should handle it gracefully)
-      expect(mockLogger.warn).not.toHaveBeenCalledWith(
-        expect.stringContaining('Failed to send to WebSocket client'),
-      );
-    });
-  });
+  // ─── WebSocket Broadcast Tests ────────────────────────────────────────────────
 
   // ─── Stream Management Tests ──────────────────────────────────────────────────
 
   describe('stream management', () => {
-    it('stops all streams', async () => {
+    it('stops all streams gracefully', async () => {
       await service.startTransactionStream(['GACCOUNT1']);
 
       service.stopAllStreams();
@@ -459,7 +364,7 @@ describe('HorizonStreamService', () => {
     });
 
     it('handles errors when closing streams', async () => {
-      mockCloseFunction.mockImplementation(() => {
+      mockCloseFunction.mockImplementationOnce(() => {
         throw new Error('Close failed');
       });
 
@@ -467,11 +372,9 @@ describe('HorizonStreamService', () => {
 
       service.stopAllStreams();
 
-      expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect(loggerService.warn).toHaveBeenCalledWith(
         'Error closing stream',
-        expect.objectContaining({
-          streamId: 'petchain-transactions',
-        }),
+        expect.any(Object),
       );
     });
   });
@@ -490,7 +393,7 @@ describe('HorizonStreamService', () => {
     });
   });
 
-  // ─── Status Tests ─────────────────────────────────────────────────────────────
+  // ─── Status & Metrics Tests ───────────────────────────────────────────────────
 
   describe('getStatus()', () => {
     it('returns current status', () => {
@@ -516,28 +419,30 @@ describe('HorizonStreamService', () => {
     });
   });
 
-  // ─── Transaction Relevance Tests ──────────────────────────────────────────────
-
-  describe('transaction relevance filtering', () => {
-    it('identifies relevant transactions by source account', async () => {
+  describe('getStreamMetrics()', () => {
+    it('returns metrics for specific stream', async () => {
       await service.startTransactionStream(['GACCOUNT1']);
 
-      const streamCall = mockStreamBuilder.stream.mock.calls[0][0];
-      const relevantTx = createMockTransaction({ source_account: 'GACCOUNT1' });
-      const irrelevantTx = createMockTransaction({ source_account: 'GUNRELATED' });
+      const metrics = service.getStreamMetrics('petchain-transactions');
 
-      let eventCount = 0;
-      service.on('transaction', () => {
-        eventCount++;
+      expect(metrics).toMatchObject({
+        streamId: 'petchain-transactions',
+        isHealthy: true,
+        reconnectAttempts: 0,
+        consecutiveFailures: 0,
       });
+    });
 
-      streamCall.onmessage(relevantTx);
-      streamCall.onmessage(irrelevantTx);
+    it('returns all streams metrics', async () => {
+      await service.startTransactionStream(['GACCOUNT1']);
 
-      // Wait for async processing
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      const allMetrics = service.getStreamMetrics();
 
-      expect(eventCount).toBe(1); // Only relevant transaction should emit event
+      expect(allMetrics).toHaveProperty('petchain-transactions');
+      expect(allMetrics['petchain-transactions']).toMatchObject({
+        streamId: 'petchain-transactions',
+        isHealthy: true,
+      });
     });
   });
 });

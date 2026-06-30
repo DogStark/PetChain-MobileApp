@@ -50,7 +50,7 @@ interface Props {
   onEnd: () => void;
 }
 
-type NetworkQuality = 'good' | 'fair' | 'poor';
+type NetworkQuality = 'excellent' | 'good' | 'poor' | 'critical';
 type CallState = 'idle' | 'connecting' | 'waiting_room' | 'in_call' | 'screen_sharing' | 'ended';
 
 interface IceServer {
@@ -59,12 +59,29 @@ interface IceServer {
   credential?: string;
 }
 
+interface NetworkStats {
+  packetLossPct: number;
+  rttMs: number;
+  bitrateKbps: number;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Adaptive bitrate thresholds (round-trip time in ms)
-const QUALITY_THRESHOLDS = { good: 150, fair: 400 };
+/** Packet-loss thresholds for each quality tier */
+const QUALITY_THRESHOLDS = {
+  /** ≤ 2% packet loss, ≤ 150 ms RTT → excellent */
+  excellent: { maxLoss: 2, maxRtt: 150 },
+  /** ≤ 10% packet loss, ≤ 400 ms RTT → good */
+  good: { maxLoss: 10, maxRtt: 400 },
+  /** ≤ 30% packet loss → poor */
+  poor: { maxLoss: 30 },
+  // > 30% → critical
+};
+
+/** How often (ms) to poll WebRTC stats */
+const STATS_POLL_INTERVAL_MS = 2000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COMPONENT
@@ -84,7 +101,14 @@ const VideoConsultationScreen: React.FC<Props> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [isSharingScreen, setIsSharingScreen] = useState(false);
-  const [networkQuality, setNetworkQuality] = useState<NetworkQuality>('good');
+  const [networkQuality, setNetworkQuality] = useState<NetworkQuality>('excellent');
+  const [networkStats, setNetworkStats] = useState<NetworkStats>({
+    packetLossPct: 0,
+    rttMs: 0,
+    bitrateKbps: 0,
+  });
+  const [isAudioOnly, setIsAudioOnly] = useState(false);
+  const [showUnstableBanner, setShowUnstableBanner] = useState(false);
   const [waitPosition, setWaitPosition] = useState<number>(0);
   const [estimatedWait, setEstimatedWait] = useState<number>(0);
   const [showConsentModal, setShowConsentModal] = useState(false);
@@ -93,29 +117,89 @@ const VideoConsultationScreen: React.FC<Props> = ({
   const socketRef = useRef<Socket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const qualityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Accumulated stats for Sentry post-call logging */
+  const statsHistoryRef = useRef<NetworkStats[]>([]);
 
   // ---- Network quality monitoring ----------------------------------------
   const startQualityMonitor = useCallback((pc: RTCPeerConnection) => {
+    let prevBytesReceived = 0;
+    let prevTimestamp = Date.now();
+
     qualityTimerRef.current = setInterval(() => {
       void pc.getStats().then((stats) => {
+        let packetLoss = 0;
+        let rttMs = 0;
+        let bitrateKbps = 0;
+
         stats.forEach((report) => {
-          if (
-            report.type === 'candidate-pair' &&
-            (report as Record<string, unknown>).state === 'succeeded'
-          ) {
-            const rtt = (report as Record<string, unknown>).currentRoundTripTime as
-              | number
-              | undefined;
-            if (rtt != null) {
-              const rttMs = rtt * 1000;
-              if (rttMs < QUALITY_THRESHOLDS.good) setNetworkQuality('good');
-              else if (rttMs < QUALITY_THRESHOLDS.fair) setNetworkQuality('fair');
-              else setNetworkQuality('poor');
+          const r = report as Record<string, unknown>;
+
+          // Inbound RTP — packet loss
+          if (r.type === 'inbound-rtp' && r.kind === 'video') {
+            const lost = Number(r.packetsLost ?? 0);
+            const received = Number(r.packetsReceived ?? 1);
+            packetLoss = Math.min(100, (lost / (lost + received)) * 100);
+
+            // Bitrate from bytes received delta
+            const now = Date.now();
+            const bytes = Number(r.bytesReceived ?? 0);
+            const dtMs = now - prevTimestamp;
+            if (dtMs > 0) {
+              bitrateKbps = ((bytes - prevBytesReceived) * 8) / dtMs;
             }
+            prevBytesReceived = bytes;
+            prevTimestamp = now;
+          }
+
+          // Candidate pair — RTT
+          if (r.type === 'candidate-pair' && r.state === 'succeeded') {
+            const rtt = Number(r.currentRoundTripTime ?? 0);
+            rttMs = rtt * 1000;
           }
         });
+
+        const stats: NetworkStats = {
+          packetLossPct: Math.round(packetLoss * 10) / 10,
+          rttMs: Math.round(rttMs),
+          bitrateKbps: Math.round(bitrateKbps),
+        };
+        setNetworkStats(stats);
+        statsHistoryRef.current.push(stats);
+
+        // Derive quality tier
+        let quality: NetworkQuality;
+        if (packetLoss > 30) {
+          quality = 'critical';
+        } else if (packetLoss > 10) {
+          quality = 'poor';
+        } else if (packetLoss > 2 || rttMs > 400) {
+          quality = 'good';
+        } else {
+          quality = 'excellent';
+        }
+        setNetworkQuality(quality);
+
+        // Auto-reduce video resolution on poor connection
+        if (quality === 'poor') {
+          const sender = pc.getSenders?.().find((s) => s.track?.kind === 'video');
+          if (sender) {
+            const params = sender.getParameters();
+            if (params.encodings?.[0]) {
+              params.encodings[0].maxBitrate = 200_000; // 200 kbps
+              void sender.setParameters(params);
+            }
+          }
+          setShowUnstableBanner(false);
+        }
+
+        // Critical: show 'Switch to audio only' banner
+        if (quality === 'critical') {
+          setShowUnstableBanner(true);
+        } else {
+          setShowUnstableBanner(false);
+        }
       });
-    }, 3000);
+    }, STATS_POLL_INTERVAL_MS);
   }, []);
 
   // ---- Start local media -------------------------------------------------
@@ -351,8 +435,35 @@ const VideoConsultationScreen: React.FC<Props> = ({
     }
   }, [consultationId, isSharingScreen]);
 
+  const switchToAudioOnly = useCallback(async () => {
+    // Disable video track
+    localStream?.getVideoTracks().forEach((t) => {
+      t.enabled = false;
+    });
+    setIsCameraOff(true);
+    setIsAudioOnly(true);
+    setShowUnstableBanner(false);
+  }, [localStream]);
+
   const endCall = useCallback(async () => {
     if (qualityTimerRef.current) clearInterval(qualityTimerRef.current);
+
+    // Log post-call stats to Sentry
+    if (statsHistoryRef.current.length > 0) {
+      const avgLoss =
+        statsHistoryRef.current.reduce((s, r) => s + r.packetLossPct, 0) /
+        statsHistoryRef.current.length;
+      const avgRtt =
+        statsHistoryRef.current.reduce((s, r) => s + r.rttMs, 0) /
+        statsHistoryRef.current.length;
+      logError(new Error('WebRTC post-call stats'), {
+        consultationId,
+        avgPacketLossPct: Math.round(avgLoss * 10) / 10,
+        avgRttMs: Math.round(avgRtt),
+        samples: statsHistoryRef.current.length,
+        finalQuality: networkQuality,
+      });
+    }
 
     pcRef.current?.close();
     localStream?.getTracks().forEach((t) => t.stop());
@@ -362,7 +473,7 @@ const VideoConsultationScreen: React.FC<Props> = ({
 
     setCallState('ended');
     onEnd();
-  }, [consultationId, localStream, onEnd]);
+  }, [consultationId, localStream, networkQuality, onEnd]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // RENDER
@@ -484,18 +595,60 @@ const VideoConsultationScreen: React.FC<Props> = ({
         />
       )}
 
-      {/* Network quality badge */}
-      <View style={[styles.qualityBadge, styles[`quality_${networkQuality}`]]}>
-        <Text style={styles.qualityText}>
-          {networkQuality === 'good' ? '●' : networkQuality === 'fair' ? '◕' : '○'}{' '}
-          {networkQuality.toUpperCase()}
-        </Text>
-      </View>
+      {/* 4-bar network quality indicator */}
+      {(() => {
+        const bars = networkQuality === 'excellent' ? 4
+          : networkQuality === 'good' ? 3
+          : networkQuality === 'poor' ? 2
+          : 1;
+        const barColor = networkQuality === 'excellent' ? '#4caf50'
+          : networkQuality === 'good' ? '#8bc34a'
+          : networkQuality === 'poor' ? '#ff9800'
+          : '#f44336';
+        const label = networkQuality.charAt(0).toUpperCase() + networkQuality.slice(1);
+        return (
+          <View style={styles.qualityBadge}>
+            <View style={styles.signalBars}>
+              {[1, 2, 3, 4].map((n) => (
+                <View
+                  key={n}
+                  style={[
+                    styles.signalBar,
+                    { height: 6 + n * 3 },
+                    { backgroundColor: n <= bars ? barColor : 'rgba(255,255,255,0.25)' },
+                  ]}
+                />
+              ))}
+            </View>
+            <Text style={styles.qualityText}>{label}</Text>
+          </View>
+        );
+      })()}
 
       {/* Screen sharing indicator */}
       {isSharingScreen && (
         <View style={styles.sharingBadge}>
           <Text style={styles.sharingText}>Sharing Screen</Text>
+        </View>
+      )}
+
+      {/* Unstable connection banner */}
+      {showUnstableBanner && (
+        <View style={styles.unstableBanner}>
+          <Text style={styles.unstableBannerText}>🚨 Connection unstable</Text>
+          <TouchableOpacity
+            style={styles.audioOnlyBtn}
+            onPress={() => void switchToAudioOnly()}
+          >
+            <Text style={styles.audioOnlyBtnText}>Switch to audio only</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Audio-only indicator */}
+      {isAudioOnly && (
+        <View style={styles.audioOnlyBadge}>
+          <Text style={styles.audioOnlyBadgeText}>🎧 Audio only</Text>
         </View>
       )}
 
@@ -601,21 +754,32 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#fff',
   },
+  // Quality badge (contains signal bars + label)
   qualityBadge: {
     position: 'absolute',
     top: 56,
     left: 16,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.45)',
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 6,
     borderRadius: 12,
+    gap: 4,
   },
-  quality_good: { backgroundColor: 'rgba(76,175,80,0.85)' },
-  quality_fair: { backgroundColor: 'rgba(255,152,0,0.85)' },
-  quality_poor: { backgroundColor: 'rgba(229,57,53,0.85)' },
-  qualityText: { color: '#fff', fontSize: 11, fontWeight: '600' },
+  signalBars: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 2,
+  },
+  signalBar: {
+    width: 4,
+    borderRadius: 2,
+  },
+  qualityText: { color: '#fff', fontSize: 11, fontWeight: '600', marginLeft: 4 },
   sharingBadge: {
     position: 'absolute',
-    top: 90,
+    top: 100,
     left: 16,
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -623,6 +787,40 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(74,144,226,0.85)',
   },
   sharingText: { color: '#fff', fontSize: 11, fontWeight: '600' },
+
+  // Unstable connection banner
+  unstableBanner: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(229,57,53,0.92)',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  unstableBannerText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  audioOnlyBtn: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  audioOnlyBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
+
+  // Audio-only indicator
+  audioOnlyBadge: {
+    position: 'absolute',
+    top: 46,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  audioOnlyBadgeText: { color: '#fff', fontWeight: '600', fontSize: 13 },
 
   // Controls bar
   controls: {

@@ -46,6 +46,7 @@ import vetsRouter from './routes/vets';
 import vitalsRouter from './routes/vitals';
 import { attachAudit } from '../middleware/auditLog';
 import { authRateLimiter, dataRateLimiter, publicRateLimiter } from '../middleware/rateLimiter';
+import activityRouter from '../src/routes/activity';
 import adminRouter from '../src/routes/admin';
 import anchorRouter from '../src/routes/anchor';
 import apiKeysRouter from '../src/routes/apiKeys';
@@ -59,6 +60,8 @@ import notificationsRouter from '../src/routes/notifications';
 import notificationTemplatesRouter from '../src/routes/notificationTemplates';
 import oauthRouter from '../src/routes/oauth';
 import shelterRouter from '../src/routes/shelter';
+
+import { getPoolStats } from '../config/database';
 
 // Readiness probe state — set to false while the process is draining
 let isReady = true;
@@ -129,7 +132,16 @@ export function createApp(): Express {
 
   // --- Health & readiness probes (unauthenticated, exempt from rate limiting) --
   api.get('/health', (_req, res) => {
-    res.json({ ok: true, service: 'petchain-api', timestamp: new Date().toISOString() });
+    const pool = getPoolStats();
+    if (pool.waiting > 5) {
+      console.warn(`[db] WARN: pool waiting count is ${pool.waiting}`);
+    }
+    res.json({
+      ok: true,
+      service: 'petchain-api',
+      timestamp: new Date().toISOString(),
+      pool,
+    });
   });
 
   api.get('/ready', (_req, res) => {
@@ -173,6 +185,7 @@ export function createApp(): Express {
   api.use('/breeds', breedsRouter);
   api.use('/reports', reportsRouter);
   api.use('/sync', dataRateLimiter, syncRouter);
+  api.use('/activity', dataRateLimiter, activityRouter);
   api.use('/travel-certificates', travelCertificatesRouter);
   api.use('/reconciliation', reconciliationRouter);
   api.use('/referrals', dataRateLimiter, referralsRouter);

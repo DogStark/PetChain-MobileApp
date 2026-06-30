@@ -219,4 +219,29 @@ describe('petService', () => {
     await expect(updatePet('   ', { name: 'X' })).rejects.toBeInstanceOf(PetServiceError);
     await expect(deletePet('   ')).rejects.toBeInstanceOf(PetServiceError);
   });
+
+  it('detects a birthday or anniversary exactly 3 days away via checkUpcomingPetEvents', () => {
+    // Dynamically import the function from the petService file
+    const { checkUpcomingPetEvents } = require('../petService');
+
+    const today = new Date();
+    const targetDate = new Date(today);
+    targetDate.setDate(today.getDate() + 3);
+
+    const mockPets = [
+      {
+        id: 'pet-123',
+        name: 'Buddy',
+        dateOfBirth: `${targetDate.getFullYear() - 2}-${String(targetDate.getMonth() + 1).padStart(2, '0')}-${String(targetDate.getDate()).padStart(2, '0')}`,
+        adoptionDate: '2025-01-01',
+        ownerId: 'owner-789',
+      },
+    ];
+
+    const upcomingEvents = checkUpcomingPetEvents(mockPets as any);
+
+    expect(upcomingEvents).toHaveLength(1);
+    expect(upcomingEvents[0].pet.name).toBe('Buddy');
+    expect(upcomingEvents[0].type).toBe('birthday');
+  });
 });

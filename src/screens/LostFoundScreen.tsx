@@ -15,12 +15,14 @@ import {
 } from 'react-native';
 
 import type { RootStackParamList } from '../navigation/types';
+import geofenceService from '../services/geofenceService';
 import lostFoundService, {
   type LostFoundReport,
   type LostFoundType,
 } from '../services/lostFoundService';
 import mapService, { type Location } from '../services/mapService';
 import petService, { type Pet } from '../services/petService';
+import { EmptyState } from '../components/EmptyState';
 import { pickImage } from '../utils/imageUtils';
 
 const DEFAULT_RADIUS_KM = 25;
@@ -109,7 +111,7 @@ const LostFoundScreen: React.FC = () => {
     }
 
     try {
-      await lostFoundService.createLostFoundReport({
+      const created = await lostFoundService.createLostFoundReport({
         type: form.type,
         title: form.title.trim(),
         description: form.description.trim(),
@@ -118,12 +120,50 @@ const LostFoundScreen: React.FC = () => {
         photoUrl: form.photoUrl,
         location,
       });
+
+      // Register a 5 km geofence alert when a pet is marked as lost
+      if (form.type === 'lost') {
+        await geofenceService.registerGeofenceAlert({
+          reportId: created.id,
+          petName: form.title.trim(),
+          ownerId: created.ownerId,
+          center: location,
+          radiusKm: 5,
+          createdAt: created.createdAt,
+        });
+      }
+
+      // If a found report is filed, notify nearby lost-pet owners via backend
+      if (form.type === 'found') {
+        await geofenceService.notifyOwnersByFoundReport(created.id, location);
+      }
+
       setCreateModalVisible(false);
       setForm(EMPTY_FORM);
       await loadReports();
     } catch (err) {
       console.warn('[LostFound] Create report error', err);
       Alert.alert('Unable to create report', 'Please try again again later.');
+    }
+  };
+
+  const handleRenewGeofence = async (report: LostFoundReport) => {
+    const renewed = await geofenceService.renewGeofenceAlert(report.id);
+    if (renewed) {
+      Alert.alert('Alert renewed', 'Your geofence alert has been renewed for another 30 days.');
+    } else {
+      // Re-register using current location
+      if (location) {
+        await geofenceService.registerGeofenceAlert({
+          reportId: report.id,
+          petName: report.title,
+          ownerId: report.ownerId,
+          center: location,
+          radiusKm: 5,
+          createdAt: new Date().toISOString(),
+        });
+        Alert.alert('Alert renewed', 'Geofence alert renewed for another 30 days.');
+      }
     }
   };
 
@@ -165,25 +205,45 @@ const LostFoundScreen: React.FC = () => {
 
   const displayedReports = useMemo(() => reports, [reports]);
 
-  const renderReport = ({ item }: { item: LostFoundReport }) => (
-    <View style={styles.card}>
-      <View style={styles.cardHeader}>
-        <Text style={styles.cardTitle}>{item.title}</Text>
-        <Text style={styles.cardTag}>{item.type === 'lost' ? 'Lost' : 'Found'}</Text>
+  const renderReport = ({ item }: { item: LostFoundReport }) => {
+    const isExpiredSoon =
+      item.type === 'lost' &&
+      item.expiresAt &&
+      Date.parse(item.expiresAt) - Date.now() < 3 * 24 * 60 * 60 * 1000;
+
+    return (
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <Text style={styles.cardTitle}>{item.title}</Text>
+          <View style={styles.cardTagRow}>
+            <Text style={styles.cardTag}>{item.type === 'lost' ? 'Lost' : 'Found'}</Text>
+            {item.type === 'lost' && (
+              <Text style={styles.geofenceTag}>📍 5 km alert</Text>
+            )}
+          </View>
+        </View>
+        <Text style={styles.cardMeta}>Species: {item.species}</Text>
+        {item.breed ? <Text style={styles.cardMeta}>Breed: {item.breed}</Text> : null}
+        <Text style={styles.cardDescription} numberOfLines={3}>
+          {item.description}
+        </Text>
+        {item.photoUrl ? <Image source={{ uri: item.photoUrl }} style={styles.cardImage} /> : null}
+        {isExpiredSoon ? (
+          <View style={styles.expiryBanner}>
+            <Text style={styles.expiryText}>⚠️ Geofence alert expiring soon</Text>
+            <TouchableOpacity onPress={() => handleRenewGeofence(item)}>
+              <Text style={styles.renewText}>Renew</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+        <View style={styles.cardActions}>
+          <TouchableOpacity style={styles.actionButton} onPress={() => handleViewMatches(item)}>
+            <Text style={styles.actionButtonText}>View matches</Text>
+          </TouchableOpacity>
+        </View>
       </View>
-      <Text style={styles.cardMeta}>Species: {item.species}</Text>
-      {item.breed ? <Text style={styles.cardMeta}>Breed: {item.breed}</Text> : null}
-      <Text style={styles.cardDescription} numberOfLines={3}>
-        {item.description}
-      </Text>
-      {item.photoUrl ? <Image source={{ uri: item.photoUrl }} style={styles.cardImage} /> : null}
-      <View style={styles.cardActions}>
-        <TouchableOpacity style={styles.actionButton} onPress={() => handleViewMatches(item)}>
-          <Text style={styles.actionButtonText}>View matches</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -222,9 +282,17 @@ const LostFoundScreen: React.FC = () => {
         renderItem={renderReport}
         keyExtractor={(item) => item.id}
         ListEmptyComponent={
-          <Text style={styles.emptyText}>
-            {loading ? 'Loading reports…' : 'No reports found in your area yet.'}
-          </Text>
+          loading ? (
+            <Text style={styles.emptyText}>Loading reports…</Text>
+          ) : (
+            <EmptyState
+              icon="search"
+              title={selectedTab === 'lost' ? 'No Lost Pets Nearby' : 'No Found Pets Nearby'}
+              description={selectedTab === 'lost' ? 'No active lost pet reports in your area.' : 'No active found pet reports in your area.'}
+              buttonText="Create a report"
+              onPress={() => setCreateModalVisible(true)}
+            />
+          )
         }
         contentContainerStyle={styles.listContent}
       />
@@ -359,6 +427,20 @@ const LostFoundScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f7', paddingHorizontal: 14 },
+  cardTagRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  geofenceTag: { color: '#16a34a', fontSize: 11, fontWeight: '700' },
+  expiryBanner: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#fef9c3',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 8,
+  },
+  expiryText: { color: '#854d0e', fontSize: 12, fontWeight: '600' },
+  renewText: { color: '#1d4ed8', fontSize: 12, fontWeight: '700' },
   topBar: {
     marginTop: 16,
     marginBottom: 12,

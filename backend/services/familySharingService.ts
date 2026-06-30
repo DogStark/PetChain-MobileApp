@@ -5,6 +5,7 @@
 
 import { randomUUID } from 'crypto';
 
+import { cacheKey, get as cacheGet, set as cacheSet, invalidate as cacheInvalidate, getCacheMetrics } from './cacheService';
 import type {
   ActivityFeedEntry,
   CreateFamilyGroupInput,
@@ -36,6 +37,18 @@ const petAccessPermissions = new Map<string, PetAccessPermission>();
 const familyInvitations = new Map<string, FamilyInvitation>();
 const activityFeed = new Map<string, FamilyActivityFeed>();
 const ownershipTransfers = new Map<string, PetOwnershipTransfer>();
+
+// ─── Cache constants ──────────────────────────────────────────────────────────
+const PERMISSION_TTL = 300; // 5 minutes
+function permissionCacheKey(userId: string, petId: string): string {
+  return cacheKey('family', 'perm', userId, petId);
+}
+
+// ─── Cache hit-rate metric logging ───────────────────────────────────────────
+setInterval(() => {
+  const metrics = getCacheMetrics();
+  console.warn('[familySharingService] cache hit-rate:', metrics.hitRate, metrics);
+}, 60_000);
 
 function now(): string {
   return new Date().toISOString();
@@ -305,6 +318,10 @@ export function updateFamilyMemberRole(
   };
 
   familyMembers.set(member.id, updated);
+
+  // Invalidate all pet permission cache entries for this user
+  void invalidatePetPermissionsForUser(userId);
+
   logActivity(
     familyGroupId,
     updatedBy,
@@ -338,6 +355,10 @@ export function removeFamilyMember(
   if (member.role === FamilyMemberRole.OWNER) return false;
 
   familyMembers.delete(member.id);
+
+  // Invalidate all pet permission cache entries for this user
+  void invalidatePetPermissionsForUser(userId);
+
   logActivity(
     familyGroupId,
     removedBy,
@@ -348,6 +369,14 @@ export function removeFamilyMember(
   );
 
   return true;
+}
+
+/** Invalidates all cached permission entries for a given user across all pets. */
+async function invalidatePetPermissionsForUser(userId: string): Promise<void> {
+  const keys = [...petAccessPermissions.values()]
+    .filter((p) => p.userId === userId)
+    .map((p) => permissionCacheKey(userId, p.petId));
+  if (keys.length > 0) await cacheInvalidate(...keys);
 }
 
 // ─── Pet Access Operations ─────────────────────────────────────────────────────
@@ -413,6 +442,7 @@ export function revokePetAccess(petId: string, userId: string, revokedBy: string
   if (!permission) return false;
 
   petAccessPermissions.delete(permission.id);
+  void cacheInvalidate(permissionCacheKey(userId, petId));
   logActivity(
     '',
     revokedBy,
@@ -442,6 +472,7 @@ export function updatePetAccess(
   };
 
   petAccessPermissions.set(permission.id, updated);
+  void cacheInvalidate(permissionCacheKey(userId, petId));
   logActivity(
     '',
     updatedBy,
@@ -457,37 +488,33 @@ export function updatePetAccess(
 
 // ─── Permission Checks ─────────────────────────────────────────────────────────
 
-export function checkPetAccess(petId: string, userId: string): PermissionCheckResult {
+export async function checkPetAccess(petId: string, userId: string): Promise<PermissionCheckResult> {
+  const key = permissionCacheKey(userId, petId);
+  const cached = await cacheGet<PermissionCheckResult>(key);
+  if (cached !== null) return cached;
+
   const permission = getPetAccess(petId, userId);
+  const result: PermissionCheckResult = permission
+    ? { hasAccess: true, permissionLevel: permission.permissionLevel }
+    : { hasAccess: false, reason: 'No access permission for this pet' };
 
-  if (!permission) {
-    return {
-      hasAccess: false,
-      reason: 'No access permission for this pet',
-    };
-  }
-
-  return {
-    hasAccess: true,
-    permissionLevel: permission.permissionLevel,
-  };
+  await cacheSet(key, result, PERMISSION_TTL);
+  return result;
 }
 
-export function canEditPet(petId: string, userId: string): boolean {
-  const permission = getPetAccess(petId, userId);
-  if (!permission) return false;
-
+export async function canEditPet(petId: string, userId: string): Promise<boolean> {
+  const result = await checkPetAccess(petId, userId);
+  if (!result.hasAccess) return false;
   return (
-    permission.permissionLevel === PetAccessLevel.ADMIN ||
-    permission.permissionLevel === PetAccessLevel.CAREGIVER
+    result.permissionLevel === PetAccessLevel.ADMIN ||
+    result.permissionLevel === PetAccessLevel.CAREGIVER
   );
 }
 
-export function canManagePetAccess(petId: string, userId: string): boolean {
-  const permission = getPetAccess(petId, userId);
-  if (!permission) return false;
-
-  return permission.permissionLevel === PetAccessLevel.ADMIN;
+export async function canManagePetAccess(petId: string, userId: string): Promise<boolean> {
+  const result = await checkPetAccess(petId, userId);
+  if (!result.hasAccess) return false;
+  return result.permissionLevel === PetAccessLevel.ADMIN;
 }
 
 // ─── Pet Ownership Transfer ───────────────────────────────────────────────────
@@ -632,7 +659,7 @@ export default {
   revokePetAccess,
   updatePetAccess,
 
-  // Permission Checks
+  // Permission Checks (async — use Redis cache)
   checkPetAccess,
   canEditPet,
   canManagePetAccess,

@@ -16,7 +16,7 @@ const BiometricStep: React.FC<Props> = ({ onNext, onSkip }) => {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} testID="biometric-step">
       <Text style={styles.emoji}>🔐</Text>
       <Text style={styles.title}>Secure Your Account</Text>
       <Text style={styles.subtitle}>
@@ -34,10 +34,15 @@ const BiometricStep: React.FC<Props> = ({ onNext, onSkip }) => {
         )}
       </View>
 
-      <TouchableOpacity style={styles.primary} onPress={handleEnable} accessibilityRole="button">
+      <TouchableOpacity
+        style={styles.primary}
+        onPress={handleEnable}
+        accessibilityRole="button"
+        testID="biometric-enable-button"
+      >
         <Text style={styles.primaryText}>Enable Biometric Login</Text>
       </TouchableOpacity>
-      <TouchableOpacity onPress={onSkip} accessibilityRole="button">
+      <TouchableOpacity onPress={onSkip} accessibilityRole="button" testID="biometric-skip-button">
         <Text style={styles.skip}>Use password instead</Text>
       </TouchableOpacity>
     </View>

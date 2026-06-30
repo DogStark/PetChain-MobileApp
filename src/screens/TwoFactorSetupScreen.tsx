@@ -1,3 +1,5 @@
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import React, { useState, useCallback } from 'react';
 import {
   View,
@@ -9,6 +11,7 @@ import {
   StyleSheet,
   Alert,
   Image,
+  Share,
   AccessibilityInfo,
 } from 'react-native';
 
@@ -73,9 +76,63 @@ export default function TwoFactorSetupScreen() {
     }
   }, [token]);
 
-  const handleCopyBackupCodes = () => {
-    Alert.alert('Backup Codes', backupCodes.join('\n'), [{ text: 'OK' }]);
-  };
+  const handleCopyAll = useCallback(async () => {
+    try {
+      await Share.share({ message: backupCodes.join('\n') });
+    } catch {
+      Alert.alert('Error', 'Could not share backup codes.');
+    }
+  }, [backupCodes]);
+
+  const handleDownload = useCallback(async () => {
+    try {
+      const content = [
+        'PetChain - 2FA Backup Codes',
+        'Generated: ' + new Date().toISOString(),
+        'Keep these codes safe. Each code can only be used once.',
+        '',
+        ...backupCodes,
+      ].join('\n');
+      const uri = FileSystem.cacheDirectory + 'petchain-backup-codes.txt';
+      await FileSystem.writeAsStringAsync(uri, content, { encoding: FileSystem.EncodingType.UTF8 });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: 'text/plain', UTI: 'public.plain-text' });
+      } else {
+        Alert.alert('Saved', 'Backup codes saved to cache. Sharing not available on this device.');
+      }
+    } catch {
+      Alert.alert('Error', 'Could not download backup codes.');
+    }
+  }, [backupCodes]);
+
+  const handleRegenerate = useCallback(() => {
+    Alert.alert(
+      'Regenerate Backup Codes',
+      'This will invalidate all existing backup codes. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Regenerate',
+          style: 'destructive',
+          onPress: async () => {
+            setLoading(true);
+            try {
+              const res = await apiClient.post('/auth/2fa/backup-codes/regenerate', {});
+              setBackupCodes(res.data.data.backupCodes);
+              announce('New backup codes generated. Save them now.');
+            } catch (e: unknown) {
+              const msg =
+                (e as { response?: { data?: { error?: { message?: string } } } })?.response?.data
+                  ?.error?.message ?? 'Failed to regenerate codes.';
+              Alert.alert('Error', msg);
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ],
+    );
+  }, []);
 
   return (
     <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
@@ -162,24 +219,48 @@ export default function TwoFactorSetupScreen() {
           <Text style={styles.success} accessibilityLiveRegion="assertive">
             ✓ Two-factor authentication is now enabled.
           </Text>
-          <Text style={styles.body}>
-            Save these backup codes in a secure place. Each code can only be used once. If you lose
-            access to your authenticator app, use a backup code to sign in.
-          </Text>
+          <View style={styles.warningBox}>
+            <Text style={styles.warningText}>
+              ⚠️ Save these codes — they won't be shown again. Each code is single-use.
+            </Text>
+          </View>
           <View style={styles.codesContainer} accessibilityLabel="Backup codes">
-            {backupCodes.map((code) => (
-              <Text key={code} style={styles.code} selectable>
-                {code}
-              </Text>
-            ))}
+            <View style={styles.codesGrid}>
+              {backupCodes.map((code) => (
+                <Text key={code} style={styles.code} selectable>
+                  {code}
+                </Text>
+              ))}
+            </View>
           </View>
           <TouchableOpacity
-            style={styles.buttonSecondary}
-            onPress={handleCopyBackupCodes}
+            style={styles.button}
+            onPress={() => void handleCopyAll()}
             accessibilityRole="button"
-            accessibilityLabel="View all backup codes"
+            accessibilityLabel="Copy all backup codes"
           >
-            <Text style={styles.buttonSecondaryText}>View Backup Codes</Text>
+            <Text style={styles.buttonText}>Copy All</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.buttonSecondary}
+            onPress={() => void handleDownload()}
+            accessibilityRole="button"
+            accessibilityLabel="Download backup codes as text file"
+          >
+            <Text style={styles.buttonSecondaryText}>Download as File</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.buttonDanger}
+            onPress={handleRegenerate}
+            disabled={loading}
+            accessibilityRole="button"
+            accessibilityLabel="Regenerate backup codes, invalidates existing codes"
+          >
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.buttonText}>Regenerate Codes</Text>
+            )}
           </TouchableOpacity>
         </View>
       )}
@@ -245,7 +326,30 @@ const styles = StyleSheet.create({
   error: { color: '#dc2626', fontSize: 14, marginBottom: 8 },
   success: { color: '#16a34a', fontSize: 16, fontWeight: '600', marginBottom: 12 },
   codesContainer: { backgroundColor: '#f9fafb', borderRadius: 8, padding: 16, marginBottom: 16 },
-  code: { fontFamily: 'monospace', fontSize: 15, color: '#111827', paddingVertical: 4 },
+  codesGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  code: {
+    fontFamily: 'monospace',
+    fontSize: 15,
+    color: '#111827',
+    paddingVertical: 4,
+    width: '45%',
+  },
   recoveryNote: { marginTop: 32, padding: 12, backgroundColor: '#fef9c3', borderRadius: 8 },
   recoveryText: { fontSize: 13, color: '#713f12' },
+  warningBox: {
+    backgroundColor: '#fef2f2',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#fca5a5',
+  },
+  warningText: { fontSize: 14, color: '#dc2626', fontWeight: '600', lineHeight: 20 },
+  buttonDanger: {
+    backgroundColor: '#dc2626',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 12,
+  },
 });

@@ -32,19 +32,23 @@ const PROVIDER_CLIENTS: Record<
 > = {
   mockfit: {
     async sync(_token: string, petId: string) {
-      // return example provider events
+      const events = [];
       const now = new Date();
-      return [
-        {
-          id: `mf_evt_${Date.now()}`,
-          ts: now.toISOString(),
-          steps: 5234,
-          sleep_minutes: 420,
-          sleep_quality: 0.78,
-          activity_score: 56,
+      // Generate events for the last 7 days
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+        events.push({
+          id: `mf_evt_${d.getTime()}`,
+          ts: d.toISOString(),
+          steps: Math.floor(4000 + Math.random() * 6000), // 4,000 to 10,000 steps
+          sleep_minutes: Math.floor(360 + Math.random() * 180), // 6 to 9 hours of sleep
+          sleep_quality: parseFloat((0.65 + Math.random() * 0.3).toFixed(2)),
+          activity_score: Math.floor(30 + Math.random() * 70),
+          heart_rate: Math.floor(65 + Math.random() * 55), // 65 to 120 bpm
           petId,
-        },
-      ];
+        });
+      }
+      return events;
     },
   },
 };
@@ -117,6 +121,15 @@ function normalizeProviderEvent(providerKey: ProviderKey, event: any): Normalize
         metricType: 'activity_score',
         value: event.activity_score,
         unit: 'score',
+        recordedAt: event.ts,
+      });
+    }
+    if (typeof event.heart_rate === 'number') {
+      metrics.push({
+        ...base,
+        metricType: 'heart_rate',
+        value: event.heart_rate,
+        unit: 'bpm',
         recordedAt: event.ts,
       });
     }

@@ -19,6 +19,8 @@ import {
   type MedicalRecord,
   type RecordFilters,
 } from '../services/medicalRecordService';
+import { requireBiometric, verifyPin } from '../services/authService';
+import sessionMonitoringService from '../services/sessionMonitoringService';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -49,9 +51,15 @@ interface Props {
   onBack: () => void;
 }
 
+type AuthGateState = 'checking' | 'authenticated' | 'pin_required' | 'failed';
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
+  const [authState, setAuthState] = useState<AuthGateState>('checking');
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState('');
+
   const [records, setRecords] = useState<MedicalRecord[]>([]);
   // initial load state — shows full-screen spinner
   const [loading, setLoading] = useState(false);
@@ -80,6 +88,66 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
       | 'unknown'
       | 'pending',
   });
+
+  // ─── Biometric auth gate ────────────────────────────────────────────────
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const checkAuth = async () => {
+      try {
+        const result = await requireBiometric();
+        if (cancelled) return;
+
+        if (result === 'authenticated') {
+          setAuthState('authenticated');
+        } else {
+          // Biometric failed or unavailable — PIN fallback
+          setAuthState('pin_required');
+        }
+      } catch {
+        if (!cancelled) {
+          setAuthState('failed');
+        }
+      }
+    };
+
+    void checkAuth();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handlePinSubmit = useCallback(async () => {
+    if (!pinInput.trim()) {
+      setPinError('Please enter your PIN.');
+      return;
+    }
+
+    try {
+      const valid = await verifyPin(pinInput.trim());
+      if (valid) {
+        await sessionMonitoringService.setLastBiometricCheck();
+        setAuthState('authenticated');
+        setPinInput('');
+        setPinError('');
+      } else {
+        setPinError('Incorrect PIN. Please try again.');
+        setPinInput('');
+      }
+    } catch {
+      setPinError('Failed to verify PIN. Please try again.');
+    }
+  }, [pinInput]);
+
+  const handleAuthCancel = useCallback(() => {
+    Alert.alert(
+      'Authentication required to view records',
+      'You must authenticate to view medical records.',
+      [{ text: 'OK', onPress: onBack }],
+    );
+  }, [onBack]);
 
   // ─── Initial / reset load ─────────────────────────────────────────────────
 
@@ -241,6 +309,69 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
   }, [loadingMore, hasMore, records.length, isSearchMode]);
 
   // ─── Render ───────────────────────────────────────────────────────────────
+
+  // ── Auth gate: show authentication screen until verified ──
+  if (authState === 'checking') {
+    return (
+      <View style={styles.container}>
+        <View style={styles.authGateContainer}>
+          <ActivityIndicator size="large" color="#10B981" />
+          <Text style={styles.authGateText}>Verifying authentication…</Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (authState === 'failed') {
+    return (
+      <View style={styles.container}>
+        <View style={styles.authGateContainer}>
+          <Text style={styles.authGateTitle}>Authentication Required</Text>
+          <Text style={styles.authGateDescription}>
+            You must authenticate to view medical records.
+          </Text>
+          <TouchableOpacity style={styles.authGateButton} onPress={onBack}>
+            <Text style={styles.authGateButtonText}>Go Back</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  if (authState === 'pin_required') {
+    return (
+      <View style={styles.container}>
+        <View style={styles.authGateContainer}>
+          <Text style={styles.authGateTitle}>Enter PIN</Text>
+          <Text style={styles.authGateDescription}>
+            Biometric authentication is unavailable. Please enter your PIN to continue.
+          </Text>
+          <TextInput
+            style={styles.pinInput}
+            placeholder="Enter your PIN"
+            placeholderTextColor="#9CA3AF"
+            value={pinInput}
+            onChangeText={(text) => {
+              setPinInput(text);
+              setPinError('');
+            }}
+            keyboardType="number-pad"
+            secureTextEntry
+            maxLength= {10}
+            accessibilityLabel="PIN input"
+            onSubmitEditing={handlePinSubmit}
+          />
+          {pinError ? <Text style={styles.pinErrorText}>{pinError}</Text> : null}
+          <TouchableOpacity style={styles.authGateButton} onPress={handlePinSubmit}>
+            <Text style={styles.authGateButtonText}>Submit PIN</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.authGateCancelButton} onPress={handleAuthCancel}>
+            <Text style={styles.authGateCancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -500,6 +631,77 @@ const typeBadgeColor = (type: string) => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
+
+  // Auth gate
+  authGateContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
+    backgroundColor: '#F9FAFB',
+  },
+  authGateTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  authGateDescription: {
+    fontSize: 15,
+    color: '#6B7280',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 22,
+  },
+  authGateText: {
+    fontSize: 15,
+    color: '#6B7280',
+    marginTop: 16,
+  },
+  authGateButton: {
+    backgroundColor: '#10B981',
+    paddingHorizontal: 32,
+    paddingVertical: 14,
+    borderRadius: 10,
+    marginBottom: 12,
+    minWidth: 200,
+    alignItems: 'center',
+  },
+  authGateButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  authGateCancelButton: {
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  authGateCancelText: {
+    color: '#6B7280',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  pinInput: {
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 18,
+    color: '#111827',
+    backgroundColor: '#fff',
+    width: '100%',
+    marginBottom: 16,
+    textAlign: 'center',
+    letterSpacing: 8,
+  },
+  pinErrorText: {
+    color: '#EF4444',
+    fontSize: 13,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

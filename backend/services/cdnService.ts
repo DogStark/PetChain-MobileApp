@@ -2,20 +2,27 @@
  * CDN service — backend
  *
  * Provides signed URL generation, server-side thumbnail creation, and
- * CDN cache invalidation for pet photos.
+ * CDN cache invalidation for pet photos and medical record attachments.
  *
- * The service is designed to be storage-provider-agnostic.  It defaults to
- * an AWS S3-compatible approach but the CDN_PROVIDER env var can switch it
- * to a stub (useful for local development).
+ * Medical record attachments are served via signed URLs with a 1-hour expiry.
+ * Old unsigned URLs return 403 — callers must use the re-issue endpoint
+ * (`POST /api/medical-records/attachments/signed-url`) to obtain a fresh URL.
+ *
+ * Migration path for existing unsigned URLs:
+ *   1. Existing attachment rows have a bare `key` column in the DB.
+ *   2. The re-issue endpoint accepts the raw storage key and issues a signed URL.
+ *   3. Clients MUST NOT store the signed URL permanently; they should re-issue
+ *      whenever the URL is about to expire (checked via `isSignedUrlExpiring`).
  *
  * Environment variables:
- *   CDN_BASE_URL         — Public CDN origin (e.g. https://cdn.petchain.app)
- *   CDN_SIGNING_SECRET   — HMAC-SHA256 secret for signed URLs (required in prod)
- *   CDN_SIGNED_URL_TTL_S — Signed URL expiry in seconds (default: 3600 = 1 h)
- *   CDN_BUCKET           — Storage bucket / container name
- *   CDN_PROVIDER         — 'stub' | 's3' (default: 's3')
- *   THUMBNAIL_WIDTH      — Thumbnail width in px (default: 320)
- *   THUMBNAIL_HEIGHT     — Thumbnail height in px (default: 320)
+ *   CDN_BASE_URL              — Public CDN origin (e.g. https://cdn.petchain.app)
+ *   CDN_SIGNING_SECRET        — HMAC-SHA256 secret for signed URLs (required in prod)
+ *   CDN_SIGNED_URL_TTL_S      — Signed URL expiry in seconds (default: 3600 = 1 h)
+ *   CDN_MEDICAL_SIGNING_SECRET — Separate secret for medical record URLs (falls back to CDN_SIGNING_SECRET)
+ *   CDN_BUCKET                — Storage bucket / container name
+ *   CDN_PROVIDER              — 'stub' | 's3' (default: 's3')
+ *   THUMBNAIL_WIDTH           — Thumbnail width in px (default: 320)
+ *   THUMBNAIL_HEIGHT          — Thumbnail height in px (default: 320)
  */
 
 import crypto from 'crypto';
@@ -36,11 +43,15 @@ try {
 
 const CDN_BASE_URL = (process.env.CDN_BASE_URL ?? 'https://cdn.petchain.app').replace(/\/$/, '');
 const CDN_SIGNING_SECRET = process.env.CDN_SIGNING_SECRET ?? 'petchain-dev-cdn-secret';
+const CDN_MEDICAL_SIGNING_SECRET = process.env.CDN_MEDICAL_SIGNING_SECRET ?? CDN_SIGNING_SECRET;
 const CDN_SIGNED_URL_TTL_S = Number(process.env.CDN_SIGNED_URL_TTL_S) || 3600;
 const CDN_BUCKET = process.env.CDN_BUCKET ?? 'petchain-photos';
 const CDN_PROVIDER = (process.env.CDN_PROVIDER ?? 's3') as 'stub' | 's3';
 const THUMBNAIL_WIDTH = Number(process.env.THUMBNAIL_WIDTH) || 320;
 const THUMBNAIL_HEIGHT = Number(process.env.THUMBNAIL_HEIGHT) || 320;
+
+/** How many seconds before expiry to consider a URL "about to expire" (client-side threshold). */
+export const SIGNED_URL_REFRESH_THRESHOLD_S = 300; // 5 minutes
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -105,6 +116,75 @@ export function verifySignedUrl(key: string, expires: string, sig: string): bool
 
   // Constant-time comparison to prevent timing attacks
   return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MEDICAL RECORD ATTACHMENT SIGNED URLS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Generates a signed URL specifically for a medical record attachment.
+ * Uses CDN_MEDICAL_SIGNING_SECRET to allow key rotation independent of photo URLs.
+ * URLs expire after CDN_SIGNED_URL_TTL_S (default 1 hour).
+ */
+export function generateMedicalRecordSignedUrl(key: string): string {
+  const expiry = Math.floor(Date.now() / 1000) + CDN_SIGNED_URL_TTL_S;
+  const payload = `medical:${key}:${expiry}`;
+  const sig = crypto
+    .createHmac('sha256', CDN_MEDICAL_SIGNING_SECRET)
+    .update(payload)
+    .digest('hex');
+
+  const params = new URLSearchParams({ expires: String(expiry), sig, type: 'medical' });
+  return `${CDN_BASE_URL}/${key}?${params.toString()}`;
+}
+
+/**
+ * Verifies a medical record attachment signed URL.
+ * Returns false for unsigned (legacy) URLs — those should return 403.
+ */
+export function verifyMedicalRecordSignedUrl(
+  key: string,
+  expires: string,
+  sig: string,
+): boolean {
+  const expiry = Number(expires);
+  if (isNaN(expiry) || Date.now() / 1000 > expiry) return false;
+
+  const payload = `medical:${key}:${expiry}`;
+  const expected = crypto
+    .createHmac('sha256', CDN_MEDICAL_SIGNING_SECRET)
+    .update(payload)
+    .digest('hex');
+
+  try {
+    return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Re-issues a fresh signed URL for a medical record attachment.
+ * Called by the backend endpoint when a client presents a valid session token.
+ */
+export function reissueMedicalRecordSignedUrl(storageKey: string): string {
+  return generateMedicalRecordSignedUrl(storageKey);
+}
+
+/**
+ * Returns true if a signed URL will expire within SIGNED_URL_REFRESH_THRESHOLD_S seconds.
+ * Clients should call this before rendering and re-issue the URL if it returns true.
+ */
+export function isSignedUrlExpiring(signedUrl: string): boolean {
+  try {
+    const url = new URL(signedUrl);
+    const expires = Number(url.searchParams.get('expires'));
+    if (isNaN(expires)) return true;
+    return expires - Date.now() / 1000 < SIGNED_URL_REFRESH_THRESHOLD_S;
+  } catch {
+    return true;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -248,6 +328,10 @@ export function thumbnailKeyFromPhotoKey(photoKey: string): string {
 const cdnService = {
   generateSignedUrl,
   verifySignedUrl,
+  generateMedicalRecordSignedUrl,
+  verifyMedicalRecordSignedUrl,
+  reissueMedicalRecordSignedUrl,
+  isSignedUrlExpiring,
   generateThumbnail,
   uploadPhoto,
   deletePhoto,

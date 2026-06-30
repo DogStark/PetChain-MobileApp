@@ -67,7 +67,13 @@ export type NotificationGroup =
   | 'alert'
   | 'scheduled'
   | 'sos';
-export type NotificationAction = 'open' | 'snooze' | 'mark_as_read';
+export type NotificationAction =
+  | 'open'
+  | 'snooze'
+  | 'mark_as_read'
+  | 'mark_as_taken'
+  | 'skip_dose'
+  | 'snooze_30min';
 
 // ─── Deep Link Navigation Types ───────────────────────────────────────────────
 export interface DeepLinkParams {
@@ -131,6 +137,9 @@ const SNOOZE_DELAY_MS = 10 * 60 * 1000;
 const ACTION_OPEN = 'OPEN_APP';
 const ACTION_SNOOZE = 'SNOOZE';
 const ACTION_MARK_AS_READ = 'MARK_AS_READ';
+const ACTION_MARK_AS_TAKEN = 'MARK_AS_TAKEN';
+const ACTION_SNOOZE_30MIN = 'SNOOZE_30MIN';
+const ACTION_SKIP_DOSE = 'SKIP_DOSE';
 
 const DEFAULT_PREFS: NotificationPreferences = {
   medicationReminders: true,
@@ -190,7 +199,7 @@ const getNotificationUrl = (data: Record<string, unknown> = {}): string => {
 };
 
 export const registerNotificationActions = async (): Promise<void> => {
-  const actions = [
+  const defaultActions = [
     {
       identifier: ACTION_OPEN,
       buttonTitle: 'Open',
@@ -208,11 +217,35 @@ export const registerNotificationActions = async (): Promise<void> => {
     },
   ];
 
-  await Promise.all(
-    ['medication', 'appointment', 'vaccination', 'alert', 'scheduled'].map((category) =>
-      Notifications.setNotificationCategoryAsync(category, actions),
+  const medicationActions = [
+    {
+      identifier: ACTION_MARK_AS_TAKEN,
+      buttonTitle: 'Mark as Taken',
+      options: { opensAppToForeground: false },
+    },
+    {
+      identifier: ACTION_SNOOZE_30MIN,
+      buttonTitle: 'Snooze 30 min',
+      options: { opensAppToForeground: false },
+    },
+    {
+      identifier: ACTION_SKIP_DOSE,
+      buttonTitle: 'Skip Dose',
+      options: { opensAppToForeground: false },
+    },
+    {
+      identifier: ACTION_OPEN,
+      buttonTitle: 'Open',
+      options: { opensAppToForeground: true },
+    },
+  ];
+
+  await Promise.all([
+    Notifications.setNotificationCategoryAsync('medication', medicationActions),
+    ...['appointment', 'vaccination', 'alert', 'scheduled'].map((category) =>
+      Notifications.setNotificationCategoryAsync(category, defaultActions),
     ),
-  );
+  ]);
 };
 
 export const markAsRead = async (notificationId: string): Promise<void> => {
@@ -322,10 +355,78 @@ export const extractDeepLinkParams = (
   return null;
 };
 
+let medicationServiceModule: typeof import('./medicationService') | null = null;
+
+async function getMedicationService() {
+  if (!medicationServiceModule) {
+    medicationServiceModule = await import('./medicationService');
+  }
+  return medicationServiceModule;
+}
+
+async function findMedicationId(notification: Notifications.Notification): Promise<string | null> {
+  const data = notification.request.content.data ?? {};
+  const medicationId = data.medicationId as string | undefined;
+  return medicationId ?? null;
+}
+
+async function handleMarkAsTaken(notification: Notifications.Notification): Promise<void> {
+  const medicationId = await findMedicationId(notification);
+  if (!medicationId) return;
+  try {
+    const medService = await getMedicationService();
+    await medService.logDose({
+      id: `action-${Date.now()}`,
+      medicationId,
+      takenAt: new Date().toISOString(),
+    });
+    await markAsRead(notification.request.identifier);
+  } catch {
+    // Non-fatal — dose can be recorded manually
+  }
+}
+
+async function handleSnooze30Min(notification: Notifications.Notification): Promise<void> {
+  await snooze(notification, 30 * 60 * 1000);
+}
+
+async function handleSkipDose(notification: Notifications.Notification): Promise<void> {
+  const medicationId = await findMedicationId(notification);
+  if (!medicationId) return;
+  try {
+    const medService = await getMedicationService();
+    await medService.logDose({
+      id: `skip-${Date.now()}`,
+      medicationId,
+      takenAt: new Date().toISOString(),
+      skipped: true,
+    });
+    await cancelEntityNotification(medicationId);
+    await markAsRead(notification.request.identifier);
+  } catch {
+    // Non-fatal
+  }
+}
+
 export const handleNotificationAction = async (
   response: Notifications.NotificationResponse,
 ): Promise<void> => {
   const { actionIdentifier, notification } = response;
+
+  if (actionIdentifier === ACTION_MARK_AS_TAKEN) {
+    await handleMarkAsTaken(notification);
+    return;
+  }
+
+  if (actionIdentifier === ACTION_SNOOZE_30MIN) {
+    await handleSnooze30Min(notification);
+    return;
+  }
+
+  if (actionIdentifier === ACTION_SKIP_DOSE) {
+    await handleSkipDose(notification);
+    return;
+  }
 
   if (actionIdentifier === ACTION_SNOOZE) {
     await snooze(notification);
@@ -733,9 +834,12 @@ export const cancelScheduledNotification = async (notificationId: string): Promi
 /**
  * Called when a pet changes owner. Cancels all scheduled vaccination
  * notifications for the pet on the current device, then asks the backend to
- * trigger a push to the new owner so they can re-register the reminders.
+ * trigger a push to the new owner so they can re-schedule the reminders.
+ *
+ * @param petId - ID of the transferred pet
+ * @param newOwnerUserId - User ID of the new owner
  */
-export const transferVaccinationNotifications = async (
+export const cancelAndTransferVaccinationNotifications = async (
   petId: string,
   newOwnerUserId: string,
 ): Promise<void> => {

@@ -8,6 +8,21 @@ import { type SyncEntityType } from './syncService';
 
 export type CloudProvider = 'server' | 'icloud' | 'google_drive';
 
+/** Status for a single entity type's last sync attempt */
+export type EntitySyncStatus = 'success' | 'failed' | 'pending' | 'never';
+
+export interface EntitySyncRecord {
+  status: EntitySyncStatus;
+  /** ISO timestamp of the last successful sync, null if never succeeded */
+  lastSuccessAt: string | null;
+  /** ISO timestamp of the last attempt (success or failure) */
+  lastAttemptAt: string | null;
+  /** Number of items pending sync */
+  pendingCount: number;
+  /** Error message from last failure, null if last attempt succeeded */
+  lastError: string | null;
+}
+
 export interface CloudSyncConfig {
   /** Which provider to use (default: server) */
   provider: CloudProvider;
@@ -31,17 +46,35 @@ export interface RestoreResult {
   conflicts: number;
 }
 
+/** Result of a partial sync — one entry per entity type attempted */
+export interface PartialSyncResult {
+  entityType: SyncEntityType;
+  status: EntitySyncStatus;
+  error?: string;
+}
+
 // ─────────────────────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────
 
 const CONFIG_KEY = '@cloud_sync_config';
 const LAST_BACKUP_KEY = '@cloud_sync_last_backup';
+const ENTITY_SYNC_STATUS_KEY = '@cloud_sync_entity_status';
 
 const DEFAULT_CONFIG: CloudSyncConfig = {
   provider: 'server',
   syncedEntities: ['pet', 'appointment', 'medication', 'medicalRecord'],
   autoSync: true,
+};
+
+const ALL_ENTITY_TYPES: SyncEntityType[] = ['pet', 'appointment', 'medication', 'medicalRecord'];
+
+const DEFAULT_ENTITY_SYNC_RECORD: EntitySyncRecord = {
+  status: 'never',
+  lastSuccessAt: null,
+  lastAttemptAt: null,
+  pendingCount: 0,
+  lastError: null,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -67,11 +100,55 @@ export async function updateCloudSyncConfig(
 }
 
 // ─────────────────────────────────────────────────────────────
+// ENTITY SYNC STATUS
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Retrieve per-entity-type sync status records.
+ * Returns a map of entity type → EntitySyncRecord.
+ */
+export async function getEntitySyncStatuses(): Promise<Record<SyncEntityType, EntitySyncRecord>> {
+  try {
+    const stored = await getItem(ENTITY_SYNC_STATUS_KEY);
+    const saved: Partial<Record<SyncEntityType, EntitySyncRecord>> = stored
+      ? JSON.parse(stored)
+      : {};
+    const result = {} as Record<SyncEntityType, EntitySyncRecord>;
+    for (const entityType of ALL_ENTITY_TYPES) {
+      result[entityType] = { ...DEFAULT_ENTITY_SYNC_RECORD, ...(saved[entityType] ?? {}) };
+    }
+    return result;
+  } catch {
+    const result = {} as Record<SyncEntityType, EntitySyncRecord>;
+    for (const entityType of ALL_ENTITY_TYPES) {
+      result[entityType] = { ...DEFAULT_ENTITY_SYNC_RECORD };
+    }
+    return result;
+  }
+}
+
+/**
+ * Update the sync record for a single entity type.
+ */
+export async function updateEntitySyncStatus(
+  entityType: SyncEntityType,
+  update: Partial<EntitySyncRecord>,
+): Promise<void> {
+  const current = await getEntitySyncStatuses();
+  current[entityType] = { ...current[entityType], ...update };
+  await setItem(ENTITY_SYNC_STATUS_KEY, JSON.stringify(current));
+}
+
+// ─────────────────────────────────────────────────────────────
 // BACKUP
 // ─────────────────────────────────────────────────────────────
 
 /**
  * Create a cloud backup.
+ *
+ * Each entity type is synced independently. A failure on one entity type does
+ * NOT roll back or block the others. Per-entity sync status is persisted so
+ * the UI can surface exactly which types have pending changes or errors.
  *
  * Server provider: calls the app's own REST API.
  * iCloud / Google Drive: stubs for native module integration.
@@ -83,17 +160,26 @@ export async function createBackup(
   const cfg = config ?? (await getCloudSyncConfig());
 
   if (cfg.provider === 'server') {
+    // Sync each entity type independently so a failure in one does not block others
+    const results = await syncEntitiesIndependently(userId, cfg.syncedEntities);
+
+    // Build the backup metadata from the entity counts returned per successful entity
+    const entityCounts = {} as Record<SyncEntityType, number>;
+    for (const result of results) {
+      entityCounts[result.entityType] = 0; // populated by the API response below
+    }
+
+    // Create the final backup record on the server; the server uses the already-synced data
     const response = await apiClient.post<BackupMetadata>('/cloud-sync/backup', {
       userId,
       syncedEntities: cfg.syncedEntities,
+      partialSyncResults: results,
     });
     await setItem(LAST_BACKUP_KEY, JSON.stringify(response.data));
     return response.data;
   }
 
   if (cfg.provider === 'icloud') {
-    // iCloud integration requires the `react-native-icloud-storage` native module.
-    // The backup data is retrieved from the server and stored to the iCloud key-value store.
     throw new Error(
       'iCloud sync requires the react-native-icloud-storage native module. ' +
         'Install and link it, then replace this stub with the native calls.',
@@ -101,8 +187,6 @@ export async function createBackup(
   }
 
   if (cfg.provider === 'google_drive') {
-    // Google Drive integration requires `@react-native-google-signin/google-signin`
-    // and the Google Drive REST API with an OAuth token.
     throw new Error(
       'Google Drive sync requires @react-native-google-signin/google-signin. ' +
         'Install and configure it, then replace this stub with Drive API calls.',
@@ -110,6 +194,50 @@ export async function createBackup(
   }
 
   throw new Error(`Unknown cloud provider: ${cfg.provider}`);
+}
+
+/**
+ * Sync each entity type independently. Failures are isolated — a failed
+ * entity type does not affect the others. Status is persisted via
+ * updateEntitySyncStatus so the UI can display per-entity progress.
+ */
+export async function syncEntitiesIndependently(
+  userId: string,
+  entityTypes: SyncEntityType[],
+): Promise<PartialSyncResult[]> {
+  const results: PartialSyncResult[] = [];
+
+  await Promise.all(
+    entityTypes.map(async (entityType) => {
+      const attemptedAt = new Date().toISOString();
+      try {
+        await apiClient.post(`/cloud-sync/sync-entity`, { userId, entityType });
+
+        await updateEntitySyncStatus(entityType, {
+          status: 'success',
+          lastSuccessAt: attemptedAt,
+          lastAttemptAt: attemptedAt,
+          pendingCount: 0,
+          lastError: null,
+        });
+
+        results.push({ entityType, status: 'success' });
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+
+        await updateEntitySyncStatus(entityType, {
+          status: 'failed',
+          lastAttemptAt: attemptedAt,
+          lastError: errorMessage,
+        });
+
+        results.push({ entityType, status: 'failed', error: errorMessage });
+        // Intentionally not re-throwing — failures are isolated per entity type
+      }
+    }),
+  );
+
+  return results;
 }
 
 // ─────────────────────────────────────────────────────────────

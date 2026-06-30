@@ -24,6 +24,7 @@ function toV2Pet(p: StoredPet) {
     ...rest,
     birthDate: dateOfBirth, // renamed field
     ownerInfo: ownerInfo(p.ownerId), // renamed from `owner`
+    metadata: p.metadata ?? {},
   };
 }
 
@@ -97,6 +98,7 @@ router.put('/:id', (req, res) => {
       ? { microchipId: b.microchipId ? String(b.microchipId) : undefined }
       : {}),
     ...(b.photoUrl !== undefined ? { photoUrl: b.photoUrl ? String(b.photoUrl) : undefined } : {}),
+    ...(b.metadata !== undefined ? { metadata: { ...(pet.metadata ?? {}), ...b.metadata } } : {}),
     updatedAt: t,
   };
   store.pets.set(pet.id, next);

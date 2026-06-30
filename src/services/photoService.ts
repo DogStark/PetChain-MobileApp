@@ -163,11 +163,23 @@ export async function uploadPhoto(input: UploadPhotoInput): Promise<UploadPhotoR
   return response.data;
 }
 
+export interface ListPhotosOptions {
+  page?: number;
+  limit?: number;
+}
+
 /**
- * Returns all photos for a given pet, ordered newest-first.
+ * Returns a page of photos for a given pet, ordered newest-first.
+ * The server generates thumbnails (200×200) so the grid never loads full-res images.
  */
-export async function listPhotos(petId: string): Promise<PetPhoto[]> {
-  const response = await apiClient.get<{ data: PetPhoto[] }>(`/photos/pet/${petId}`);
+export async function listPhotos(
+  petId: string,
+  options: ListPhotosOptions = {},
+): Promise<PetPhoto[]> {
+  const { page = 0, limit = 20 } = options;
+  const response = await apiClient.get<{ data: PetPhoto[] }>(`/photos/pet/${petId}`, {
+    params: { page, limit },
+  });
   return response.data.data;
 }
 

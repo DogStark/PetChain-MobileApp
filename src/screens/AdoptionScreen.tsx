@@ -1,5 +1,5 @@
 import { useNavigation, type NavigationProp } from '@react-navigation/native';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -17,6 +17,10 @@ import {
 } from 'react-native';
 
 import type { PetStackParamList } from '../navigation/types';
+import {
+  fetchMatchScore,
+  type AdoptionMatchResult,
+} from '../services/adoptionMatchingService';
 import shelterIntegrationService, {
   type AdoptShelterPetResult,
   type BrowseShelterPetsFilters,
@@ -56,6 +60,9 @@ const AdoptionScreen: React.FC = () => {
     'adopt-a-pet': false,
   });
   const [adopting, setAdopting] = useState(false);
+  /** Map of shelterPetId → match result (lazy-loaded per card) */
+  const [matchScores, setMatchScores] = useState<Record<string, AdoptionMatchResult>>({});
+  const [matchBreakdownVisible, setMatchBreakdownVisible] = useState(false);
 
   const activeProvider = filters.provider ?? 'petfinder';
 
@@ -145,6 +152,18 @@ const AdoptionScreen: React.FC = () => {
     );
   };
 
+  /** Lazily fetch match score for a pet (memoised). */
+  const loadMatchScore = useCallback(
+    async (petId: string) => {
+      if (matchScores[petId]) return;
+      const result = await fetchMatchScore(petId);
+      if (result) {
+        setMatchScores((prev) => ({ ...prev, [petId]: result }));
+      }
+    },
+    [matchScores],
+  );
+
   const selectedSummary = useMemo(() => {
     if (!selectedPet) return null;
     return [
@@ -154,35 +173,73 @@ const AdoptionScreen: React.FC = () => {
     ].join(' • ');
   }, [selectedPet]);
 
-  const renderPet = ({ item }: { item: ShelterPet }) => (
-    <TouchableOpacity style={styles.petCard} onPress={() => setSelectedPet(item)}>
-      {item.photoUrl ? (
-        <Image source={{ uri: item.photoUrl }} style={styles.petImage} />
-      ) : (
-        <View style={[styles.petImage, styles.petImagePlaceholder]}>
-          <Text style={styles.petEmoji}>🐾</Text>
-        </View>
-      )}
-      <View style={styles.petBody}>
-        <View style={styles.petHeaderRow}>
-          <Text style={styles.petName}>{item.name}</Text>
-          <Text style={styles.petAge}>{ageLabel(item.ageMonths)}</Text>
-        </View>
-        <Text style={styles.petMeta}>
-          {item.species}
-          {item.breed ? ` • ${item.breed}` : ''}
-        </Text>
-        <Text style={styles.petMeta}>{item.location}</Text>
-        <Text style={styles.petDescription} numberOfLines={3}>
-          {item.description}
-        </Text>
-        <View style={styles.tagRow}>
-          <Text style={styles.tag}>{providerLabel(item.provider)}</Text>
-          {item.adoptionFee ? <Text style={styles.tag}>{item.adoptionFee}</Text> : null}
-        </View>
-      </View>
-    </TouchableOpacity>
+  /** Sort pets by match score descending (unscored pets go last) */
+  const sortedPets = useMemo(
+    () =>
+      [...pets].sort((a, b) => {
+        const sa = matchScores[a.id]?.score ?? -1;
+        const sb = matchScores[b.id]?.score ?? -1;
+        return sb - sa;
+      }),
+    [pets, matchScores],
   );
+
+  const renderPet = ({ item }: { item: ShelterPet }) => {
+    // Kick off lazy score fetch on first render of this card
+    void loadMatchScore(item.id);
+    const match = matchScores[item.id];
+    const scoreColor =
+      !match ? '#6b7280'
+        : match.score >= 80 ? '#16a34a'
+        : match.score >= 60 ? '#d97706'
+        : '#dc2626';
+
+    return (
+      <TouchableOpacity style={styles.petCard} onPress={() => setSelectedPet(item)}>
+        {item.photoUrl ? (
+          <Image source={{ uri: item.photoUrl }} style={styles.petImage} />
+        ) : (
+          <View style={[styles.petImage, styles.petImagePlaceholder]}>
+            <Text style={styles.petEmoji}>🐾</Text>
+          </View>
+        )}
+        <View style={styles.petBody}>
+          <View style={styles.petHeaderRow}>
+            <Text style={styles.petName}>{item.name}</Text>
+            <Text style={styles.petAge}>{ageLabel(item.ageMonths)}</Text>
+          </View>
+          <Text style={styles.petMeta}>
+            {item.species}
+            {item.breed ? ` • ${item.breed}` : ''}
+          </Text>
+          <Text style={styles.petMeta}>{item.location}</Text>
+          <Text style={styles.petDescription} numberOfLines={3}>
+            {item.description}
+          </Text>
+          <View style={styles.tagRow}>
+            <Text style={styles.tag}>{providerLabel(item.provider)}</Text>
+            {item.adoptionFee ? <Text style={styles.tag}>{item.adoptionFee}</Text> : null}
+            {/* Match score badge */}
+            {match ? (
+              <TouchableOpacity
+                style={[styles.matchBadge, { backgroundColor: scoreColor }]}
+                onPress={() => {
+                  setSelectedPet(item);
+                  setMatchBreakdownVisible(true);
+                }}
+              >
+                <Text style={styles.matchBadgeText}>{match.score}% match</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={[styles.matchBadge, { backgroundColor: '#e5e7eb' }]}>
+                <Text style={[styles.matchBadgeText, { color: '#9ca3af' }]}>…</Text>
+              </View>
+            )}
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -306,7 +363,7 @@ const AdoptionScreen: React.FC = () => {
           <ActivityIndicator color="#0f766e" style={styles.loader} />
         ) : (
           <FlatList
-            data={pets}
+            data={sortedPets}
             keyExtractor={(item) => item.id}
             renderItem={renderPet}
             scrollEnabled={false}
@@ -377,7 +434,25 @@ const AdoptionScreen: React.FC = () => {
                     {adopting ? 'Creating profile…' : 'Adopt and create profile'}
                   </Text>
                 </TouchableOpacity>
-                {selectedPet.microchipId ? (
+
+                {/* Why am I a good match? */}
+                {selectedPet && matchScores[selectedPet.id] ? (
+                  <View style={styles.whyMatchSection}>
+                    <TouchableOpacity
+                      style={styles.whyMatchHeader}
+                      onPress={() => setMatchBreakdownVisible(true)}
+                    >
+                      <Text style={styles.whyMatchTitle}>Why am I a good match?</Text>
+                      <Text style={styles.whyMatchChevron}>›</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.whyMatchSub}>
+                      {matchScores[selectedPet.id]!.score}% compatibility —{' '}
+                      {matchScores[selectedPet.id]!.criteria.filter((c) => c.matched).length} of{' '}
+                      {matchScores[selectedPet.id]!.criteria.length} criteria matched
+                    </Text>
+                  </View>
+                ) : null}
+                {selectedPet?.microchipId ? (
                   <Text style={styles.microchipText}>
                     Shelter microchip: {selectedPet.microchipId}
                   </Text>
@@ -387,6 +462,51 @@ const AdoptionScreen: React.FC = () => {
           </View>
         </View>
       </Modal>
+
+      {/* Match breakdown modal */}
+      {selectedPet && matchScores[selectedPet.id] ? (
+        <Modal
+          visible={matchBreakdownVisible}
+          animationType="slide"
+          transparent
+          onRequestClose={() => setMatchBreakdownVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.modalCard, { paddingBottom: 28 }]}>
+              <View style={styles.modalHeader}>
+                <View>
+                  <Text style={styles.modalTitle}>Match Breakdown</Text>
+                  <Text style={styles.modalSubtitle}>{selectedPet.name}</Text>
+                </View>
+                <TouchableOpacity onPress={() => setMatchBreakdownVisible(false)}>
+                  <Text style={styles.closeText}>Close</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.scoreCircleRow}>
+                <View style={styles.scoreCircle}>
+                  <Text style={styles.scoreCircleValue}>
+                    {matchScores[selectedPet.id]!.score}%
+                  </Text>
+                  <Text style={styles.scoreCircleLabel}>match</Text>
+                </View>
+              </View>
+              <ScrollView>
+                {matchScores[selectedPet.id]!.criteria.map((c) => (
+                  <View key={c.label} style={styles.criterionRow}>
+                    <Text style={styles.criterionCheck}>{c.matched ? '✓' : '✗'}</Text>
+                    <View style={styles.criterionBody}>
+                      <Text style={[styles.criterionLabel, !c.matched && styles.criterionLabelFail]}>
+                        {c.label}
+                      </Text>
+                      <Text style={styles.criterionExplanation}>{c.explanation}</Text>
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
     </ScrollView>
   );
 };
@@ -687,6 +807,97 @@ const styles = StyleSheet.create({
     marginTop: 10,
     color: '#61796f',
     fontSize: 12,
+  },
+  // Match score badge on cards
+  matchBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  matchBadgeText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  // "Why am I a good match?" section
+  whyMatchSection: {
+    marginTop: 12,
+    backgroundColor: '#f0fdf4',
+    borderRadius: 14,
+    padding: 14,
+  },
+  whyMatchHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  whyMatchTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#14532d',
+  },
+  whyMatchChevron: {
+    fontSize: 20,
+    color: '#14532d',
+  },
+  whyMatchSub: {
+    marginTop: 4,
+    color: '#4b7a60',
+    fontSize: 12,
+  },
+  // Score circle in breakdown modal
+  scoreCircleRow: {
+    alignItems: 'center',
+    marginVertical: 16,
+  },
+  scoreCircle: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: '#12372a',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  scoreCircleValue: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  scoreCircleLabel: {
+    color: '#9fd7c7',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  // Criterion rows in breakdown
+  criterionRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+    gap: 12,
+  },
+  criterionCheck: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#16a34a',
+    width: 18,
+  },
+  criterionBody: {
+    flex: 1,
+  },
+  criterionLabel: {
+    fontWeight: '700',
+    color: '#12372a',
+    marginBottom: 2,
+  },
+  criterionLabelFail: {
+    color: '#dc2626',
+  },
+  criterionExplanation: {
+    color: '#618074',
+    fontSize: 12,
+    lineHeight: 16,
   },
 });
 

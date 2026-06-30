@@ -72,6 +72,28 @@ class HealthScoringServiceV2 {
   }
 
   /**
+   * Get health score history for a pet
+   */
+  async getScoreHistory(
+    petId: string,
+    days: number = 90,
+  ): Promise<Array<{
+    score: number;
+    date: string;
+    explanation?: HealthScoreExplanation;
+    confidenceMin?: number;
+    confidenceMax?: number;
+  }>> {
+    try {
+      const response = await api.get(`/api/health-scoring/v2/history/${petId}?days=${days}`);
+      return response.data;
+    } catch (error) {
+      console.error('Failed to fetch health score history:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Get score color based on value
    */
   getScoreColor(score: number): string {

@@ -3,6 +3,7 @@ import {
   Alert,
   FlatList,
   Modal,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,6 +12,8 @@ import {
   View,
 } from 'react-native';
 
+import { useTheme } from '../context/ThemeContext';
+import { useToast } from '../context/ToastContext';
 import apiClient from '../services/apiClient';
 
 type Post = {
@@ -31,8 +34,12 @@ type Answer = {
 };
 
 export default function ForumScreen() {
+  const { colors } = useTheme();
+  const { show: showToast } = useToast();
+
   const [posts, setPosts] = React.useState<Post[]>([]);
   const [loading, setLoading] = React.useState(false);
+  const [isRefreshing, setIsRefreshing] = React.useState(false);
   const [title, setTitle] = React.useState('');
   const [body, setBody] = React.useState('');
   const [species, setSpecies] = React.useState('');
@@ -48,7 +55,8 @@ export default function ForumScreen() {
     void loadPosts();
   }, []);
 
-  async function loadPosts(queryString = '') {
+  async function loadPosts(queryString = '', isRefresh = false) {
+    const hadData = posts.length > 0;
     setLoading(true);
     try {
       const res = await apiClient.get('/api/forum/posts', {
@@ -56,10 +64,24 @@ export default function ForumScreen() {
       });
       setPosts(res.data.posts ?? []);
     } catch (e) {
-      // ignore for now
+      // Pull-to-refresh (or any fetch) on an already-populated list: keep
+      // the existing posts on screen and surface a toast instead of failing
+      // silently.
+      if (isRefresh && hadData) {
+        showToast("Couldn't refresh — showing cached data", { variant: 'error' });
+      }
+      // Initial load / search failure with no data: fall through to the
+      // empty state. (Pre-existing behavior — this screen had no error UI
+      // for that case before, and adding one is out of scope for #639.)
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleRefresh() {
+    setIsRefreshing(true);
+    await loadPosts(search, true);
+    setIsRefreshing(false);
   }
 
   async function handleCreate() {
@@ -81,7 +103,25 @@ export default function ForumScreen() {
       setBody('');
       setSpecies('');
       setBreed('');
-    } catch (e) {
+    } catch (e: any) {
+      const data = e?.response?.data;
+      if (e?.response?.status === 422 && data?.code === 'CONTENT_FLAGGED') {
+        if (data.suggestEdit) {
+          // Suggest-edit mode: prompt user to revise
+          Alert.alert(
+            '✏️ Flagged language detected',
+            `Your post contains: "${(data.flaggedWords as string[]).join('", "')}". Please edit and resubmit.`,
+            [{ text: 'OK — let me fix it' }],
+          );
+        } else {
+          // Hard block
+          Alert.alert(
+            '🚫 Post blocked',
+            'Your post was removed because it contains prohibited content.',
+          );
+        }
+        return;
+      }
       Alert.alert('Post failed', 'Unable to create forum question.');
     }
   }
@@ -108,7 +148,18 @@ export default function ForumScreen() {
       });
       if (res.data?.answer) setAnswers((prev) => [res.data.answer, ...prev]);
       setAnswerBody('');
-    } catch (e) {
+    } catch (e: any) {
+      const data = e?.response?.data;
+      if (e?.response?.status === 422 && data?.code === 'CONTENT_FLAGGED') {
+        Alert.alert(
+          data.suggestEdit ? '✏️ Flagged language' : '🚫 Answer blocked',
+          data.suggestEdit
+            ? `Contains flagged word(s): "${(data.flaggedWords as string[]).join('", "')}". Please revise.`
+            : 'Your answer was blocked due to prohibited content.',
+          [{ text: 'OK' }],
+        );
+        return;
+      }
       Alert.alert('Answer failed', 'Unable to submit answer.');
     } finally {
       setAnswerLoading(false);
@@ -188,11 +239,17 @@ export default function ForumScreen() {
       <FlatList
         data={posts}
         keyExtractor={(item) => String(item.id)}
-        refreshing={loading}
-        onRefresh={() => void loadPosts(search)}
         renderItem={renderPost}
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={<Text style={styles.emptyText}>No questions yet.</Text>}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={() => void handleRefresh()}
+            colors={[colors.primary]}
+            tintColor={colors.primary}
+          />
+        }
       />
 
       <Modal visible={modalVisible} animationType="slide">

@@ -9,27 +9,27 @@ export const lightTheme = {
   card: '#FFFFFF',
   cardElevated: '#FFFFFF',
   text: '#111827',
-  secondaryText: '#4B5563',
-  placeholder: '#6B7280',
+  secondaryText: '#374151',
+  placeholder: '#596575',
   border: '#D1D5DB',
-  primary: '#4CAF50',
+  primary: '#4CAF50', // brand color (unchanged)
   primaryMuted: '#E8F5E9',
-  accent: '#10B981',
-  info: '#1976D2',
+  accent: '#0F766E', // adjusted for contrast
+  info: '#1565C0', // adjusted for contrast
   infoMuted: '#E3F2FD',
-  warning: '#F59E0B',
-  error: '#EF4444',
-  success: '#10B981',
-  notification: '#4CAF50',
+  warning: '#92400E', // adjusted for contrast
+  error: '#D32F2F', // adjusted for contrast
+  success: '#15803D', // adjusted for contrast
+  notification: '#15803D', // adjusted for contrast
   muted: '#E5E7EB',
   subtle: '#F8FAFC',
   input: '#F9FAFB',
   overlay: 'rgba(0,0,0,0.5)',
   shadow: '#000000',
   chartGrid: '#E5E7EB',
-  chartAxis: '#6B7280',
-  chartLine: '#1976D2',
-  chartAnnotation: '#E53E3E',
+  chartAxis: '#596575',
+  chartLine: '#1565C0',
+  chartAnnotation: '#D32F2F',
   chartRangeFill: 'rgba(76, 175, 80, 0.18)',
   white: '#FFFFFF',
 };
@@ -40,10 +40,10 @@ export const darkTheme = {
   card: '#172033',
   cardElevated: '#1F2937',
   text: '#F8FAFC',
-  secondaryText: '#CBD5E1',
+  secondaryText: '#E2E8F0',
   placeholder: '#94A3B8',
   border: '#3F4B5F',
-  primary: '#81C784',
+  primary: '#81C784', // brand color (unchanged)
   primaryMuted: '#17351F',
   accent: '#34D399',
   info: '#90CAF9',
@@ -58,7 +58,7 @@ export const darkTheme = {
   overlay: 'rgba(0,0,0,0.72)',
   shadow: '#000000',
   chartGrid: '#334155',
-  chartAxis: '#CBD5E1',
+  chartAxis: '#E2E8F0',
   chartLine: '#90CAF9',
   chartAnnotation: '#FCA5A5',
   chartRangeFill: 'rgba(129, 199, 132, 0.2)',

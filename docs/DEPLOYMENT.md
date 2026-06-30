@@ -105,7 +105,47 @@ Defined in [`eas.json`](../eas.json):
 |---|---|---|---|---|
 | `development` | — | Device build (dev client) | Device build (dev client) | Local development with `expo-dev-client` |
 | `preview` | `preview` | Simulator `.app` | `.apk` | QA testing, E2E CI, ad-hoc distribution |
+| `staging` | `staging` | `.ipa` (internal) | `.aab` (internal) | Pre-release validation against staging API |
 | `production` | `production` | `.ipa` (App Store) | `.aab` (Play Store) | Store releases |
+
+### Staging build process
+
+The `staging` profile produces **production-grade binaries** (Hermes engine, minification,
+release signing) distributed internally via EAS, pointed at the staging API
+(`https://staging.petchain.app/api`).
+
+**App identifiers for staging:**
+
+| Platform | Identifier |
+|---|---|
+| iOS | `app.petchain.mobile.staging` |
+| Android | `app.petchain.mobile.staging` |
+
+**Build and distribute:**
+
+```bash
+# Build for both platforms
+npm run eas:build:staging
+
+# Or target a single platform
+eas build --platform ios     --profile staging
+eas build --platform android --profile staging
+```
+
+Distributes to internal testers via the EAS dashboard. Share the build URL with QA before
+promoting to production.
+
+**Environment variables required** (set in `.env.staging` or as EAS secrets):
+
+```bash
+APP_ENV=staging
+STAGING_API_URL=https://staging.petchain.app/api
+SENTRY_DSN=<your-staging-sentry-dsn>
+```
+
+> [!IMPORTANT]
+> The `staging` profile uses `distribution: internal` — it does **not** submit to the App Store
+> or Play Store. Use `production` for store releases.
 
 ---
 

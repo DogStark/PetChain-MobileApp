@@ -69,6 +69,7 @@ export async function globalSearch(
       type?: string;
     }[];
   },
+  signal?: AbortSignal
 ): Promise<SearchResults> {
   if (!query.trim()) {
     return { query, total: 0, items: [], fromCache: false };
@@ -78,9 +79,13 @@ export async function globalSearch(
     // Remote search — backend returns unified results
     const response = await apiClient.get<{ items: SearchResultItem[]; total: number }>('/search', {
       params: { q: query, category },
+      signal,
     });
     return { query, total: response.data.total, items: response.data.items, fromCache: false };
-  } catch {
+  } catch (error: any) {
+    if (error.name === 'CanceledError' || error.name === 'AbortError') {
+      throw error;
+    }
     // Offline fallback: search locally provided data
     if (!localData) return { query, total: 0, items: [], fromCache: true };
 

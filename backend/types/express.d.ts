@@ -11,6 +11,7 @@ declare module 'express-serve-static-core' {
       role?: string;
       mfaVerified?: boolean;
     };
+    requestId?: string;
     correlationId?: string;
   }
 }

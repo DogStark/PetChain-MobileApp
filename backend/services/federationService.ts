@@ -2,6 +2,91 @@ import crypto from 'crypto';
 
 import * as StellarSdk from '@stellar/stellar-sdk';
 
+import { get, set } from './cacheService';
+
+const CACHE_TTL_POSITIVE = 15 * 60; // 15 minutes
+const CACHE_TTL_NEGATIVE = 2 * 60; // 2 minutes for negative results
+
+function federationCacheKey(address: string): string {
+  return `federation:resolve:${address}`;
+}
+
+export interface ResolvedFederationAddress {
+  stellar_address: string;
+  account_id: string;
+  memo_type?: string;
+  memo?: string;
+}
+
+interface CachedFederationEntry {
+  result: ResolvedFederationAddress | null; // null = negative result
+}
+
+/**
+ * Resolves a Stellar federation address (e.g. user*petchain.app) to a public key.
+ * Results are cached: positive for 15 min (or less per Cache-Control), negative for 2 min.
+ */
+export async function resolveFederationAddress(
+  federatedAddress: string,
+): Promise<ResolvedFederationAddress | null> {
+  const key = federationCacheKey(federatedAddress);
+  const cached = await get<CachedFederationEntry>(key);
+  if (cached !== null) {
+    return cached.result;
+  }
+
+  try {
+    const server = await StellarSdk.Federation.Server.resolve(federatedAddress);
+    const result: ResolvedFederationAddress = {
+      stellar_address: federatedAddress,
+      account_id: server.account_id,
+      memo_type: server.memo_type,
+      memo: server.memo,
+    };
+    await set<CachedFederationEntry>(key, { result }, CACHE_TTL_POSITIVE);
+    return result;
+  } catch (err: unknown) {
+    // Cache negative results to prevent hammering upstream on bad addresses
+    await set<CachedFederationEntry>(key, { result: null }, CACHE_TTL_NEGATIVE);
+    return null;
+  }
+}
+
+/**
+ * Like resolveFederationAddress but respects the federation server's Cache-Control max-age.
+ * Uses the lower of the server's TTL and our 15-min default.
+ */
+export async function resolveFederationAddressWithCacheControl(
+  federatedAddress: string,
+  cacheControlMaxAge?: number,
+): Promise<ResolvedFederationAddress | null> {
+  const ttl =
+    cacheControlMaxAge !== undefined
+      ? Math.min(cacheControlMaxAge, CACHE_TTL_POSITIVE)
+      : CACHE_TTL_POSITIVE;
+
+  const key = federationCacheKey(federatedAddress);
+  const cached = await get<CachedFederationEntry>(key);
+  if (cached !== null) {
+    return cached.result;
+  }
+
+  try {
+    const server = await StellarSdk.Federation.Server.resolve(federatedAddress);
+    const result: ResolvedFederationAddress = {
+      stellar_address: federatedAddress,
+      account_id: server.account_id,
+      memo_type: server.memo_type,
+      memo: server.memo,
+    };
+    await set<CachedFederationEntry>(key, { result }, ttl);
+    return result;
+  } catch {
+    await set<CachedFederationEntry>(key, { result: null }, CACHE_TTL_NEGATIVE);
+    return null;
+  }
+}
+
 export interface VetFederationRecord {
   vetId: string;
   federatedAddress: string; // e.g. dr.smith*petchain.app

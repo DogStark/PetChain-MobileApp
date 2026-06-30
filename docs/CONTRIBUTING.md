@@ -110,6 +110,104 @@ For new features, provide:
 
 Thank you for contributing to PetChain-MobileApp!
 
+## Stellar Development Setup
+
+PetChain uses the [Stellar](https://stellar.org) network for blockchain-verified medical records.
+This section guides you through the testnet setup required to work on any feature under
+`src/services/stellar*` or `backend/src/stellar*`.
+
+### Prerequisites
+
+- Node.js 20+
+- The project dependencies installed (`npm install`)
+- A Stellar testnet account (steps below)
+
+### 1. Create a testnet account
+
+Use the Stellar Laboratory or the `stellar-sdk` CLI to generate a new keypair:
+
+```bash
+node -e "
+const { Keypair } = require('@stellar/stellar-sdk');
+const kp = Keypair.random();
+console.log('Public key:', kp.publicKey());
+console.log('Secret key:', kp.secret());
+"
+```
+
+Save the output — you will need both keys in the next steps.
+
+### 2. Fund the account via Friendbot
+
+Friendbot is a testnet-only faucet that credits 10 000 XLM to a new account:
+
+```bash
+curl "https://friendbot.stellar.org?addr=<YOUR_PUBLIC_KEY>"
+```
+
+Verify the account is funded:
+
+```bash
+curl "https://horizon-testnet.stellar.org/accounts/<YOUR_PUBLIC_KEY>" | \
+  node -e "const d=require('fs').readFileSync('/dev/stdin','utf8'); console.log(JSON.parse(d).balances)"
+```
+
+### 3. Point `.env.development` at testnet Horizon
+
+Add the following to your `.env.development` file (create it from `.env.example` if it does not
+exist):
+
+```bash
+STELLAR_NETWORK=testnet
+STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
+STELLAR_SECRET_KEY=<YOUR_SECRET_KEY>
+STELLAR_PUBLIC_KEY=<YOUR_PUBLIC_KEY>
+```
+
+> **Never commit secret keys.** `.env.development` is gitignored; double-check with
+> `git status` before pushing.
+
+### 4. Run the local SEP-24 anchor mock
+
+PetChain uses [SEP-24](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0024.md)
+for deposit/withdrawal flows. A mock anchor server is provided for local development:
+
+```bash
+# Start the mock anchor (runs on http://localhost:8000)
+npm run server:anchor:mock
+
+# Verify the TOML is reachable
+curl http://localhost:8000/.well-known/stellar.toml
+```
+
+The `TRANSFER_SERVER_SEP0024` key in the response confirms the mock is running. Configure your
+`.env.development` with:
+
+```bash
+STELLAR_ANCHOR_URL=http://localhost:8000
+```
+
+### Troubleshooting
+
+**`OperationError: op_underfunded` when submitting a transaction**
+
+Your testnet account has run out of XLM. Re-fund it with Friendbot (step 2 above). Testnet
+accounts reset periodically; bookmark the Friendbot URL and re-run it if you see this error after
+a testnet reset.
+
+**`NotFoundError: The resource at the url requested was not found`**
+
+The account does not exist on testnet yet. This happens when the public key has never been funded.
+Run the Friendbot curl command (step 2) before making any Horizon API calls.
+
+**`stellar-sdk` throws `TypeError: Cannot read properties of undefined (reading 'sequence')`**
+
+The `loadAccount` call failed silently. Ensure `STELLAR_HORIZON_URL` is set to
+`https://horizon-testnet.stellar.org` (not the mainnet URL) and that the account is funded. Add
+`console.log` around the `loadAccount` call to inspect the raw Horizon response.
+
+---
+
 ## End-to-End (E2E) Testing with Detox
 
 PetChain uses [Detox](https://wix.github.io/Detox/) for end-to-end testing on iOS Simulator and Android Emulator.

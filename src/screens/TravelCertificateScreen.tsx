@@ -11,6 +11,7 @@
  * 6. Download/share the PDF certificate
  */
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -50,6 +51,19 @@ interface Props {
 
 type Screen = 'list' | 'generate' | 'detail';
 
+type SupportedCountry = ReturnType<typeof getSupportedCountries>[number];
+
+interface RequirementsCache {
+  countries: SupportedCountry[];
+  cachedAt: string;
+}
+
+// ─── Cache constants ──────────────────────────────────────────────────────────
+
+const REQUIREMENTS_CACHE_KEY = '@travel_country_requirements_v1';
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const STALE_WARN_MS = 7 * 24 * 60 * 60 * 1000;
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const TravelCertificateScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
@@ -67,10 +81,76 @@ const TravelCertificateScreen: React.FC<Props> = ({ petId, petName, onBack }) =>
   const [travelDate, setTravelDate] = useState('');
   const [countrySearch, setCountrySearch] = useState('');
 
-  const countries = getSupportedCountries();
+  // Requirements cache state
+  const [countries, setCountries] = useState<SupportedCountry[]>([]);
+  const [requirementsCachedAt, setRequirementsCachedAt] = useState<string | null>(null);
+  const [requirementsFromCache, setRequirementsFromCache] = useState(false);
+  const [requirementsStale, setRequirementsStale] = useState(false);
+  const [requirementsRefreshing, setRequirementsRefreshing] = useState(false);
+
   const filteredCountries = countries.filter((c) =>
     c.name.toLowerCase().includes(countrySearch.toLowerCase()),
   );
+
+  // ── Requirements caching ────────────────────────────────────────────────────
+
+  const loadRequirements = useCallback(async (forceRefresh = false) => {
+    if (forceRefresh) setRequirementsRefreshing(true);
+
+    try {
+      if (!forceRefresh) {
+        const raw = await AsyncStorage.getItem(REQUIREMENTS_CACHE_KEY);
+        if (raw) {
+          const cached: RequirementsCache = JSON.parse(raw);
+          const age = Date.now() - new Date(cached.cachedAt).getTime();
+          if (age < CACHE_TTL_MS) {
+            setCountries(cached.countries);
+            setRequirementsCachedAt(cached.cachedAt);
+            setRequirementsFromCache(false);
+            setRequirementsStale(age > STALE_WARN_MS);
+            return;
+          }
+        }
+      }
+
+      // Fetch fresh (static source; will become a network call in future)
+      try {
+        const fresh = getSupportedCountries();
+        const newCache: RequirementsCache = {
+          countries: fresh,
+          cachedAt: new Date().toISOString(),
+        };
+        await AsyncStorage.setItem(REQUIREMENTS_CACHE_KEY, JSON.stringify(newCache));
+        setCountries(fresh);
+        setRequirementsCachedAt(newCache.cachedAt);
+        setRequirementsFromCache(false);
+        setRequirementsStale(false);
+      } catch {
+        // Network failure — serve from cache
+        const raw = await AsyncStorage.getItem(REQUIREMENTS_CACHE_KEY);
+        if (raw) {
+          const cached: RequirementsCache = JSON.parse(raw);
+          const age = Date.now() - new Date(cached.cachedAt).getTime();
+          setCountries(cached.countries);
+          setRequirementsCachedAt(cached.cachedAt);
+          setRequirementsFromCache(true);
+          setRequirementsStale(age > STALE_WARN_MS);
+        } else {
+          const fallback = getSupportedCountries();
+          setCountries(fallback);
+          setRequirementsCachedAt(null);
+          setRequirementsFromCache(true);
+          setRequirementsStale(true);
+        }
+      }
+    } finally {
+      if (forceRefresh) setRequirementsRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRequirements();
+  }, [loadRequirements]);
 
   // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -216,6 +296,40 @@ const TravelCertificateScreen: React.FC<Props> = ({ petId, petName, onBack }) =>
     </View>
   );
 
+  const renderCacheInfo = () => {
+    if (!requirementsCachedAt && !requirementsFromCache) return null;
+
+    const cachedDate = requirementsCachedAt ? new Date(requirementsCachedAt) : null;
+    const ageMs = cachedDate ? Date.now() - cachedDate.getTime() : Infinity;
+    const ageDays = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+
+    return (
+      <>
+        {requirementsFromCache && (
+          <View style={styles.outdatedBanner}>
+            <Text style={styles.outdatedBannerText}>
+              ⚠️ Requirements may be outdated — loaded from cache
+            </Text>
+          </View>
+        )}
+        {requirementsStale && (
+          <View style={styles.staleBanner}>
+            <Text style={styles.staleBannerText}>
+              🚨 Country requirements are over 7 days old. Verify with official sources before
+              travel.
+            </Text>
+          </View>
+        )}
+        {cachedDate && (
+          <Text style={styles.lastUpdatedText}>
+            Last updated:{' '}
+            {ageDays === 0 ? 'today' : ageDays === 1 ? 'yesterday' : `${ageDays} days ago`}
+          </Text>
+        )}
+      </>
+    );
+  };
+
   // ── Screens ─────────────────────────────────────────────────────────────────
 
   if (screen === 'detail' && selectedCert) {
@@ -333,10 +447,23 @@ const TravelCertificateScreen: React.FC<Props> = ({ petId, petName, onBack }) =>
             <Text style={styles.backText}>‹ Back</Text>
           </TouchableOpacity>
           <Text style={styles.headerTitle}>New Certificate</Text>
-          <View style={{ width: 50 }} />
+          <TouchableOpacity
+            onPress={() => void loadRequirements(true)}
+            disabled={requirementsRefreshing}
+            accessibilityRole="button"
+            accessibilityLabel="Refresh country requirements"
+          >
+            {requirementsRefreshing ? (
+              <ActivityIndicator size="small" color="#10B981" />
+            ) : (
+              <Text style={styles.refreshBtn}>↻ Refresh</Text>
+            )}
+          </TouchableOpacity>
         </View>
 
         <ScrollView contentContainerStyle={styles.formBody}>
+          {renderCacheInfo()}
+
           <Text style={styles.formLabel}>Destination Country</Text>
           <TouchableOpacity
             style={styles.countrySelector}
@@ -534,6 +661,13 @@ const styles = StyleSheet.create({
   backText: { color: '#10B981', fontSize: 16, fontWeight: '600', minWidth: 50 },
   headerTitle: { color: '#fff', fontSize: 17, fontWeight: '700', flex: 1, textAlign: 'center' },
   newBtn: { color: '#10B981', fontSize: 15, fontWeight: '700', minWidth: 50, textAlign: 'right' },
+  refreshBtn: {
+    color: '#10B981',
+    fontSize: 13,
+    fontWeight: '600',
+    minWidth: 60,
+    textAlign: 'right',
+  },
   loader: { marginTop: 40 },
   list: { padding: 12 },
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
@@ -751,6 +885,27 @@ const styles = StyleSheet.create({
   countryItemText: { fontSize: 15, color: '#111827' },
   countryItemTextActive: { color: '#065F46', fontWeight: '600' },
   countryCode: { fontSize: 13, color: '#9CA3AF', fontWeight: '600' },
+
+  // Cache banners
+  outdatedBanner: {
+    backgroundColor: '#FFFBEB',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+  },
+  outdatedBannerText: { fontSize: 13, color: '#92400E', fontWeight: '500' },
+  staleBanner: {
+    backgroundColor: '#FEF2F2',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  staleBannerText: { fontSize: 13, color: '#991B1B', fontWeight: '500' },
+  lastUpdatedText: { fontSize: 11, color: '#9CA3AF', marginBottom: 8 },
 });
 
 export default TravelCertificateScreen;

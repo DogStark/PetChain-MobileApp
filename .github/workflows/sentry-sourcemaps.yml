@@ -48,11 +48,18 @@ jobs:
         continue-on-error: true
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          RELEASE="petchain-mobile@${VERSION}"
+          GIT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-8)
+          BUILD_NUMBER="${{ github.run_number }}"
+          RELEASE="petchain-mobile@${VERSION}+${BUILD_NUMBER}.${GIT_SHA}"
 
           npx sentry-cli releases new "$RELEASE" \
             --org "$SENTRY_ORG" \
             --project "$SENTRY_PROJECT"
+
+          npx sentry-cli releases set-commits "$RELEASE" \
+            --auto \
+            --org "$SENTRY_ORG" \
+            --project "$SENTRY_PROJECT" || true
 
           npx sentry-cli releases files "$RELEASE" upload-sourcemaps dist \
             --org "$SENTRY_ORG" \
@@ -70,5 +77,5 @@ jobs:
             --project "$SENTRY_PROJECT"
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: petchain
-          SENTRY_PROJECT: mobile-app
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}

@@ -35,6 +35,50 @@ function toApiRecord(r: StoredMedicalRecord) {
 // All medical record routes require authentication
 router.use(authenticateJWT);
 
+/**
+ * GET /medical-records/search?q=&petId=
+ * Full-text search with ts_rank-style scoring (Issue #536).
+ */
+router.get('/search', (req: AuthenticatedRequest, res) => {
+  const { petId, q } = req.query as { petId?: string; q?: string };
+  if (!q?.trim()) return sendError(res, 400, 'VALIDATION_ERROR', 'Query parameter q is required');
+
+  const terms = q.trim().toLowerCase().split(/\s+/);
+
+  function tsRank(r: StoredMedicalRecord): number {
+    const haystack = [r.notes, r.diagnosis, r.treatment, r.type]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return terms.reduce((score, t) => score + (haystack.includes(t) ? 1 : 0), 0);
+  }
+
+  let list = [...store.medicalRecords.values()];
+
+  if (petId) {
+    if (req.user!.role === UserRole.OWNER) {
+      const pet = store.pets.get(petId);
+      if (!pet || pet.ownerId !== req.user!.id)
+        return sendError(res, 403, 'FORBIDDEN', 'No permission to view these records');
+    }
+    list = list.filter((r) => r.petId === petId);
+  } else if (req.user!.role === UserRole.OWNER) {
+    return sendError(res, 403, 'FORBIDDEN', 'petId is required for pet owners');
+  }
+
+  const results = list
+    .map((r) => ({ record: r, rank: tsRank(r) }))
+    .filter(({ rank }) => rank > 0)
+    .sort(
+      (a, b) =>
+        b.rank - a.rank ||
+        new Date(b.record.visitDate).getTime() - new Date(a.record.visitDate).getTime(),
+    )
+    .map(({ record }) => toApiRecord(record));
+
+  return res.json(ok(results));
+});
+
 router.get('/pet/:petId', (req: AuthenticatedRequest, res) => {
   const petId = req.params.petId as string;
   const pet = store.pets.get(petId);
@@ -259,5 +303,26 @@ router.delete(
     return res.json(ok(null, 'Medical record deleted'));
   },
 );
+
+/**
+ * POST /medical-records/attachments/signed-url
+ * Re-issues a fresh 1-hour signed URL for a medical record attachment.
+ * Requires a valid session token. Old unsigned URLs will return 403 from the CDN.
+ *
+ * Body: { key: string }  — the raw storage key (e.g. "medical/records/r-123/doc.pdf")
+ */
+router.post('/attachments/signed-url', (req: AuthenticatedRequest, res) => {
+  const { key } = req.body as { key?: unknown };
+  if (typeof key !== 'string' || !key.trim()) {
+    return sendError(res, 400, 'BAD_REQUEST', 'key is required');
+  }
+  // Basic path traversal guard
+  if (key.includes('..') || key.startsWith('/')) {
+    return sendError(res, 400, 'BAD_REQUEST', 'Invalid key');
+  }
+  const { reissueMedicalRecordSignedUrl } = require('../../services/cdnService') as typeof import('../../services/cdnService');
+  const signedUrl = reissueMedicalRecordSignedUrl(key.trim());
+  return res.json(ok({ signedUrl }));
+});
 
 export default router;

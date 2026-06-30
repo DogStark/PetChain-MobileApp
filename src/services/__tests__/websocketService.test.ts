@@ -29,4 +29,9 @@ describe('WebsocketService backoff', () => {
     expect((svc as any)._connect).toHaveBeenCalledTimes(3);
     expect((svc as any).backoffMs).toBe(2000);
   });
+
+  it('starts with the default initial backoff value', () => {
+    const svc = new WebsocketService('ws://localhost:1234');
+    expect((svc as any).backoffMs).toBe(500);
+  });
 });

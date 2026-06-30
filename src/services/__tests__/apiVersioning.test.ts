@@ -7,4 +7,8 @@ describe('API Versioning Header', () => {
     expect(headers['X-API-Version']).toBe(config.api.version);
     expect(headers['X-API-Version']).toBe('1.0');
   });
+
+  it('should default to version 1.0 in config', () => {
+    expect(config.api.version).toBe('1.0');
+  });
 });

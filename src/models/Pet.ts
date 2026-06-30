@@ -16,6 +16,7 @@ export interface Pet {
   ownerId: string;
   createdAt: string;
   updatedAt: string;
+  metadata?: { stepGoal?: number; [key: string]: unknown };
 }
 
 /**
@@ -34,6 +35,7 @@ export const createPet = (data: Partial<Pet>): Pet => ({
   ownerId: data.ownerId || '',
   createdAt: data.createdAt || new Date().toISOString(),
   updatedAt: data.updatedAt || new Date().toISOString(),
+  metadata: data.metadata,
 });
 
 export interface PetFormData {

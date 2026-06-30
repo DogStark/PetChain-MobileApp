@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
+import { changeLanguage } from '../i18n';
 import onboardingService, {
   type OnboardingState,
   type OnboardingVariant,
@@ -28,7 +29,10 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    onboardingService.init().then((s) => {
+    onboardingService.init().then(async (s) => {
+      if (s.language) {
+        await changeLanguage(s.language);
+      }
       setState(s);
       setLoading(false);
     });

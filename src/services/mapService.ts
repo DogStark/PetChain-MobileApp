@@ -36,6 +36,11 @@ const AVG_SPEED_KMH = 40;
 
 export type ClinicType = 'general' | 'emergency' | 'specialist' | 'pharmacy';
 
+export interface ClinicSchedule {
+  open: string;
+  close: string;
+}
+
 export interface VetClinic {
   id: string;
   name: string;
@@ -52,6 +57,7 @@ export interface VetClinic {
   estimatedTravelMinutes?: number;
   /** ISO timestamp of last data update */
   updatedAt?: string;
+  schedule?: Record<string, ClinicSchedule>;
 }
 
 export interface Location {
@@ -330,6 +336,27 @@ class MapService {
         .sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));
     }
     return emergency;
+  }
+
+  /**
+   * Fetch full details for a single clinic by ID, falling back to local cache if offline.
+   */
+  async getClinicDetails(clinicId: string): Promise<VetClinic> {
+    const online = await networkMonitor.isOnline();
+    if (online) {
+      try {
+        const response = await apiClient.get<{ data: VetClinic }>(`/clinics/${clinicId}`);
+        return response.data?.data ?? response.data;
+      } catch {
+        // Fall through to local cache
+      }
+    }
+    const all = await this.getCachedClinics();
+    const found = all.find((c) => c.id === clinicId);
+    if (!found) {
+      throw new Error('Clinic not found');
+    }
+    return found;
   }
 
   // ── Tile cache metadata ───────────────────────────────────────────────────────

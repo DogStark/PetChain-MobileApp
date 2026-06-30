@@ -1,0 +1,671 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Storybook component snapshots EmergencyCallButton Compact has valid args: EmergencyCallButton_Compact 1`] = `
+{
+  "args": {
+    "compact": true,
+    "label": "Vet",
+    "phoneNumber": "+1-800-555-0100",
+  },
+}
+`;
+
+exports[`Storybook component snapshots EmergencyCallButton Default has valid args: EmergencyCallButton_Default 1`] = `
+{
+  "args": {
+    "compact": false,
+    "label": "Emergency Vet",
+    "phoneNumber": "+1-800-555-0100",
+    "skipConfirm": false,
+  },
+}
+`;
+
+exports[`Storybook component snapshots EmergencyCallButton NumberOnly has valid args: EmergencyCallButton_NumberOnly 1`] = `
+{
+  "args": {
+    "compact": false,
+    "phoneNumber": "+1-800-555-0100",
+    "skipConfirm": false,
+  },
+}
+`;
+
+exports[`Storybook component snapshots EmergencyCallButton SkipConfirm has valid args: EmergencyCallButton_SkipConfirm 1`] = `
+{
+  "args": {
+    "label": "Emergency Services",
+    "phoneNumber": "911",
+    "skipConfirm": true,
+  },
+}
+`;
+
+exports[`Storybook component snapshots EmergencyCallButton has correct title: EmergencyCallButton_title 1`] = `"Components/EmergencyCallButton"`;
+
+exports[`Storybook component snapshots ErrorBoundary ErrorFallback has valid args: ErrorBoundary_ErrorFallback 1`] = `
+{
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots ErrorBoundary WithChildren has valid args: ErrorBoundary_WithChildren 1`] = `
+{
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots ErrorBoundary has correct title: ErrorBoundary_title 1`] = `"Components/ErrorBoundary"`;
+
+exports[`Storybook component snapshots ErrorFallback CustomHandlers has valid args: ErrorFallback_CustomHandlers 1`] = `
+{
+  "args": {
+    "onClearCache": "[function mockConstructor]",
+    "onContactSupport": "[function mockConstructor]",
+    "onRestart": "[function mockConstructor]",
+    "onRetry": "[function mockConstructor]",
+  },
+}
+`;
+
+exports[`Storybook component snapshots ErrorFallback Default has valid args: ErrorFallback_Default 1`] = `
+{
+  "args": {
+    "onClearCache": "[function mockConstructor]",
+    "onContactSupport": "[function mockConstructor]",
+    "onRestart": "[function mockConstructor]",
+    "onRetry": "[function mockConstructor]",
+  },
+}
+`;
+
+exports[`Storybook component snapshots ErrorFallback MinimalConfig has valid args: ErrorFallback_MinimalConfig 1`] = `
+{
+  "args": {
+    "onRetry": "[function mockConstructor]",
+  },
+}
+`;
+
+exports[`Storybook component snapshots ErrorFallback has correct title: ErrorFallback_title 1`] = `"Components/ErrorFallback"`;
+
+exports[`Storybook component snapshots LanguageSelector Default has valid args: LanguageSelector_Default 1`] = `{}`;
+
+exports[`Storybook component snapshots LanguageSelector has correct title: LanguageSelector_title 1`] = `"Components/LanguageSelector"`;
+
+exports[`Storybook component snapshots LazyScreen Default has valid args: LazyScreen_Default 1`] = `
+{
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots LazyScreen has correct title: LazyScreen_title 1`] = `"Components/LazyScreen"`;
+
+exports[`Storybook component snapshots MedicalRecordAttachments Default has valid args: MedicalRecordAttachments_Default 1`] = `
+{
+  "args": {
+    "documents": [
+      {
+        "id": "attachment-1",
+        "mimeType": "application/pdf",
+        "name": "Rabies Vaccination Record",
+        "sizeBytes": 164832,
+        "type": "pdf",
+        "url": "https://example.com/sample.pdf",
+      },
+      {
+        "id": "attachment-2",
+        "mimeType": "image/jpeg",
+        "name": "X-ray scan",
+        "sizeBytes": 324567,
+        "type": "image",
+        "url": "https://via.placeholder.com/320x240.png?text=X-ray",
+      },
+    ],
+  },
+}
+`;
+
+exports[`Storybook component snapshots MedicalRecordAttachments has correct title: MedicalRecordAttachments_title 1`] = `"Components/MedicalRecordAttachments"`;
+
+exports[`Storybook component snapshots MetricBarChart Empty has valid args: MetricBarChart_Empty 1`] = `
+{
+  "args": {
+    "color": "#4CAF50",
+    "points": [],
+    "unit": "kg",
+  },
+}
+`;
+
+exports[`Storybook component snapshots MetricBarChart HeartRate has valid args: MetricBarChart_HeartRate 1`] = `
+{
+  "args": {
+    "color": "#e53e3e",
+    "height": 200,
+    "points": "[Array(14)]",
+    "unit": "bpm",
+  },
+}
+`;
+
+exports[`Storybook component snapshots MetricBarChart SinglePoint has valid args: MetricBarChart_SinglePoint 1`] = `
+{
+  "args": {
+    "color": "#4A90A4",
+    "points": [
+      {
+        "label": "Today",
+        "value": 5,
+      },
+    ],
+    "unit": "kg",
+  },
+}
+`;
+
+exports[`Storybook component snapshots MetricBarChart WeightTrend has valid args: MetricBarChart_WeightTrend 1`] = `
+{
+  "args": {
+    "color": "#4CAF50",
+    "height": 168,
+    "points": "[Array(7)]",
+    "unit": "kg",
+  },
+}
+`;
+
+exports[`Storybook component snapshots MetricBarChart has correct title: MetricBarChart_title 1`] = `"Components/MetricBarChart"`;
+
+exports[`Storybook component snapshots OfflineIndicator Default has valid args: OfflineIndicator_Default 1`] = `{}`;
+
+exports[`Storybook component snapshots OfflineIndicator OfflineState has valid args: OfflineIndicator_OfflineState 1`] = `
+{
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots OfflineIndicator PendingState has valid args: OfflineIndicator_PendingState 1`] = `
+{
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots OfflineIndicator SyncingState has valid args: OfflineIndicator_SyncingState 1`] = `
+{
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots OfflineIndicator has correct title: OfflineIndicator_title 1`] = `"Components/OfflineIndicator"`;
+
+exports[`Storybook component snapshots OptimizedImage AvatarSize has valid args: OptimizedImage_AvatarSize 1`] = `
+{
+  "args": {
+    "resizeMode": "cover",
+    "style": {
+      "borderRadius": 40,
+      "height": 80,
+      "width": 80,
+    },
+    "uri": "https://placekitten.com/120/120",
+  },
+}
+`;
+
+exports[`Storybook component snapshots OptimizedImage Default has valid args: OptimizedImage_Default 1`] = `
+{
+  "args": {
+    "resizeMode": "cover",
+    "style": {
+      "borderRadius": 12,
+      "height": 200,
+      "width": 200,
+    },
+    "thumbnailUri": "https://placekitten.com/40/40",
+    "uri": "https://placekitten.com/400/400",
+    "useThumbnailFirst": true,
+  },
+}
+`;
+
+exports[`Storybook component snapshots OptimizedImage ErrorState has valid args: OptimizedImage_ErrorState 1`] = `
+{
+  "args": {
+    "style": {
+      "borderRadius": 12,
+      "height": 200,
+      "width": 200,
+    },
+    "uri": "https://this-url-does-not-exist.invalid/image.jpg",
+  },
+}
+`;
+
+exports[`Storybook component snapshots OptimizedImage has correct title: OptimizedImage_title 1`] = `"Components/OptimizedImage"`;
+
+exports[`Storybook component snapshots PermissionRationaleModal Camera has valid args: PermissionRationaleModal_Camera 1`] = `
+{
+  "args": {
+    "onAllow": "[function mockConstructor]",
+    "onDeny": "[function mockConstructor]",
+    "permissionType": "camera",
+    "showSettings": false,
+    "visible": true,
+  },
+}
+`;
+
+exports[`Storybook component snapshots PermissionRationaleModal Hidden has valid args: PermissionRationaleModal_Hidden 1`] = `
+{
+  "args": {
+    "onAllow": "[function mockConstructor]",
+    "onDeny": "[function mockConstructor]",
+    "permissionType": "camera",
+    "visible": false,
+  },
+}
+`;
+
+exports[`Storybook component snapshots PermissionRationaleModal Location has valid args: PermissionRationaleModal_Location 1`] = `
+{
+  "args": {
+    "onAllow": "[function mockConstructor]",
+    "onDeny": "[function mockConstructor]",
+    "permissionType": "location",
+    "showSettings": false,
+    "visible": true,
+  },
+}
+`;
+
+exports[`Storybook component snapshots PermissionRationaleModal OpenSettings has valid args: PermissionRationaleModal_OpenSettings 1`] = `
+{
+  "args": {
+    "onAllow": "[function mockConstructor]",
+    "onDeny": "[function mockConstructor]",
+    "permissionType": "camera",
+    "showSettings": true,
+    "visible": true,
+  },
+}
+`;
+
+exports[`Storybook component snapshots PermissionRationaleModal has correct title: PermissionRationaleModal_title 1`] = `"Components/PermissionRationaleModal"`;
+
+exports[`Storybook component snapshots PetAggregateView Default has valid args: PetAggregateView_Default 1`] = `
+{
+  "args": {
+    "onSelectPet": "[function mockConstructor]",
+  },
+}
+`;
+
+exports[`Storybook component snapshots PetAggregateView has correct title: PetAggregateView_title 1`] = `"Components/PetAggregateView"`;
+
+exports[`Storybook component snapshots PetPhotoUploader Empty has valid args: PetPhotoUploader_Empty 1`] = `
+{
+  "args": {
+    "onPhotoUploaded": "[function mockConstructor]",
+    "petId": "pet-001",
+  },
+}
+`;
+
+exports[`Storybook component snapshots PetPhotoUploader WithPhoto has valid args: PetPhotoUploader_WithPhoto 1`] = `
+{
+  "args": {
+    "currentPhotoUrl": "https://placekitten.com/400/400",
+    "currentThumbnailUrl": "https://placekitten.com/40/40",
+    "onPhotoUploaded": "[function mockConstructor]",
+    "petId": "pet-001",
+  },
+}
+`;
+
+exports[`Storybook component snapshots PetPhotoUploader has correct title: PetPhotoUploader_title 1`] = `"Components/PetPhotoUploader"`;
+
+exports[`Storybook component snapshots PetSelectorBar WithAddButton has valid args: PetSelectorBar_WithAddButton 1`] = `
+{
+  "args": {
+    "onAddPet": "[function mockConstructor]",
+  },
+}
+`;
+
+exports[`Storybook component snapshots PetSelectorBar WithoutAddButton has valid args: PetSelectorBar_WithoutAddButton 1`] = `
+{
+  "args": {},
+}
+`;
+
+exports[`Storybook component snapshots PetSelectorBar has correct title: PetSelectorBar_title 1`] = `"Components/PetSelectorBar"`;
+
+exports[`Storybook component snapshots QRCodeDisplay Default has valid args: QRCodeDisplay_Default 1`] = `
+{
+  "args": {
+    "pet": {
+      "breed": "Golden Retriever",
+      "id": "storybook-pet-001",
+      "microchipId": "A1B2C3D4E5F6G7H",
+      "name": "Buddy",
+      "ownerId": "owner-123",
+      "species": "dog",
+    },
+    "size": 240,
+  },
+}
+`;
+
+exports[`Storybook component snapshots QRCodeDisplay has correct title: QRCodeDisplay_title 1`] = `"Components/QRCodeDisplay"`;
+
+exports[`Storybook component snapshots ReminderSnoozeModal Default has valid args: ReminderSnoozeModal_Default 1`] = `
+{
+  "args": {
+    "nextDoseWindowMs": "[timestamp]",
+    "onDismiss": "[function mockConstructor]",
+    "onSnoozed": "[function mockConstructor]",
+    "reminderId": "storybook-reminder-001",
+    "visible": true,
+  },
+}
+`;
+
+exports[`Storybook component snapshots ReminderSnoozeModal has correct title: ReminderSnoozeModal_title 1`] = `"Components/ReminderSnoozeModal"`;
+
+exports[`Storybook component snapshots RetryError FirstFailure has valid args: RetryError_FirstFailure 1`] = `
+{
+  "args": {
+    "error": "[Error: Network request failed]",
+    "maxRetries": 3,
+    "onRetry": "[function mockConstructor]",
+    "retryCount": 0,
+  },
+}
+`;
+
+exports[`Storybook component snapshots RetryError MaxRetriesReached has valid args: RetryError_MaxRetriesReached 1`] = `
+{
+  "args": {
+    "error": "[Error: Service unavailable]",
+    "maxRetries": 3,
+    "onRetry": "[function mockConstructor]",
+    "retryCount": 3,
+  },
+}
+`;
+
+exports[`Storybook component snapshots RetryError SecondAttempt has valid args: RetryError_SecondAttempt 1`] = `
+{
+  "args": {
+    "error": "[Error: Connection timed out]",
+    "maxRetries": 3,
+    "onRetry": "[function mockConstructor]",
+    "retryCount": 2,
+  },
+}
+`;
+
+exports[`Storybook component snapshots RetryError has correct title: RetryError_title 1`] = `"Components/RetryError"`;
+
+exports[`Storybook component snapshots SOSButton Default has valid args: SOSButton_Default 1`] = `
+{
+  "args": {
+    "onSOSSent": "[function mockConstructor]",
+  },
+}
+`;
+
+exports[`Storybook component snapshots SOSButton FullWidth has valid args: SOSButton_FullWidth 1`] = `
+{
+  "args": {
+    "onSOSSent": "[function mockConstructor]",
+    "style": {
+      "marginHorizontal": 0,
+    },
+  },
+}
+`;
+
+exports[`Storybook component snapshots SOSButton has correct title: SOSButton_title 1`] = `"Components/SOSButton"`;
+
+exports[`Storybook component snapshots SecureView Default has valid args: SecureView_Default 1`] = `
+{
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots SecureView WithSensitiveContent has valid args: SecureView_WithSensitiveContent 1`] = `
+{
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots SecureView has correct title: SecureView_title 1`] = `"Components/SecureView"`;
+
+exports[`Storybook component snapshots ThemedStatusBar Default has valid args: ThemedStatusBar_Default 1`] = `
+{
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots ThemedStatusBar has correct title: ThemedStatusBar_title 1`] = `"Components/ThemedStatusBar"`;
+
+exports[`Storybook component snapshots UpdatePrompt ForceUpdate has valid args: UpdatePrompt_ForceUpdate 1`] = `
+{
+  "args": {
+    "onUpdate": "[function mockConstructor]",
+    "storeUrl": "https://example.com/update",
+    "variant": "force",
+    "visible": true,
+  },
+}
+`;
+
+exports[`Storybook component snapshots UpdatePrompt OptionalUpdate has valid args: UpdatePrompt_OptionalUpdate 1`] = `
+{
+  "args": {
+    "onDismiss": "[function mockConstructor]",
+    "onUpdate": "[function mockConstructor]",
+    "variant": "optional",
+    "visible": true,
+  },
+}
+`;
+
+exports[`Storybook component snapshots UpdatePrompt has correct title: UpdatePrompt_title 1`] = `"Components/UpdatePrompt"`;
+
+exports[`Storybook component snapshots VerificationBadge AllStates has valid args: VerificationBadge_AllStates 1`] = `
+{
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots VerificationBadge Failed has valid args: VerificationBadge_Failed 1`] = `
+{
+  "args": {
+    "onVerifyPress": "[function mockConstructor]",
+    "showButton": true,
+    "status": "failed",
+  },
+}
+`;
+
+exports[`Storybook component snapshots VerificationBadge Pending has valid args: VerificationBadge_Pending 1`] = `
+{
+  "args": {
+    "showButton": false,
+    "status": "pending",
+  },
+}
+`;
+
+exports[`Storybook component snapshots VerificationBadge Unknown has valid args: VerificationBadge_Unknown 1`] = `
+{
+  "args": {
+    "onVerifyPress": "[function mockConstructor]",
+    "showButton": true,
+    "status": "unknown",
+  },
+}
+`;
+
+exports[`Storybook component snapshots VerificationBadge Verified has valid args: VerificationBadge_Verified 1`] = `
+{
+  "args": {
+    "showButton": false,
+    "status": "verified",
+  },
+}
+`;
+
+exports[`Storybook component snapshots VerificationBadge has correct title: VerificationBadge_title 1`] = `"Components/VerificationBadge"`;
+
+exports[`Storybook component snapshots VetVerifiedBadge Compact has valid args: VetVerifiedBadge_Compact 1`] = `
+{
+  "args": {
+    "compact": true,
+    "federatedAddress": "dr.jones*animalcare.org",
+    "verified": true,
+  },
+}
+`;
+
+exports[`Storybook component snapshots VetVerifiedBadge LongAddress has valid args: VetVerifiedBadge_LongAddress 1`] = `
+{
+  "args": {
+    "compact": false,
+    "federatedAddress": "dr.verylongname.specialist*veterinaryhospitalnetwork.com",
+    "verified": true,
+  },
+}
+`;
+
+exports[`Storybook component snapshots VetVerifiedBadge MultipleBadges has valid args: VetVerifiedBadge_MultipleBadges 1`] = `
+{
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots VetVerifiedBadge Unverified has valid args: VetVerifiedBadge_Unverified 1`] = `
+{
+  "args": {
+    "compact": false,
+    "federatedAddress": "dr.unverified*example.com",
+    "verified": false,
+  },
+}
+`;
+
+exports[`Storybook component snapshots VetVerifiedBadge Verified has valid args: VetVerifiedBadge_Verified 1`] = `
+{
+  "args": {
+    "compact": false,
+    "federatedAddress": "dr.smith*vetclinic.com",
+    "verified": true,
+  },
+}
+`;
+
+exports[`Storybook component snapshots VetVerifiedBadge has correct title: VetVerifiedBadge_title 1`] = `"Components/VetVerifiedBadge"`;
+
+exports[`Storybook component snapshots WeightChart Empty has valid args: WeightChart_Empty 1`] = `
+{
+  "args": {
+    "data": [],
+    "height": 300,
+    "onExport": "[function mockConstructor]",
+    "vetRecommendedRange": {
+      "max": 5.5,
+      "min": 4.5,
+    },
+  },
+}
+`;
+
+exports[`Storybook component snapshots WeightChart LongTermData has valid args: WeightChart_LongTermData 1`] = `
+{
+  "args": {
+    "data": "[Array(24)]",
+    "height": 300,
+    "onExport": "[function mockConstructor]",
+    "vetRecommendedRange": {
+      "max": 6,
+      "min": 4.5,
+    },
+  },
+}
+`;
+
+exports[`Storybook component snapshots WeightChart NoVetRange has valid args: WeightChart_NoVetRange 1`] = `
+{
+  "args": {
+    "data": "[Array(14)]",
+    "height": 300,
+    "onExport": "[function mockConstructor]",
+  },
+}
+`;
+
+exports[`Storybook component snapshots WeightChart SinglePoint has valid args: WeightChart_SinglePoint 1`] = `
+{
+  "args": {
+    "data": [
+      {
+        "date": "2026-05-29T00:00:00Z",
+        "weightKg": 5,
+      },
+    ],
+    "height": 300,
+    "onExport": "[function mockConstructor]",
+    "vetRecommendedRange": {
+      "max": 5.5,
+      "min": 4.5,
+    },
+  },
+}
+`;
+
+exports[`Storybook component snapshots WeightChart SteadyGrowth has valid args: WeightChart_SteadyGrowth 1`] = `
+{
+  "args": {
+    "data": "[Array(14)]",
+    "height": 300,
+    "onExport": "[function mockConstructor]",
+    "vetRecommendedRange": {
+      "max": 5.5,
+      "min": 4.5,
+    },
+  },
+}
+`;
+
+exports[`Storybook component snapshots WeightChart TallChart has valid args: WeightChart_TallChart 1`] = `
+{
+  "args": {
+    "data": "[Array(14)]",
+    "height": 450,
+    "onExport": "[function mockConstructor]",
+    "vetRecommendedRange": {
+      "max": 5.5,
+      "min": 4.5,
+    },
+  },
+}
+`;
+
+exports[`Storybook component snapshots WeightChart WithAnnotations has valid args: WeightChart_WithAnnotations 1`] = `
+{
+  "args": {
+    "data": "[Array(13)]",
+    "height": 300,
+    "onExport": "[function mockConstructor]",
+    "vetRecommendedRange": {
+      "max": 5.2,
+      "min": 4.5,
+    },
+  },
+}
+`;
+
+exports[`Storybook component snapshots WeightChart has correct title: WeightChart_title 1`] = `"Components/WeightChart"`;

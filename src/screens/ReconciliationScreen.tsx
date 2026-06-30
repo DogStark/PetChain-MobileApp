@@ -28,12 +28,27 @@ import type {
   ReconciliationSummary,
   RecordReconciliationResult,
 } from '../models/Reconciliation';
+import apiClient from '../services/apiClient';
 import {
   runReconciliation,
   getReconciliationSummary,
   listReconciliationReports,
   ReconciliationError,
 } from '../services/reconciliationService';
+
+type TrustDecision = 'local' | 'blockchain';
+
+async function writeAuditTrail(record: RecordReconciliationResult, decision: TrustDecision) {
+  await apiClient
+    .post('/audit-trail', {
+      entityType: 'reconciliation_record',
+      entityId: record.recordId,
+      action: 'UPDATE',
+      beforeData: { localHash: record.localHash, onChainHash: record.onChainHash },
+      afterData: { decision: decision === 'local' ? 'TRUST_LOCAL' : 'TRUST_BLOCKCHAIN' },
+    })
+    .catch(() => {});
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +68,7 @@ const ReconciliationScreen: React.FC<Props> = ({ onBack }) => {
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [decisions, setDecisions] = useState<Record<string, TrustDecision>>({});
 
   // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -111,6 +127,50 @@ const ReconciliationScreen: React.FC<Props> = ({ onBack }) => {
     );
   };
 
+  // ── Reconciliation decisions ─────────────────────────────────────────────────
+
+  const recordDecision = async (record: RecordReconciliationResult, decision: TrustDecision) => {
+    setDecisions((prev) => ({ ...prev, [record.recordId]: decision }));
+    await writeAuditTrail(record, decision);
+  };
+
+  const handleTrustBlockchain = (record: RecordReconciliationResult) => {
+    void recordDecision(record, 'blockchain');
+  };
+
+  const handleTrustLocal = (record: RecordReconciliationResult) => {
+    Alert.alert(
+      'Trust Local Record?',
+      'This will keep your local copy and overwrite the on-chain verification status. Only do this if you are certain the blockchain entry is wrong.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Trust Local',
+          style: 'destructive',
+          onPress: () => void recordDecision(record, 'local'),
+        },
+      ],
+    );
+  };
+
+  const handleTrustBlockchainForAll = (records: RecordReconciliationResult[]) => {
+    const pending = records.filter((r) => !decisions[r.recordId]);
+    if (pending.length === 0) return;
+    Alert.alert(
+      'Trust Blockchain for All?',
+      `This will mark all ${pending.length} tampered record(s) as resolved in favor of the on-chain version.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Trust Blockchain for All',
+          onPress: () => {
+            pending.forEach((r) => void recordDecision(r, 'blockchain'));
+          },
+        },
+      ],
+    );
+  };
+
   // ── Render helpers ──────────────────────────────────────────────────────────
 
   const renderResultRow = (item: RecordReconciliationResult, idx: number) => (
@@ -153,6 +213,65 @@ const ReconciliationScreen: React.FC<Props> = ({ onBack }) => {
       )}
     </View>
   );
+
+  const renderDiffCard = (item: RecordReconciliationResult) => {
+    const decision = decisions[item.recordId];
+    return (
+      <View key={item.recordId} style={styles.diffCard}>
+        <View style={styles.resultHeader}>
+          <Text style={styles.resultIcon}>🚨</Text>
+          <View style={styles.resultMeta}>
+            <Text style={styles.resultType}>{item.recordType}</Text>
+            <Text style={styles.resultPet}>{item.petName ?? item.petId}</Text>
+          </View>
+        </View>
+        <Text style={styles.resultDate}>Visit: {new Date(item.visitDate).toLocaleDateString()}</Text>
+        {item.reason ? <Text style={styles.resultReason}>{item.reason}</Text> : null}
+
+        <View style={styles.diffRow}>
+          <View style={[styles.diffCol, styles.diffColLocal]}>
+            <Text style={styles.diffColLabel}>Local</Text>
+            <Text style={[styles.diffColValue, styles.diffValueChangedLocal]}>
+              {item.localHash.slice(0, 16)}…
+            </Text>
+          </View>
+          <View style={[styles.diffCol, styles.diffColChain]}>
+            <Text style={styles.diffColLabel}>On-chain</Text>
+            <Text style={[styles.diffColValue, styles.diffValueChangedChain]}>
+              {item.onChainHash ? `${item.onChainHash.slice(0, 16)}…` : '— none —'}
+            </Text>
+          </View>
+        </View>
+
+        {decision ? (
+          <View style={styles.decisionBadge}>
+            <Text style={styles.decisionBadgeText}>
+              ✓ Resolved — trusted {decision === 'local' ? 'local record' : 'blockchain'}
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.diffActions}>
+            <TouchableOpacity
+              style={styles.trustLocalBtn}
+              onPress={() => handleTrustLocal(item)}
+              accessibilityRole="button"
+              accessibilityLabel="Trust local record"
+            >
+              <Text style={styles.trustLocalBtnText}>Trust Local</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.trustChainBtn}
+              onPress={() => handleTrustBlockchain(item)}
+              accessibilityRole="button"
+              accessibilityLabel="Trust blockchain record"
+            >
+              <Text style={styles.trustChainBtnText}>Trust Blockchain</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+    );
+  };
 
   const renderReportCard = ({ item }: { item: ReconciliationReport }) => (
     <TouchableOpacity
@@ -239,8 +358,17 @@ const ReconciliationScreen: React.FC<Props> = ({ onBack }) => {
           {/* Results by section */}
           {tampered.length > 0 && (
             <>
-              <Text style={styles.sectionTitle}>⚠️ Tampered Records</Text>
-              {tampered.map(renderResultRow)}
+              <View style={styles.tamperedSectionHeader}>
+                <Text style={styles.sectionTitle}>⚠️ Tampered Records</Text>
+                <TouchableOpacity
+                  onPress={() => handleTrustBlockchainForAll(tampered)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Trust blockchain for all tampered records"
+                >
+                  <Text style={styles.trustAllLink}>Trust blockchain for all</Text>
+                </TouchableOpacity>
+              </View>
+              {tampered.map(renderDiffCard)}
             </>
           )}
 
@@ -546,6 +674,56 @@ const styles = StyleSheet.create({
     padding: 6,
   },
   reAnchorText: { fontSize: 11, color: '#1e40af', fontWeight: '600' },
+
+  // Diff view (tampered records)
+  tamperedSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  trustAllLink: { fontSize: 12, color: '#4f46e5', fontWeight: '700' },
+  diffCard: {
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+  },
+  diffRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  diffCol: { flex: 1, borderRadius: 8, padding: 8 },
+  diffColLocal: { backgroundColor: '#fee2e2' },
+  diffColChain: { backgroundColor: '#d1fae5' },
+  diffColLabel: { fontSize: 11, fontWeight: '700', color: '#6b7280', marginBottom: 4 },
+  diffColValue: { fontSize: 11, fontFamily: 'monospace' },
+  diffValueChangedLocal: { color: '#991b1b', fontWeight: '700' },
+  diffValueChangedChain: { color: '#065f46', fontWeight: '700' },
+  diffActions: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  trustLocalBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#dc2626',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  trustLocalBtnText: { color: '#dc2626', fontWeight: '700', fontSize: 13 },
+  trustChainBtn: {
+    flex: 1,
+    backgroundColor: '#16a34a',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  trustChainBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  decisionBadge: {
+    marginTop: 10,
+    backgroundColor: '#f0fdf4',
+    borderRadius: 8,
+    padding: 8,
+  },
+  decisionBadgeText: { fontSize: 12, color: '#166534', fontWeight: '600' },
 });
 
 export default ReconciliationScreen;

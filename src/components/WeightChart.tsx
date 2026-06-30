@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Dimensions, FlatList } from 'react-native';
 import Svg, {
   Line,
   Circle,
@@ -12,14 +12,26 @@ import Svg, {
 } from 'react-native-svg';
 
 import { useAppTheme } from '../theme';
+import {
+  buildDataPointAccessibilityLabel,
+  buildWeightChartAccessibilityLabel,
+  filterDataByRange,
+  formatDateLabel,
+  type DateRangeFilter,
+  type WeightDataPoint,
+} from './weightChartAccessibility';
+
+export type { DateRangeFilter, WeightDataPoint } from './weightChartAccessibility';
+export {
+  buildDataPointAccessibilityLabel,
+  buildWeightChartAccessibilityLabel,
+  describeWeightTrend,
+  filterDataByRange,
+  formatDateLabel,
+  rangeLabel,
+} from './weightChartAccessibility';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface WeightDataPoint {
-  date: string; // ISO date string
-  weightKg: number;
-  note?: string; // Optional annotation (e.g., "Surgery", "Illness")
-}
 
 export interface WeightRange {
   min: number;
@@ -27,56 +39,32 @@ export interface WeightRange {
   label?: string;
 }
 
-export type DateRangeFilter = '1M' | '3M' | '1Y' | 'ALL';
-
 interface Props {
   data: WeightDataPoint[];
+  petName?: string;
   vetRecommendedRange?: WeightRange;
   onExport?: () => void;
   height?: number;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Chart layout ─────────────────────────────────────────────────────────────
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CHART_PADDING = { top: 20, right: 16, bottom: 40, left: 48 };
 
-function filterDataByRange(data: WeightDataPoint[], range: DateRangeFilter): WeightDataPoint[] {
-  if (range === 'ALL') return data;
-
-  const now = new Date();
-  const cutoff = new Date(now);
-
-  switch (range) {
-    case '1M':
-      cutoff.setMonth(now.getMonth() - 1);
-      break;
-    case '3M':
-      cutoff.setMonth(now.getMonth() - 3);
-      break;
-    case '1Y':
-      cutoff.setFullYear(now.getFullYear() - 1);
-      break;
-  }
-
-  return data.filter((d) => new Date(d.date) >= cutoff);
-}
-
-function formatDateLabel(iso: string, compact = false): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  if (compact) {
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  }
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-const WeightChart: React.FC<Props> = ({ data, vetRecommendedRange, onExport, height = 300 }) => {
+const WeightChart: React.FC<Props> = ({
+  data,
+  petName,
+  vetRecommendedRange,
+  onExport,
+  height = 300,
+}) => {
   const colors = useAppTheme();
   const [selectedRange, setSelectedRange] = useState<DateRangeFilter>('3M');
   const [selectedPoint, setSelectedPoint] = useState<number | null>(null);
+  const [showTableView, setShowTableView] = useState(false);
 
   const filteredData = useMemo(
     () =>
@@ -84,6 +72,11 @@ const WeightChart: React.FC<Props> = ({ data, vetRecommendedRange, onExport, hei
         (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
       ),
     [data, selectedRange],
+  );
+
+  const chartAccessibilityLabel = useMemo(
+    () => buildWeightChartAccessibilityLabel(petName, filteredData, selectedRange),
+    [petName, filteredData, selectedRange],
   );
 
   const chartWidth = SCREEN_WIDTH - 32; // Account for container padding
@@ -98,41 +91,59 @@ const WeightChart: React.FC<Props> = ({ data, vetRecommendedRange, onExport, hei
     let min = Math.min(...weights);
     let max = Math.max(...weights);
 
-    // Include vet range in scale if provided
     if (vetRecommendedRange) {
       min = Math.min(min, vetRecommendedRange.min);
       max = Math.max(max, vetRecommendedRange.max);
     }
 
-    // Add 10% padding to y-axis
     const padding = (max - min) * 0.1;
     min = Math.max(0, min - padding);
     max = max + padding;
 
-    const yScale = (weight: number) => {
+    const nextYScale = (weight: number) => {
       const ratio = (weight - min) / (max - min);
       return chartHeight - ratio * chartHeight;
     };
 
-    const xScale = (index: number) => {
+    const nextXScale = (index: number) => {
       return (
         (index / Math.max(1, filteredData.length - 1)) *
         (chartWidth - CHART_PADDING.left - CHART_PADDING.right)
       );
     };
 
-    return { minWeight: min, maxWeight: max, yScale, xScale };
+    return { minWeight: min, maxWeight: max, yScale: nextYScale, xScale: nextXScale };
   }, [filteredData, vetRecommendedRange, chartHeight, chartWidth]);
 
-  // ── Render empty state ────────────────────────────────────────────────────
+  const renderTableRow = ({ item }: { item: WeightDataPoint }) => (
+    <View
+      style={[styles.tableRow, { borderBottomColor: colors.muted }]}
+      accessible
+      accessibilityRole="text"
+      accessibilityLabel={buildDataPointAccessibilityLabel(item)}
+    >
+      <Text style={[styles.tableDate, { color: colors.text }]}>{formatDateLabel(item.date)}</Text>
+      <Text style={[styles.tableWeight, { color: colors.text }]}>
+        {item.weightKg.toFixed(1)} kg
+      </Text>
+      {item.note ? (
+        <Text style={[styles.tableNote, { color: colors.warning }]}>{item.note}</Text>
+      ) : null}
+    </View>
+  );
 
   if (filteredData.length === 0) {
     return (
       <View
         style={[styles.container, { backgroundColor: colors.card, shadowColor: colors.shadow }]}
+        accessible
+        accessibilityRole="summary"
+        accessibilityLabel={chartAccessibilityLabel}
       >
         <View style={styles.header}>
-          <Text style={[styles.title, { color: colors.text }]}>Weight & Growth Chart</Text>
+          <Text style={[styles.title, { color: colors.text }]} accessibilityRole="header">
+            Weight & Growth Chart
+          </Text>
         </View>
         <View style={[styles.emptyContainer, { height }]}>
           <Text style={[styles.emptyText, { color: colors.placeholder }]}>
@@ -143,8 +154,6 @@ const WeightChart: React.FC<Props> = ({ data, vetRecommendedRange, onExport, hei
     );
   }
 
-  // ── Build SVG path ────────────────────────────────────────────────────────
-
   const linePath = filteredData
     .map((point, idx) => {
       const x = CHART_PADDING.left + xScale(idx);
@@ -153,27 +162,43 @@ const WeightChart: React.FC<Props> = ({ data, vetRecommendedRange, onExport, hei
     })
     .join(' ');
 
-  // ── Y-axis labels ─────────────────────────────────────────────────────────
-
   const yTicks = [minWeight, (minWeight + maxWeight) / 2, maxWeight];
 
   return (
     <View style={[styles.container, { backgroundColor: colors.card, shadowColor: colors.shadow }]}>
-      {/* Header */}
       <View style={styles.header}>
-        <Text style={[styles.title, { color: colors.text }]}>Weight & Growth Chart</Text>
-        {onExport && (
+        <Text style={[styles.title, { color: colors.text }]} accessibilityRole="header">
+          Weight & Growth Chart
+        </Text>
+        <View style={styles.headerActions}>
           <TouchableOpacity
-            onPress={onExport}
-            style={[styles.exportBtn, { backgroundColor: colors.infoMuted }]}
+            onPress={() => setShowTableView((current) => !current)}
+            style={[styles.viewToggleBtn, { backgroundColor: colors.muted }]}
             accessibilityRole="button"
+            accessibilityLabel={showTableView ? 'View as chart' : 'View as table'}
+            accessibilityHint={
+              showTableView
+                ? 'Switches back to the visual weight chart'
+                : 'Shows weight data in an accessible table list'
+            }
           >
-            <Text style={[styles.exportText, { color: colors.info }]}>Export</Text>
+            <Text style={[styles.viewToggleText, { color: colors.text }]}>
+              {showTableView ? 'View as chart' : 'View as table'}
+            </Text>
           </TouchableOpacity>
-        )}
+          {onExport && (
+            <TouchableOpacity
+              onPress={onExport}
+              style={[styles.exportBtn, { backgroundColor: colors.infoMuted }]}
+              accessibilityRole="button"
+              accessibilityLabel="Export weight chart"
+            >
+              <Text style={[styles.exportText, { color: colors.info }]}>Export</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
-      {/* Date range filters */}
       <View style={styles.filterRow}>
         {(['1M', '3M', '1Y', 'ALL'] as DateRangeFilter[]).map((range) => (
           <TouchableOpacity
@@ -185,6 +210,7 @@ const WeightChart: React.FC<Props> = ({ data, vetRecommendedRange, onExport, hei
               selectedRange === range && { backgroundColor: colors.info },
             ]}
             accessibilityRole="button"
+            accessibilityLabel={`Show ${rangeLabel(range)}`}
             accessibilityState={{ selected: selectedRange === range }}
           >
             <Text
@@ -200,138 +226,173 @@ const WeightChart: React.FC<Props> = ({ data, vetRecommendedRange, onExport, hei
         ))}
       </View>
 
-      {/* Chart */}
-      <View style={styles.chartContainer}>
-        <Svg width={chartWidth} height={height}>
-          <Defs>
-            <LinearGradient id="rangeGradient" x1="0" y1="0" x2="0" y2="1">
-              <Stop offset="0" stopColor={colors.primary} stopOpacity="0.22" />
-              <Stop offset="1" stopColor={colors.primary} stopOpacity="0.06" />
-            </LinearGradient>
-          </Defs>
-
-          {/* Vet recommended range overlay */}
-          {vetRecommendedRange && (
-            <Rect
-              x={CHART_PADDING.left}
-              y={CHART_PADDING.top + yScale(vetRecommendedRange.max)}
-              width={chartWidth - CHART_PADDING.left - CHART_PADDING.right}
-              height={yScale(vetRecommendedRange.min) - yScale(vetRecommendedRange.max)}
-              fill="url(#rangeGradient)"
-            />
-          )}
-
-          {/* Y-axis grid lines */}
-          {yTicks.map((tick, idx) => {
-            const y = CHART_PADDING.top + yScale(tick);
-            return (
-              <Line
-                key={idx}
-                x1={CHART_PADDING.left}
-                y1={y}
-                x2={chartWidth - CHART_PADDING.right}
-                y2={y}
-                stroke={colors.chartGrid}
-                strokeWidth="1"
-                strokeDasharray="4,4"
-              />
-            );
-          })}
-
-          {/* Y-axis labels */}
-          {yTicks.map((tick, idx) => {
-            const y = CHART_PADDING.top + yScale(tick);
-            return (
-              <SvgText
-                key={idx}
-                x={CHART_PADDING.left - 8}
-                y={y + 4}
-                fontSize="11"
-                fill={colors.chartAxis}
-                textAnchor="end"
-              >
-                {tick.toFixed(1)}
-              </SvgText>
-            );
-          })}
-
-          {/* Line chart */}
-          <Path d={linePath} stroke={colors.chartLine} strokeWidth="2.5" fill="none" />
-
-          {/* Data points */}
-          {filteredData.map((point, idx) => {
-            const x = CHART_PADDING.left + xScale(idx);
-            const y = CHART_PADDING.top + yScale(point.weightKg);
-            const isAnnotated = Boolean(point.note);
-            const isSelected = selectedPoint === idx;
-
-            return (
-              <React.Fragment key={idx}>
-                <Circle
-                  cx={x}
-                  cy={y}
-                  r={isAnnotated ? 6 : 4}
-                  fill={isAnnotated ? colors.chartAnnotation : colors.chartLine}
-                  stroke={colors.card}
-                  strokeWidth="2"
-                  onPress={() => setSelectedPoint(isSelected ? null : idx)}
-                />
-                {isSelected && (
-                  <Circle
-                    cx={x}
-                    cy={y}
-                    r={10}
-                    fill="none"
-                    stroke={colors.chartLine}
-                    strokeWidth="1.5"
-                  />
-                )}
-              </React.Fragment>
-            );
-          })}
-
-          {/* X-axis labels (show every nth point to avoid crowding) */}
-          {filteredData.map((point, idx) => {
-            if (filteredData.length > 10 && idx % Math.ceil(filteredData.length / 6) !== 0) {
-              return null;
-            }
-            const x = CHART_PADDING.left + xScale(idx);
-            const y = height - CHART_PADDING.bottom + 16;
-            return (
-              <SvgText
-                key={idx}
-                x={x}
-                y={y}
-                fontSize="10"
-                fill={colors.chartAxis}
-                textAnchor="middle"
-                transform={`rotate(-45, ${x}, ${y})`}
-              >
-                {formatDateLabel(point.date, true)}
-              </SvgText>
-            );
-          })}
-        </Svg>
-
-        {/* Selected point tooltip */}
-        {selectedPoint !== null && filteredData[selectedPoint] && (
-          <View style={[styles.tooltip, { backgroundColor: colors.cardElevated }]}>
-            <Text style={[styles.tooltipDate, { color: colors.secondaryText }]}>
-              {formatDateLabel(filteredData[selectedPoint].date)}
-            </Text>
-            <Text style={[styles.tooltipWeight, { color: colors.text }]}>
-              {filteredData[selectedPoint].weightKg.toFixed(2)} kg
-            </Text>
-            {filteredData[selectedPoint].note && (
-              <Text style={[styles.tooltipNote, { color: colors.warning }]}>
-                {filteredData[selectedPoint].note}
-              </Text>
-            )}
-          </View>
-        )}
+      <View
+        accessible
+        accessibilityRole="image"
+        accessibilityLabel={chartAccessibilityLabel}
+        style={styles.chartSummary}
+      >
+        <Text style={[styles.summaryText, { color: colors.secondaryText }]}>
+          {chartAccessibilityLabel}
+        </Text>
       </View>
 
-      {/* Legend */}
+      {showTableView ? (
+        <FlatList
+          data={filteredData}
+          keyExtractor={(item, index) => `${item.date}-${index}`}
+          renderItem={renderTableRow}
+          ListHeaderComponent={
+            <View style={styles.tableHeader} accessible={false}>
+              <Text style={[styles.tableHeaderText, { color: colors.secondaryText }]}>Date</Text>
+              <Text style={[styles.tableHeaderText, { color: colors.secondaryText }]}>Weight</Text>
+            </View>
+          }
+          style={[styles.tableList, { maxHeight: height }]}
+          accessibilityRole="list"
+          accessibilityLabel="Weight data table"
+        />
+      ) : (
+        <>
+          <View style={styles.chartContainer} importantForAccessibility="no-hide-descendants">
+            <Svg width={chartWidth} height={height} accessible={false}>
+              <Defs>
+                <LinearGradient id="rangeGradient" x1="0" y1="0" x2="0" y2="1">
+                  <Stop offset="0" stopColor={colors.primary} stopOpacity="0.22" />
+                  <Stop offset="1" stopColor={colors.primary} stopOpacity="0.06" />
+                </LinearGradient>
+              </Defs>
+
+              {vetRecommendedRange && (
+                <Rect
+                  x={CHART_PADDING.left}
+                  y={CHART_PADDING.top + yScale(vetRecommendedRange.max)}
+                  width={chartWidth - CHART_PADDING.left - CHART_PADDING.right}
+                  height={yScale(vetRecommendedRange.min) - yScale(vetRecommendedRange.max)}
+                  fill="url(#rangeGradient)"
+                />
+              )}
+
+              {yTicks.map((tick, idx) => {
+                const y = CHART_PADDING.top + yScale(tick);
+                return (
+                  <Line
+                    key={idx}
+                    x1={CHART_PADDING.left}
+                    y1={y}
+                    x2={chartWidth - CHART_PADDING.right}
+                    y2={y}
+                    stroke={colors.chartGrid}
+                    strokeWidth="1"
+                    strokeDasharray="4,4"
+                  />
+                );
+              })}
+
+              {yTicks.map((tick, idx) => {
+                const y = CHART_PADDING.top + yScale(tick);
+                return (
+                  <SvgText
+                    key={idx}
+                    x={CHART_PADDING.left - 8}
+                    y={y + 4}
+                    fontSize="11"
+                    fill={colors.chartAxis}
+                    textAnchor="end"
+                  >
+                    {tick.toFixed(1)}
+                  </SvgText>
+                );
+              })}
+
+              <Path d={linePath} stroke={colors.chartLine} strokeWidth="2.5" fill="none" />
+
+              {filteredData.map((point, idx) => {
+                const x = CHART_PADDING.left + xScale(idx);
+                const y = CHART_PADDING.top + yScale(point.weightKg);
+                const isAnnotated = Boolean(point.note);
+                const isSelected = selectedPoint === idx;
+
+                return (
+                  <React.Fragment key={idx}>
+                    <Circle
+                      cx={x}
+                      cy={y}
+                      r={isAnnotated ? 6 : 4}
+                      fill={isAnnotated ? colors.chartAnnotation : colors.chartLine}
+                      stroke={colors.card}
+                      strokeWidth="2"
+                      onPress={() => setSelectedPoint(isSelected ? null : idx)}
+                    />
+                    {isSelected && (
+                      <Circle
+                        cx={x}
+                        cy={y}
+                        r={10}
+                        fill="none"
+                        stroke={colors.chartLine}
+                        strokeWidth="1.5"
+                      />
+                    )}
+                  </React.Fragment>
+                );
+              })}
+
+              {filteredData.map((point, idx) => {
+                if (filteredData.length > 10 && idx % Math.ceil(filteredData.length / 6) !== 0) {
+                  return null;
+                }
+                const x = CHART_PADDING.left + xScale(idx);
+                const y = height - CHART_PADDING.bottom + 16;
+                return (
+                  <SvgText
+                    key={idx}
+                    x={x}
+                    y={y}
+                    fontSize="10"
+                    fill={colors.chartAxis}
+                    textAnchor="middle"
+                    transform={`rotate(-45, ${x}, ${y})`}
+                  >
+                    {formatDateLabel(point.date, true)}
+                  </SvgText>
+                );
+              })}
+            </Svg>
+
+            {selectedPoint !== null && filteredData[selectedPoint] && (
+              <View style={[styles.tooltip, { backgroundColor: colors.cardElevated }]}>
+                <Text style={[styles.tooltipDate, { color: colors.secondaryText }]}>
+                  {formatDateLabel(filteredData[selectedPoint].date)}
+                </Text>
+                <Text style={[styles.tooltipWeight, { color: colors.text }]}>
+                  {filteredData[selectedPoint].weightKg.toFixed(2)} kg
+                </Text>
+                {filteredData[selectedPoint].note && (
+                  <Text style={[styles.tooltipNote, { color: colors.warning }]}>
+                    {filteredData[selectedPoint].note}
+                  </Text>
+                )}
+              </View>
+            )}
+          </View>
+
+          <View style={styles.accessiblePointsList} accessibilityRole="list">
+            {filteredData.map((point, idx) => (
+              <Text
+                key={`${point.date}-${idx}`}
+                accessible
+                accessibilityRole="text"
+                accessibilityLabel={buildDataPointAccessibilityLabel(point)}
+                style={styles.accessiblePointItem}
+              >
+                {buildDataPointAccessibilityLabel(point)}
+              </Text>
+            ))}
+          </View>
+        </>
+      )}
+
       {vetRecommendedRange && (
         <View style={styles.legend}>
           <View style={styles.legendItem}>
@@ -352,8 +413,6 @@ const WeightChart: React.FC<Props> = ({ data, vetRecommendedRange, onExport, hei
   );
 };
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
   container: {
     borderRadius: 12,
@@ -370,9 +429,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   title: {
     fontSize: 18,
     fontWeight: '700',
+    flex: 1,
+    marginRight: 8,
+  },
+  viewToggleBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  viewToggleText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   exportBtn: {
     paddingHorizontal: 12,
@@ -398,8 +473,61 @@ const styles = StyleSheet.create({
   filterTextActive: {
     color: '#fff',
   },
+  chartSummary: {
+    marginBottom: 12,
+  },
+  summaryText: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
   chartContainer: {
     position: 'relative',
+  },
+  accessiblePointsList: {
+    marginTop: 12,
+  },
+  accessiblePointItem: {
+    fontSize: 13,
+    lineHeight: 20,
+    marginBottom: 4,
+  },
+  tableList: {
+    marginBottom: 8,
+  },
+  tableHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  tableHeaderText: {
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  tableRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+  },
+  tableDate: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  tableWeight: {
+    fontSize: 14,
+    fontWeight: '700',
+    minWidth: 72,
+    textAlign: 'right',
+  },
+  tableNote: {
+    width: '100%',
+    fontSize: 12,
+    fontStyle: 'italic',
   },
   emptyContainer: {
     justifyContent: 'center',

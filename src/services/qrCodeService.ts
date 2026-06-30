@@ -1,6 +1,7 @@
 import CryptoJS from 'crypto-js';
 import { Share } from 'react-native';
 
+import { getItem, removeItem, setItem } from './localDB';
 import type { Pet } from '../models/Pet';
 import {
   buildPetDeepLink,
@@ -19,6 +20,19 @@ import {
  * v2 — current: full pet snapshot embedded, versioned, offline-capable
  */
 export const QR_FORMAT_VERSION = 2;
+
+// ─── Expiry presets ───────────────────────────────────────────────────────────
+
+export type QRExpiry = '1h' | '24h' | '7d' | 'never';
+
+const EXPIRY_MS: Record<QRExpiry, number | null> = {
+  '1h': 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  never: null,
+};
+
+const QR_TOKEN_PREFIX = '@qr_token_';
 
 const QR_PREFIX = 'PETCHAIN_QR';
 const PET_ID_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -44,9 +58,28 @@ export interface PetQRDataV2 {
   checksum: string;
   /** Snapshot of core pet fields for offline display. */
   pet: Pick<Pet, 'id' | 'name' | 'species' | 'breed' | 'microchipId'>;
+  /** Unix ms timestamp after which this QR is invalid. Absent = never expires. */
+  expiresAt?: number;
+  /** If true, invalidated after first successful scan. */
+  oneTimeUse?: boolean;
+  /** Unique token for server-side revocation / usage tracking. */
+  token?: string;
 }
 
 export type PetQRData = PetQRDataV1 | PetQRDataV2;
+
+export interface QRCodeOptions {
+  expiry?: QRExpiry;
+  oneTimeUse?: boolean;
+}
+
+/** Persisted token state stored in localDB. */
+interface QRTokenState {
+  token: string;
+  petId: string;
+  usageCount: number;
+  revokedAt?: number;
+}
 
 export interface QRScanResult {
   valid: boolean;
@@ -66,15 +99,43 @@ const computeChecksum = (petId: string, deepLink: string, generatedAt: number): 
 
 // ─── Generation ───────────────────────────────────────────────────────────────
 
+// ─── Token helpers ────────────────────────────────────────────────────────────
+
+const getTokenState = async (token: string): Promise<QRTokenState | null> => {
+  const raw = await getItem(`${QR_TOKEN_PREFIX}${token}`);
+  return raw ? (JSON.parse(raw) as QRTokenState) : null;
+};
+
+const saveTokenState = async (state: QRTokenState): Promise<void> => {
+  await setItem(`${QR_TOKEN_PREFIX}${state.token}`, JSON.stringify(state));
+};
+
+/**
+ * Revoke an active QR token so it is rejected on the next scan.
+ */
+export const revokeQRCode = async (token: string): Promise<void> => {
+  const state = await getTokenState(token);
+  if (!state) return;
+  await saveTokenState({ ...state, revokedAt: Date.now() });
+};
+
+/**
+ * Remove all persisted token state for a QR token.
+ */
+export const deleteQRToken = async (token: string): Promise<void> => {
+  await removeItem(`${QR_TOKEN_PREFIX}${token}`);
+};
+
 /**
  * Generate a v2 QR payload string for a pet.
  * The payload is base64-encoded JSON containing a pet snapshot and checksum.
  * The result is also persisted to the offline cache automatically.
  *
  * @param pet - Full pet object (only core fields are embedded in the QR).
+ * @param options - Optional expiry and one-time-use settings.
  * @returns Base64-encoded QR payload string.
  */
-export const generatePetQRCode = async (pet: Pet): Promise<string> => {
+export const generatePetQRCode = async (pet: Pet, options: QRCodeOptions = {}): Promise<string> => {
   if (!pet.id || pet.id.trim().length === 0) {
     throw new Error('QR generation failed: pet.id must not be empty');
   }
@@ -87,6 +148,10 @@ export const generatePetQRCode = async (pet: Pet): Promise<string> => {
   const generatedAt = Date.now();
   const deepLink = buildPetDeepLink(pet.id);
   const checksum = computeChecksum(pet.id, deepLink, generatedAt);
+  const token = CryptoJS.lib.WordArray.random(16).toString();
+
+  const expiryMs = options.expiry ? EXPIRY_MS[options.expiry] : null;
+  const expiresAt = expiryMs ? generatedAt + expiryMs : undefined;
 
   const payload: PetQRDataV2 = {
     version: QR_FORMAT_VERSION,
@@ -101,7 +166,12 @@ export const generatePetQRCode = async (pet: Pet): Promise<string> => {
       breed: pet.breed,
       microchipId: pet.microchipId,
     },
+    ...(expiresAt !== undefined && { expiresAt }),
+    ...(options.oneTimeUse && { oneTimeUse: true }),
+    token,
   };
+
+  await saveTokenState({ token, petId: pet.id, usageCount: 0 });
 
   const encoded = encodePayload(payload);
 
@@ -111,13 +181,19 @@ export const generatePetQRCode = async (pet: Pet): Promise<string> => {
   return encoded;
 };
 
-export const generateQR = async (petData: PetQRInput): Promise<string> => {
-  return generatePetQRCode({
-    ...petData,
-    ownerId: '',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  });
+export const generateQR = async (
+  petData: PetQRInput,
+  options: QRCodeOptions = {},
+): Promise<string> => {
+  return generatePetQRCode(
+    {
+      ...petData,
+      ownerId: '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    options,
+  );
 };
 
 export const getQRImageUrl = (qrData: string, size = 240): string => {
@@ -125,8 +201,11 @@ export const getQRImageUrl = (qrData: string, size = 240): string => {
   return `${QR_IMAGE_BASE_URL}?size=${clampedSize}x${clampedSize}&data=${encodeURIComponent(qrData)}`;
 };
 
-export const sharePetQRCode = async (petData: PetQRInput): Promise<string> => {
-  const payload = await generateQR(petData);
+export const sharePetQRCode = async (
+  petData: PetQRInput,
+  options: QRCodeOptions = {},
+): Promise<string> => {
+  const payload = await generateQR(petData, options);
   const imageUrl = getQRImageUrl(payload);
   await Share.share({
     title: `${petData.name}'s PetChain QR`,
@@ -136,8 +215,11 @@ export const sharePetQRCode = async (petData: PetQRInput): Promise<string> => {
   return payload;
 };
 
-export const printPetQRCode = async (petData: PetQRInput): Promise<string> => {
-  const payload = await generateQR(petData);
+export const printPetQRCode = async (
+  petData: PetQRInput,
+  options: QRCodeOptions = {},
+): Promise<string> => {
+  const payload = await generateQR(petData, options);
   const imageUrl = getQRImageUrl(payload);
   await Share.share({
     title: `Print ${petData.name}'s PetChain QR`,
@@ -203,7 +285,7 @@ export const parseQRCodeData = (qrData: string): PetQRData => {
  *  - version: format version number
  *  - error: human-readable reason if invalid
  */
-export const scanQRCode = (qrData: string): QRScanResult => {
+export const scanQRCode = async (qrData: string): Promise<QRScanResult> => {
   if (!qrData || qrData.trim().length === 0) {
     return { valid: false, error: 'QR data is empty' };
   }
@@ -235,6 +317,32 @@ export const scanQRCode = (qrData: string): QRScanResult => {
     return { valid: false, error: 'QR code checksum mismatch — data may have been tampered with' };
   }
 
+  // v2-specific: expiry, one-time-use, revocation checks
+  if (data.version === 2) {
+    const v2 = data as PetQRDataV2;
+
+    if (v2.expiresAt !== undefined && Date.now() > v2.expiresAt) {
+      return { valid: false, error: 'This code has expired' };
+    }
+
+    if (v2.token) {
+      const state = await getTokenState(v2.token);
+
+      if (state?.revokedAt !== undefined) {
+        return { valid: false, error: 'This code has been revoked' };
+      }
+
+      if (v2.oneTimeUse && state && state.usageCount >= 1) {
+        return { valid: false, error: 'This code has already been used' };
+      }
+
+      // Record usage
+      if (state) {
+        await saveTokenState({ ...state, usageCount: state.usageCount + 1 });
+      }
+    }
+  }
+
   const result: QRScanResult = {
     valid: true,
     petId: data.petId,
@@ -258,4 +366,4 @@ export const scanQRCode = (qrData: string): QRScanResult => {
  */
 export const validateQRCode = (
   qrData: string,
-): { valid: boolean; petId?: string; error?: string } => scanQRCode(qrData);
+): Promise<{ valid: boolean; petId?: string; error?: string }> => scanQRCode(qrData);

@@ -4,7 +4,7 @@ module.exports = {
   transform: {
     '^.+\\.[jt]sx?$': 'babel-jest',
   },
-  transformIgnorePatterns: ['/node_modules/(?!(otplib|@otplib)/)'],
+  transformIgnorePatterns: ['/node_modules/(?!(otplib|@otplib|expo-updates|expo-constants)/)'],
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json'],
   moduleNameMapper: {
     '^react-native$': '<rootDir>/src/__mocks__/react-native.ts',
@@ -14,12 +14,15 @@ module.exports = {
     '^@react-native-community/netinfo$':
       '<rootDir>/src/__mocks__/@react-native-community/netinfo.ts',
     '^expo-constants$': '<rootDir>/src/__mocks__/expo-constants.ts',
+    '^expo-crypto$': '<rootDir>/src/__mocks__/expo-crypto.ts',
     '^expo-sqlite$': '<rootDir>/src/__mocks__/expo-sqlite.ts',
     '^expo-notifications$': '<rootDir>/src/__mocks__/expo-notifications.ts',
+    '^expo-updates$': '<rootDir>/src/__mocks__/expo-updates.ts',
     '^expo-calendar$': '<rootDir>/src/__mocks__/expo-calendar.ts',
     '^expo-secure-store$': '<rootDir>/src/__mocks__/expo-secure-store.ts',
     '^expo-in-app-purchases$': '<rootDir>/src/__mocks__/expo-in-app-purchases.ts',
     '^@sentry/react-native$': '<rootDir>/src/__mocks__/@sentry/react-native.ts',
+    '^expo-splash-screen$': '<rootDir>/src/__mocks__/expo-splash-screen.ts',
     '^pg$': '<rootDir>/src/__mocks__/pg.js',
     '^@elastic/elasticsearch$': '<rootDir>/src/__mocks__/@elastic/elasticsearch.js',
     '^socket\\.io$': '<rootDir>/src/__mocks__/socket.io.js',
@@ -30,8 +33,12 @@ module.exports = {
     '^expo-image-manipulator$': '<rootDir>/src/__mocks__/expo-image-manipulator.ts',
     '^expo-image-picker$': '<rootDir>/src/__mocks__/expo-image-picker.ts',
     '^node-fetch$': '<rootDir>/src/__mocks__/node-fetch.js',
+    '^react-i18next$': '<rootDir>/src/__mocks__/react-i18next.js',
     '^otplib$': '<rootDir>/src/__mocks__/otplib.ts',
     '^react-native-ssl-pinning$': '<rootDir>/src/__mocks__/react-native-ssl-pinning.ts',
+    '^@storybook/addon-actions$': '<rootDir>/src/__mocks__/@storybook/addon-actions.ts',
+    '^react-native-reanimated$': '<rootDir>/src/__mocks__/react-native-reanimated.ts',
+    '^@expo/vector-icons$': '<rootDir>/src/__mocks__/@expo/vector-icons.ts',
   },
   collectCoverageFrom: [
     'src/**/*.ts',

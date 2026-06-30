@@ -66,6 +66,20 @@ async function ensureTable(): Promise<void> {
 // Initialise on module load; errors are swallowed so the app doesn't crash.
 const _ready = ensureTable().catch(() => {});
 
+// ─── Change listeners ─────────────────────────────────────────────────────────
+
+type Listener = () => void;
+const listeners = new Set<Listener>();
+
+export function subscribeToNotificationChanges(fn: Listener): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+function notifyListeners(): void {
+  listeners.forEach((fn) => fn());
+}
+
 async function waitReady(): Promise<void> {
   await _ready;
 }
@@ -120,6 +134,7 @@ export async function addNotification(
       notification.navPayload ? JSON.stringify(notification.navPayload) : null,
     ],
   );
+  notifyListeners();
 }
 
 /**
@@ -163,6 +178,7 @@ export async function getUnreadCount(filter: NotificationFilter = 'all'): Promis
 export async function markAsRead(id: string): Promise<void> {
   await waitReady();
   await db.runAsync(`UPDATE notifications SET is_read = 1 WHERE id = ?`, [id]);
+  notifyListeners();
 }
 
 /**
@@ -175,6 +191,7 @@ export async function markAllAsRead(filter: NotificationFilter = 'all'): Promise
   } else {
     await db.runAsync(`UPDATE notifications SET is_read = 1 WHERE category = ?`, [filter]);
   }
+  notifyListeners();
 }
 
 /**
@@ -183,6 +200,7 @@ export async function markAllAsRead(filter: NotificationFilter = 'all'): Promise
 export async function deleteNotification(id: string): Promise<void> {
   await waitReady();
   await db.runAsync(`DELETE FROM notifications WHERE id = ?`, [id]);
+  notifyListeners();
 }
 
 /**
@@ -195,6 +213,7 @@ export async function deleteAll(filter: NotificationFilter = 'all'): Promise<voi
   } else {
     await db.runAsync(`DELETE FROM notifications WHERE category = ?`, [filter]);
   }
+  notifyListeners();
 }
 
 /**
@@ -205,6 +224,7 @@ export async function deleteMany(ids: string[]): Promise<void> {
   await waitReady();
   const placeholders = ids.map(() => '?').join(',');
   await db.runAsync(`DELETE FROM notifications WHERE id IN (${placeholders})`, ids);
+  notifyListeners();
 }
 
 /**
@@ -215,6 +235,7 @@ export async function markManyAsRead(ids: string[]): Promise<void> {
   await waitReady();
   const placeholders = ids.map(() => '?').join(',');
   await db.runAsync(`UPDATE notifications SET is_read = 1 WHERE id IN (${placeholders})`, ids);
+  notifyListeners();
 }
 
 export default {
@@ -227,4 +248,5 @@ export default {
   deleteAll,
   deleteMany,
   markManyAsRead,
+  subscribeToNotificationChanges,
 };

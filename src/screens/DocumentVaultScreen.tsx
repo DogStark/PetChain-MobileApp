@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -24,7 +24,9 @@ import {
   saveDocumentLocally,
   uploadDocument,
 } from '../services/documentService';
+import { EmptyState } from '../components/EmptyState';
 import { useSecureScreen } from '../utils/secureScreen';
+import api from '../services/api';
 
 const CATEGORIES: { label: string; value: DocumentCategory }[] = [
   { label: 'Vaccination', value: 'vaccination' },
@@ -67,6 +69,56 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
   const [versionsModalVisible, setVersionsModalVisible] = useState(false);
   const [versions, setVersions] = useState<DocumentMeta[]>([]);
   const [selectedDoc, setSelectedDoc] = useState<DocumentMeta | null>(null);
+
+  // Health report async job state
+  const [reportJobId, setReportJobId] = useState<string | null>(null);
+  const [reportJobStatus, setReportJobStatus] = useState<
+    'idle' | 'queued' | 'processing' | 'complete' | 'failed'
+  >('idle');
+  const reportPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopReportPolling = useCallback(() => {
+    if (reportPollRef.current) {
+      clearInterval(reportPollRef.current);
+      reportPollRef.current = null;
+    }
+  }, []);
+
+  const handleGenerateReport = useCallback(async () => {
+    if (!petId.trim()) return Alert.alert('Error', 'Enter a Pet ID first');
+    setReportJobStatus('queued');
+    setReportJobId(null);
+    try {
+      const res = await api.post<{ jobId: string }>(
+        `/reports/pets/${petId.trim()}/health`,
+      );
+      const jobId = res.data?.jobId;
+      if (!jobId) throw new Error('No jobId returned');
+      setReportJobId(jobId);
+
+      // Poll every 2 seconds until complete or failed
+      reportPollRef.current = setInterval(async () => {
+        try {
+          const statusRes = await api.get<{
+            status: 'queued' | 'processing' | 'complete' | 'failed';
+          }>(`/reports/${jobId}/status`);
+          const status = statusRes.data?.status ?? 'queued';
+          setReportJobStatus(status);
+          if (status === 'complete' || status === 'failed') {
+            stopReportPolling();
+          }
+        } catch {
+          stopReportPolling();
+          setReportJobStatus('failed');
+        }
+      }, 2000);
+    } catch (err) {
+      setReportJobStatus('failed');
+      Alert.alert('Report Error', err instanceof Error ? err.message : 'Failed to start report');
+    }
+  }, [petId, stopReportPolling]);
+
+  useEffect(() => () => stopReportPolling(), [stopReportPolling]);
 
   const loadDocuments = useCallback(async () => {
     if (!petId.trim()) return;
@@ -325,7 +377,15 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
           data={documents}
           keyExtractor={(item) => item.id}
           renderItem={renderDocument}
-          ListEmptyComponent={<Text style={styles.emptyText}>No documents found</Text>}
+          ListEmptyComponent={
+            <EmptyState
+              icon="folder-open"
+              title="Vault is Empty"
+              description="Securely store vaccination records, lab results, and insurance documents."
+              buttonText="Upload document"
+              onPress={handlePickFile}
+            />
+          }
           contentContainerStyle={styles.listContent}
         />
       )}
@@ -346,6 +406,45 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
         >
           <Text style={styles.uploadBtnText}>📷 Camera</Text>
         </TouchableOpacity>
+      </View>
+
+      {/* Health Report async generation */}
+      <View style={styles.reportRow}>
+        <TouchableOpacity
+          style={[
+            styles.reportBtn,
+            (reportJobStatus === 'queued' || reportJobStatus === 'processing') &&
+              styles.disabledBtn,
+          ]}
+          onPress={handleGenerateReport}
+          disabled={reportJobStatus === 'queued' || reportJobStatus === 'processing'}
+          accessibilityLabel="Generate health report"
+        >
+          {reportJobStatus === 'queued' || reportJobStatus === 'processing' ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <ActivityIndicator color="#fff" size="small" />
+              <Text style={styles.reportBtnText}>
+                {reportJobStatus === 'queued' ? 'Queued…' : 'Generating…'}
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.reportBtnText}>📊 Generate Health Report</Text>
+          )}
+        </TouchableOpacity>
+        {reportJobStatus === 'complete' && reportJobId && (
+          <TouchableOpacity
+            style={styles.downloadReportBtn}
+            onPress={() =>
+              Alert.alert('Report Ready', `Download at: /api/reports/${reportJobId}/download`)
+            }
+            accessibilityLabel="Download completed health report"
+          >
+            <Text style={styles.reportBtnText}>⬇ Download PDF</Text>
+          </TouchableOpacity>
+        )}
+        {reportJobStatus === 'failed' && (
+          <Text style={styles.reportError}>Report generation failed. Tap above to retry.</Text>
+        )}
       </View>
 
       {/* Upload modal */}
@@ -591,6 +690,21 @@ const styles = StyleSheet.create({
     borderBottomColor: '#f0f0f0',
   },
   versionText: { flex: 1, fontSize: 13, color: '#444' },
+  reportRow: { marginTop: 8, gap: 6 },
+  reportBtn: {
+    backgroundColor: '#6c5ce7',
+    padding: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  downloadReportBtn: {
+    backgroundColor: '#00b894',
+    padding: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  reportBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  reportError: { color: '#e53e3e', fontSize: 12, textAlign: 'center', marginTop: 4 },
 });
 
 export default DocumentVaultScreen;

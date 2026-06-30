@@ -14,6 +14,10 @@ import {
   listSupportRequests,
   updateSupportRequest,
 } from '../../server/supportRequests';
+import {
+  getAllSyncResults,
+  getSyncResults,
+} from '../../services/shelterIntegrationService';
 
 const router = Router();
 
@@ -435,5 +439,15 @@ function getServerMetrics(req: AuthenticatedRequest) {
         },
   };
 }
+
+/**
+ * GET /api/admin/slow-queries
+ * Returns the 20 slowest DB queries from the last 24 hours.
+ * Requires admin authentication.
+ */
+router.get('/slow-queries', authenticate, requireAdmin, (_req, res: Response) => {
+  const { getSlowQueries } = require('../../middleware/performanceLogger') as typeof import('../../middleware/performanceLogger');
+  return res.json({ queries: getSlowQueries() });
+});
 
 export default router;

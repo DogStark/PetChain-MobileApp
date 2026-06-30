@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 
 import emergencyService from '../services/emergencyService';
+import { hapticLight, hapticMedium, hapticSOSSent } from '../utils/hapticFeedback';
 
 interface SOSButtonProps {
   onSOSSent?: () => void;
@@ -28,6 +29,8 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
   const triggerSOS = useCallback(async () => {
     setIsCountdown(false);
     setCountdown(3);
+    // Strong double-tap haptic to confirm SOS was sent
+    void hapticSOSSent();
     Vibration.vibrate([0, 500, 200, 500]);
     try {
       await emergencyService.triggerSOS('Pet emergency - need immediate help');
@@ -62,6 +65,8 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
             triggerSOS();
             return 0;
           }
+          // Light haptic tick once per second during countdown
+          void hapticLight();
           Vibration.vibrate(100);
           return prev - 1;
         });
@@ -105,6 +110,8 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
   const cancelSOS = () => {
     setIsCountdown(false);
     setCountdown(3);
+    // Medium haptic impact on cancel
+    void hapticMedium();
     Vibration.vibrate(100);
   };
 
@@ -209,7 +216,7 @@ const styles = StyleSheet.create({
   progressBar: {
     position: 'absolute',
     bottom: 0,
-    left: 0,
+    start: 0,
     height: 6,
     backgroundColor: '#feb2b2', // Light red for progress
   },

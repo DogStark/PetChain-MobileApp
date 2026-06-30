@@ -23,8 +23,20 @@
         "simulator": true
       }
     },
+    "staging": {
+      "distribution": "internal",
+      "channel": "staging",
+      "jsEngine": "hermes",
+      "env": {
+        "APP_ENV": "staging"
+      },
+      "android": {
+        "buildType": "app-bundle"
+      }
+    },
     "production": {
       "channel": "production",
+      "jsEngine": "hermes",
       "env": {
         "APP_ENV": "production"
       },

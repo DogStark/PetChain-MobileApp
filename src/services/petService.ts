@@ -55,6 +55,7 @@ export interface UpdatePetInput {
   microchipId?: string;
   photoUrl?: string;
   thumbnailUrl?: string;
+  metadata?: { stepGoal?: number; [key: string]: unknown };
 }
 
 interface ApiResponse<T> {

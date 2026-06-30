@@ -1,7 +1,7 @@
 import path from 'path';
 
 import { runner } from 'node-pg-migrate';
-import { Pool } from 'pg';
+import { Pool, type QueryConfig, type QueryResult } from 'pg';
 
 const DATABASE_URL =
   process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/petchain';
@@ -9,14 +9,56 @@ const DATABASE_URL =
 // ── Connection pool ────────────────────────────────────────────────────────────
 export const pool = new Pool({
   connectionString: DATABASE_URL,
-  max: Number(process.env.DB_POOL_SIZE) || 20,
-  idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT) || 30000,
-  connectionTimeoutMillis: 5000,
+  max: Number(process.env.DB_POOL_MAX) || 20,
+  idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS) || 10000,
+  connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT_MS) || 3000,
 });
 
 pool.on('error', (err) => {
   console.error('[db] Unexpected pool error:', err.message);
 });
+
+// ── Instrumented query wrapper ─────────────────────────────────────────────────
+
+/**
+ * Strips all $N parameter placeholders' values from a query string, returning
+ * only the sanitised SQL text for logging. Parameter values are never logged.
+ */
+function sanitizeQueryText(text: string): string {
+  // Collapse whitespace and truncate to 500 chars so logs stay readable
+  return text.replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+/**
+ * Executes a parameterised query via the pool and records its duration to the
+ * performance monitor. Parameter values are never passed to the logger.
+ */
+export async function instrumentedQuery(
+  textOrConfig: string | QueryConfig,
+  params?: unknown[],
+): Promise<QueryResult> {
+  const start = Date.now();
+  const result = await pool.query(textOrConfig as string, params);
+  const durationMs = Date.now() - start;
+
+  const rawText =
+    typeof textOrConfig === 'string' ? textOrConfig : (textOrConfig.text ?? '');
+  const sanitised = sanitizeQueryText(rawText);
+  const rowCount = result.rowCount ?? 0;
+
+  // Lazy import to avoid circular dependency at module load time
+  let recorder: typeof import('../middleware/performanceLogger').recordQueryMetric | null = null;
+  try {
+    recorder = (
+      require('../middleware/performanceLogger') as typeof import('../middleware/performanceLogger')
+    ).recordQueryMetric;
+  } catch {
+    // If the middleware isn't loaded yet, skip recording silently
+  }
+  recorder?.(sanitised, durationMs, rowCount);
+
+  return result;
+}
 
 // ── Migration runner ───────────────────────────────────────────────────────────
 

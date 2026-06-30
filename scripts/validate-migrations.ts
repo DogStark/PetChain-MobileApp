@@ -3,14 +3,15 @@ import path from 'path';
 import { runner } from 'node-pg-migrate';
 import { Client } from 'pg';
 
-async function waitForPostgres(client: Client, retries = 10) {
+async function waitForPostgres(connectionString: string, retries = 10) {
   for (let i = 0; i < retries; i++) {
+    const client = new Client({ connectionString });
     try {
       await client.connect();
       await client.query('SELECT 1');
       await client.end();
       return;
-    } catch (err) {
+    } catch {
       await new Promise((r) => setTimeout(r, 1000));
     }
   }
@@ -23,7 +24,7 @@ async function main() {
   const baseClient = new Client({ connectionString: DATABASE_URL });
 
   console.log('[validate] Waiting for Postgres...');
-  await waitForPostgres(baseClient, 30);
+  await waitForPostgres(DATABASE_URL, 30);
 
   const testDbName = `petchain_migration_check_${Date.now()}`;
   console.log(`[validate] Creating temporary DB ${testDbName}`);

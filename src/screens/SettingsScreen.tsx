@@ -18,6 +18,7 @@ import {
 
 import LanguageSelector from '../components/LanguageSelector';
 import type { NotificationPreferences, User } from '../models/User';
+import { isHapticEnabled, setHapticEnabled } from '../utils/hapticFeedback';
 import {
   disableBiometricAuthentication,
   isBiometricAuthenticationAvailable,
@@ -26,10 +27,15 @@ import {
   requestPasswordReset,
   promptForBiometricSetup,
 } from '../services/authService';
+import {
+  getEntitySyncStatuses,
+  type EntitySyncRecord,
+} from '../services/cloudSyncService';
 import { getUserProfile, saveUserProfile, updateUserProfile } from '../services/userService';
 import { useAppTheme } from '../theme';
 import { formatAddress } from '../utils/localeValues';
 import { useTheme, type ThemeMode } from '../utils/useTheme';
+import { type SyncEntityType } from '../services/syncService';
 
 // ─── App version info ─────────────────────────────────────────────────────────
 // Pulled from expo-constants at runtime; fallback to package values.
@@ -156,6 +162,10 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [exportRequesting, setExportRequesting] = useState(false);
+  const [hapticEnabled, setHapticEnabledState] = useState(true);
+  const [entitySyncStatuses, setEntitySyncStatuses] = useState<
+    Record<SyncEntityType, EntitySyncRecord> | null
+  >(null);
 
   // ── Load profile on mount ──────────────────────────────────────────────────
 
@@ -186,6 +196,17 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
         const enabled = await isBiometricAuthenticationEnabled();
         setBiometricEnabled(enabled);
       }
+
+      try {
+        const statuses = await getEntitySyncStatuses();
+        setEntitySyncStatuses(statuses);
+      } catch {
+        // Non-critical — sync status display degrades gracefully
+      }
+
+      // Load haptic preference
+      const hapticOn = await isHapticEnabled();
+      setHapticEnabledState(hapticOn);
     })();
   }, []);
 
@@ -294,6 +315,13 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
     [t],
   );
 
+  // ── Haptic toggle ──────────────────────────────────────────────────────────
+
+  const handleHapticToggle = useCallback(async (value: boolean) => {
+    setHapticEnabledState(value);
+    await setHapticEnabled(value);
+  }, []);
+
   // ── Data Export ────────────────────────────────────────────────────────────
 
   const handleRequestDataExport = useCallback(async () => {
@@ -376,6 +404,41 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
   const RowSeparator = () => (
     <View style={[styles.separator, { backgroundColor: colors.border }]} />
   );
+
+  /** Returns a human-readable label for a per-entity sync record */
+  const formatEntitySyncLabel = (record: EntitySyncRecord): string => {
+    if (record.status === 'never') return 'Never synced';
+    if (record.status === 'failed') {
+      const when = record.lastAttemptAt
+        ? formatRelativeTime(new Date(record.lastAttemptAt))
+        : 'recently';
+      return `Failed ${when}`;
+    }
+    if (record.status === 'success' && record.lastSuccessAt) {
+      const when = formatRelativeTime(new Date(record.lastSuccessAt));
+      const pending = record.pendingCount > 0 ? ` — ${record.pendingCount} pending` : '';
+      return `Last synced ${when}${pending}`;
+    }
+    return 'Pending…';
+  };
+
+  const formatRelativeTime = (date: Date): string => {
+    const diffMs = Date.now() - date.getTime();
+    const diffMinutes = Math.floor(diffMs / 60_000);
+    if (diffMinutes < 1) return 'just now';
+    if (diffMinutes < 60) return `${diffMinutes}m ago`;
+    const diffHours = Math.floor(diffMinutes / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d ago`;
+  };
+
+  const ENTITY_LABELS: Record<SyncEntityType, string> = {
+    pet: 'Pets',
+    appointment: 'Appointments',
+    medication: 'Medications',
+    medicalRecord: 'Medical Records',
+  };
 
   const cardStyle = [styles.card, { backgroundColor: colors.surface, borderColor: colors.border }];
   const inputStyle = [
@@ -599,6 +662,20 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
             </View>
           </>
         )}
+
+        {/* ── Haptic Feedback (Accessibility) ── */}
+        <RowSeparator />
+        <View style={styles.row}>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>
+            {t('settings.hapticFeedback', 'Haptic Feedback')}
+          </Text>
+          <Switch
+            value={hapticEnabled}
+            onValueChange={(v) => void handleHapticToggle(v)}
+            trackColor={{ false: colors.border, true: colors.primary }}
+            thumbColor={Platform.OS === 'android' ? '#fff' : undefined}
+          />
+        </View>
       </View>
 
       {/* ── Theme ── */}
@@ -648,6 +725,38 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
           </Text>
           <Text style={[styles.chevron, { color: colors.placeholder }]}>›</Text>
         </TouchableOpacity>
+      </View>
+
+      {/* ── Sync Status ── */}
+      <SectionHeader title={t('settings.syncStatus', 'Sync Status')} />
+      <View style={cardStyle}>
+        {entitySyncStatuses ? (
+          (Object.keys(ENTITY_LABELS) as SyncEntityType[]).map((entityType, idx, arr) => {
+            const record = entitySyncStatuses[entityType];
+            const label = formatEntitySyncLabel(record);
+            const statusColor =
+              record.status === 'success'
+                ? colors.success
+                : record.status === 'failed'
+                  ? '#d32f2f'
+                  : colors.secondaryText;
+            return (
+              <React.Fragment key={entityType}>
+                <View style={styles.syncRow}>
+                  <Text style={[styles.rowLabel, { color: colors.text }]}>
+                    {ENTITY_LABELS[entityType]}
+                  </Text>
+                  <Text style={[styles.syncStatusText, { color: statusColor }]}>{label}</Text>
+                </View>
+                {idx < arr.length - 1 && <RowSeparator />}
+              </React.Fragment>
+            );
+          })
+        ) : (
+          <View style={styles.row}>
+            <ActivityIndicator size="small" color={colors.primary} />
+          </View>
+        )}
       </View>
 
       {/* ── App Information ── */}
@@ -794,6 +903,18 @@ const styles = StyleSheet.create({
   modalEmail: { fontSize: 15, fontWeight: '600', marginBottom: 20 },
   cancelBtn: { paddingVertical: 12, alignItems: 'center', marginTop: 8 },
   cancelText: { fontSize: 15 },
+  syncRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+  },
+  syncStatusText: {
+    fontSize: 12,
+    flexShrink: 1,
+    textAlign: 'right',
+    marginLeft: 8,
+  },
 });
 
 export default SettingsScreen;

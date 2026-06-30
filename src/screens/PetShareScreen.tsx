@@ -20,8 +20,11 @@ import {
   generateQR,
   getQRImageUrl,
   printPetQRCode,
+  revokeQRCode,
   sharePetQRCode,
   type PetQRInput,
+  type QRCodeOptions,
+  type QRExpiry,
 } from '../services/qrCodeService';
 
 interface Props {
@@ -36,6 +39,9 @@ const PetShareScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
   const [loading, setLoading] = useState<LoadingAction>(null);
   const [qrPayload, setQrPayload] = useState<string | null>(null);
   const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
+  const [qrToken, setQrToken] = useState<string | null>(null);
+  const [qrExpiry, setQrExpiry] = useState<QRExpiry>('24h');
+  const [qrOneTimeUse, setQrOneTimeUse] = useState(false);
 
   const loadPetQRInput = async (): Promise<PetQRInput> => {
     const pet = await getPetById(petId);
@@ -86,7 +92,10 @@ const PetShareScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
     setLoading('qr');
     try {
       const pet = await loadPetQRInput();
-      const payload = await generateQR(pet);
+      const options: QRCodeOptions = { expiry: qrExpiry, oneTimeUse: qrOneTimeUse };
+      const payload = await generateQR(pet, options);
+      const parsed = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+      setQrToken(parsed.token ?? null);
       setQrPayload(payload);
       setQrImageUrl(getQRImageUrl(payload));
     } catch {
@@ -96,11 +105,32 @@ const PetShareScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
     }
   };
 
+  const handleRevokeQRCode = async () => {
+    if (!qrToken) return;
+    Alert.alert('Revoke QR Code', 'This code will stop working immediately.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Revoke',
+        style: 'destructive',
+        onPress: async () => {
+          await revokeQRCode(qrToken);
+          setQrPayload(null);
+          setQrImageUrl(null);
+          setQrToken(null);
+          Alert.alert('Revoked', 'The QR code has been revoked.');
+        },
+      },
+    ]);
+  };
+
   const handleShareQRCode = async () => {
     setLoading('qr-share');
     try {
       const pet = await loadPetQRInput();
-      const payload = await sharePetQRCode(pet);
+      const options: QRCodeOptions = { expiry: qrExpiry, oneTimeUse: qrOneTimeUse };
+      const payload = await sharePetQRCode(pet, options);
+      const parsed = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+      setQrToken(parsed.token ?? null);
       setQrPayload(payload);
       setQrImageUrl(getQRImageUrl(payload));
     } catch {
@@ -114,7 +144,10 @@ const PetShareScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
     setLoading('print');
     try {
       const pet = await loadPetQRInput();
-      const payload = await printPetQRCode(pet);
+      const options: QRCodeOptions = { expiry: qrExpiry, oneTimeUse: qrOneTimeUse };
+      const payload = await printPetQRCode(pet, options);
+      const parsed = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+      setQrToken(parsed.token ?? null);
       setQrPayload(payload);
       setQrImageUrl(getQRImageUrl(payload));
     } catch {
@@ -143,6 +176,31 @@ const PetShareScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
 
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.subtitle}>Choose how to share {petName}'s profile</Text>
+
+        {/* QR Options */}
+        <View style={styles.qrOptionsRow}>
+          {(['1h', '24h', '7d', 'never'] as QRExpiry[]).map((opt) => (
+            <TouchableOpacity
+              key={opt}
+              style={[styles.expiryChip, qrExpiry === opt && styles.expiryChipActive]}
+              onPress={() => setQrExpiry(opt)}
+            >
+              <Text
+                style={[styles.expiryChipText, qrExpiry === opt && styles.expiryChipTextActive]}
+              >
+                {opt === 'never' ? '∞' : opt}
+              </Text>
+            </TouchableOpacity>
+          ))}
+          <TouchableOpacity
+            style={[styles.expiryChip, qrOneTimeUse && styles.expiryChipActive]}
+            onPress={() => setQrOneTimeUse(!qrOneTimeUse)}
+          >
+            <Text style={[styles.expiryChipText, qrOneTimeUse && styles.expiryChipTextActive]}>
+              1×
+            </Text>
+          </TouchableOpacity>
+        </View>
 
         {/* Share Link */}
         <TouchableOpacity
@@ -246,6 +304,17 @@ const PetShareScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
                 <Text style={styles.qrShareBtnText}>Print QR Code</Text>
               )}
             </TouchableOpacity>
+            {qrToken && (
+              <TouchableOpacity
+                style={styles.revokeBtn}
+                onPress={handleRevokeQRCode}
+                disabled={loading !== null}
+                accessibilityRole="button"
+                accessibilityLabel="Revoke QR code"
+              >
+                <Text style={styles.revokeBtnText}>Revoke Code</Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
@@ -327,7 +396,31 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginTop: 8,
   },
-  qrShareBtnText: { color: '#4CAF50', fontWeight: '700', fontSize: 14 },
+  qrOptionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: 16,
+    gap: 8,
+  },
+  expiryChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#ccc',
+    backgroundColor: '#fff',
+  },
+  expiryChipActive: { borderColor: '#4CAF50', backgroundColor: '#e8f5e9' },
+  expiryChipText: { fontSize: 13, color: '#666' },
+  expiryChipTextActive: { color: '#4CAF50', fontWeight: '700' },
+  revokeBtn: {
+    backgroundColor: '#fdecea',
+    borderRadius: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    marginTop: 8,
+  },
+  revokeBtnText: { color: '#d32f2f', fontWeight: '700', fontSize: 14 },
   permissionNote: {
     fontSize: 12,
     color: '#999',

@@ -1,0 +1,514 @@
+{
+  "info": {
+    "name": "Dosage Approval API Tests",
+    "description": "API tests for dosage approval feature",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Create Dosage Approval Request",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 201\", function () {",
+              "    pm.response.to.have.status(201);",
+              "});",
+              "",
+              "pm.test(\"Response has success true\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.success).to.eql(true);",
+              "});",
+              "",
+              "pm.test(\"Response contains approval request\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.data).to.have.property('id');",
+              "    pm.expect(jsonData.data).to.have.property('status');",
+              "    pm.expect(jsonData.data.status).to.eql('pending');",
+              "});",
+              "",
+              "pm.test(\"Request ID starts with approval_\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.data.id).to.match(/^approval_/);",
+              "});",
+              "",
+              "// Save approval ID for subsequent tests",
+              "var jsonData = pm.response.json();",
+              "pm.collectionVariables.set(\"approvalId\", jsonData.data.id);"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{ownerToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"petId\": \"pet123\",\n  \"petName\": \"Buddy\",\n  \"petWeight\": 10.5,\n  \"drugName\": \"Carprofen\",\n  \"calculatedDose\": \"50\",\n  \"calculatedDoseUnit\": \"mg\",\n  \"totalDoseMg\": 50,\n  \"safetyLevel\": \"safe\",\n  \"vetId\": \"vet456\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/medications/dosage-approvals",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "medications", "dosage-approvals"]
+        }
+      }
+    },
+    {
+      "name": "Get Approval Request (Owner)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test(\"Returns correct approval request\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.data.id).to.eql(pm.collectionVariables.get('approvalId'));",
+              "    pm.expect(jsonData.data.status).to.eql('pending');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{ownerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/medications/dosage-approvals/{{approvalId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "medications", "dosage-approvals", "{{approvalId}}"]
+        }
+      }
+    },
+    {
+      "name": "Get Approval Request (Non-Owner) - Should Fail",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 403\", function () {",
+              "    pm.response.to.have.status(403);",
+              "});",
+              "",
+              "pm.test(\"Error code is FORBIDDEN\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.error.code).to.eql('FORBIDDEN');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{differentOwnerToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/medications/dosage-approvals/{{approvalId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "medications", "dosage-approvals", "{{approvalId}}"]
+        }
+      }
+    },
+    {
+      "name": "Approve Dosage (Vet)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test(\"Status changed to approved\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.data.status).to.eql('approved');",
+              "});",
+              "",
+              "pm.test(\"Has approvedAt timestamp\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.data.approvedAt).to.exist;",
+              "});",
+              "",
+              "pm.test(\"Vet notes included\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.data.vetNotes).to.eql('Dosage is appropriate');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{vetToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"vetNotes\": \"Dosage is appropriate\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/medications/dosage-approvals/{{approvalId}}/approve",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "medications", "dosage-approvals", "{{approvalId}}", "approve"]
+        }
+      }
+    },
+    {
+      "name": "Approve with Modified Dose",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test(\"Status changed to modified\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.data.status).to.eql('modified');",
+              "});",
+              "",
+              "pm.test(\"Approved dose is set\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.data.approvedDose).to.eql('75');",
+              "    pm.expect(jsonData.data.approvedDoseUnit).to.eql('mg');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Create a new approval request for this test",
+              "const createRequest = {",
+              "  url: pm.collectionVariables.get('baseUrl') + '/api/medications/dosage-approvals',",
+              "  method: 'POST',",
+              "  header: {",
+              "    'Content-Type': 'application/json',",
+              "    'Authorization': 'Bearer ' + pm.collectionVariables.get('ownerToken')",
+              "  },",
+              "  body: {",
+              "    mode: 'raw',",
+              "    raw: JSON.stringify({",
+              "      petId: 'pet123',",
+              "      petName: 'Buddy',",
+              "      drugName: 'Carprofen',",
+              "      calculatedDose: '50',",
+              "      vetId: 'vet456'",
+              "    })",
+              "  }",
+              "};",
+              "",
+              "pm.sendRequest(createRequest, function (err, response) {",
+              "  if (!err) {",
+              "    const approvalId = response.json().data.id;",
+              "    pm.collectionVariables.set('modifiedApprovalId', approvalId);",
+              "  }",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{vetToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"approvedDose\": \"75\",\n  \"approvedDoseUnit\": \"mg\",\n  \"vetNotes\": \"Increased dose for better efficacy\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/medications/dosage-approvals/{{modifiedApprovalId}}/approve",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "medications", "dosage-approvals", "{{modifiedApprovalId}}", "approve"]
+        }
+      }
+    },
+    {
+      "name": "Reject Dosage",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test(\"Status changed to rejected\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.data.status).to.eql('rejected');",
+              "});",
+              "",
+              "pm.test(\"Rejection reason included\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.data.vetNotes).to.include('too high');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Create a new approval request for this test",
+              "const createRequest = {",
+              "  url: pm.collectionVariables.get('baseUrl') + '/api/medications/dosage-approvals',",
+              "  method: 'POST',",
+              "  header: {",
+              "    'Content-Type': 'application/json',",
+              "    'Authorization': 'Bearer ' + pm.collectionVariables.get('ownerToken')",
+              "  },",
+              "  body: {",
+              "    mode: 'raw',",
+              "    raw: JSON.stringify({",
+              "      petId: 'pet123',",
+              "      petName: 'Buddy',",
+              "      drugName: 'Carprofen',",
+              "      calculatedDose: '200',",
+              "      vetId: 'vet456'",
+              "    })",
+              "  }",
+              "};",
+              "",
+              "pm.sendRequest(createRequest, function (err, response) {",
+              "  if (!err) {",
+              "    const approvalId = response.json().data.id;",
+              "    pm.collectionVariables.set('rejectApprovalId', approvalId);",
+              "  }",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{vetToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"vetNotes\": \"Dose too high for pet weight. Risk of toxicity.\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/medications/dosage-approvals/{{rejectApprovalId}}/reject",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "medications", "dosage-approvals", "{{rejectApprovalId}}", "reject"]
+        }
+      }
+    },
+    {
+      "name": "Duplicate Approval Attempt - Should Fail",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 400\", function () {",
+              "    pm.response.to.have.status(400);",
+              "});",
+              "",
+              "pm.test(\"Error code is INVALID_STATE\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.error.code).to.eql('INVALID_STATE');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{vetToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"vetNotes\": \"Second approval attempt\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/medications/dosage-approvals/{{approvalId}}/approve",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "medications", "dosage-approvals", "{{approvalId}}", "approve"]
+        }
+      }
+    },
+    {
+      "name": "Owner Tries to Approve - Should Fail",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 403\", function () {",
+              "    pm.response.to.have.status(403);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Create a new approval request for this test",
+              "const createRequest = {",
+              "  url: pm.collectionVariables.get('baseUrl') + '/api/medications/dosage-approvals',",
+              "  method: 'POST',",
+              "  header: {",
+              "    'Content-Type': 'application/json',",
+              "    'Authorization': 'Bearer ' + pm.collectionVariables.get('ownerToken')",
+              "  },",
+              "  body: {",
+              "    mode: 'raw',",
+              "    raw: JSON.stringify({",
+              "      petId: 'pet123',",
+              "      petName: 'Buddy',",
+              "      drugName: 'Carprofen',",
+              "      calculatedDose: '50',",
+              "      vetId: 'vet456'",
+              "    })",
+              "  }",
+              "};",
+              "",
+              "pm.sendRequest(createRequest, function (err, response) {",
+              "  if (!err) {",
+              "    const approvalId = response.json().data.id;",
+              "    pm.collectionVariables.set('ownerApprovalAttemptId', approvalId);",
+              "  }",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{ownerToken}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"vetNotes\": \"Owner trying to approve\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/medications/dosage-approvals/{{ownerApprovalAttemptId}}/approve",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "medications", "dosage-approvals", "{{ownerApprovalAttemptId}}", "approve"]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "ownerToken",
+      "value": "your_owner_token_here",
+      "type": "string"
+    },
+    {
+      "key": "vetToken",
+      "value": "your_vet_token_here",
+      "type": "string"
+    },
+    {
+      "key": "differentOwnerToken",
+      "value": "different_owner_token_here",
+      "type": "string"
+    },
+    {
+      "key": "approvalId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "modifiedApprovalId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "rejectApprovalId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "ownerApprovalAttemptId",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}

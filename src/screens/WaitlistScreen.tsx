@@ -22,6 +22,13 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 
 import { WaitlistStatus, type WaitlistEntry } from '../../backend/models/WaitlistEntry';
 import {
@@ -32,6 +39,10 @@ import {
   processExpiredNotifications,
   ACCEPTANCE_WINDOW_MS,
 } from '../../backend/services/waitlistService';
+import WebsocketService from '../services/websocketService';
+
+const WS_URL = process.env.EXPO_PUBLIC_WS_URL ?? 'ws://localhost:3001';
+const POLL_INTERVAL_MS = 30_000;
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -107,11 +118,38 @@ function formatDeadlineCountdown(deadline: string): string {
   return `${mins}:${secs.toString().padStart(2, '0')} remaining`;
 }
 
+// ─── Animated position badge ──────────────────────────────────────────────────
+
+const AnimatedPositionBadge: React.FC<{ position: number }> = ({ position }) => {
+  const scale = useSharedValue(1);
+  const prevPosition = useRef(position);
+
+  useEffect(() => {
+    if (prevPosition.current !== position) {
+      prevPosition.current = position;
+      scale.value = withSequence(withSpring(1.35), withTiming(1, { duration: 250 }));
+    }
+  }, [position, scale]);
+
+  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+
+  if (position === 1) {
+    return (
+      <Animated.View style={[styles.youreNextBadge, animStyle]}>
+        <Text style={styles.youreNextText}>🎉 You're next!</Text>
+      </Animated.View>
+    );
+  }
+
+  return <Animated.Text style={[styles.positionText, animStyle]}>#{position}</Animated.Text>;
+};
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const WaitlistScreen: React.FC<Props> = ({ userId, onSlotAccepted, onBack }) => {
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [isOffline, setIsOffline] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [form, setForm] = useState<JoinForm>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
@@ -119,6 +157,8 @@ const WaitlistScreen: React.FC<Props> = ({ userId, onSlotAccepted, onBack }) => 
 
   // Countdown ticker ref — cleared on unmount
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wsRef = useRef<WebsocketService | null>(null);
 
   // ── Load entries ────────────────────────────────────────────────────────────
 
@@ -136,9 +176,57 @@ const WaitlistScreen: React.FC<Props> = ({ userId, onSlotAccepted, onBack }) => 
     }
   }, [userId]);
 
+  // ── Apply a position update from WS without full reload ────────────────────
+  const applyPositionUpdate = useCallback(
+    (data: { entryId: string; position: number; estimatedWaitMinutes: number }) => {
+      setEntries((prev) =>
+        prev.map((e) =>
+          e.id === data.entryId
+            ? { ...e, position: data.position, estimatedWaitMinutes: data.estimatedWaitMinutes }
+            : e,
+        ),
+      );
+    },
+    [],
+  );
+
+  // ── WebSocket setup + polling fallback ─────────────────────────────────────
   useEffect(() => {
     void load();
-  }, [load]);
+
+    const ws = new WebsocketService(WS_URL);
+    wsRef.current = ws;
+
+    const unsubPosition = ws.on('waitlist:position_update', (data) => {
+      applyPositionUpdate(data);
+    });
+
+    const unsubConnected = ws.on('connected', () => {
+      setIsOffline(false);
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    });
+
+    const unsubDisconnected = ws.on('disconnected', () => {
+      setIsOffline(true);
+      if (!pollRef.current) {
+        pollRef.current = setInterval(() => void load(), POLL_INTERVAL_MS);
+      }
+    });
+
+    ws.connect();
+
+    return () => {
+      unsubPosition();
+      unsubConnected();
+      unsubDisconnected();
+      ws.disconnect();
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
 
   // ── Countdown ticker for NOTIFIED entries ───────────────────────────────────
 
@@ -292,9 +380,8 @@ const WaitlistScreen: React.FC<Props> = ({ userId, onSlotAccepted, onBack }) => 
 
         {item.status === WaitlistStatus.WAITING && (
           <>
-            <Text style={styles.cardLabel}>
-              Position: <Text style={styles.cardValue}>#{item.position}</Text>
-            </Text>
+            <Text style={styles.cardLabel}>Position:</Text>
+            <AnimatedPositionBadge position={item.position} />
             <Text style={styles.cardLabel}>
               Est. wait:{' '}
               <Text style={styles.cardValue}>{formatEta(item.estimatedWaitMinutes)}</Text>
@@ -435,6 +522,11 @@ const WaitlistScreen: React.FC<Props> = ({ userId, onSlotAccepted, onBack }) => 
           </TouchableOpacity>
         )}
         <Text style={styles.headerTitle}>Appointment Waitlist</Text>
+        {isOffline && (
+          <View style={styles.offlineBadge} accessibilityLabel="Offline — polling for updates">
+            <Text style={styles.offlineBadgeText}>● Offline</Text>
+          </View>
+        )}
         <TouchableOpacity
           style={styles.addBtn}
           onPress={() => setModalVisible(true)}
@@ -501,6 +593,15 @@ const styles = StyleSheet.create({
   },
   addBtnText: { color: '#fff', fontWeight: '600' },
 
+  offlineBadge: {
+    backgroundColor: '#F44336',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginRight: 8,
+  },
+  offlineBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+
   infoBanner: {
     backgroundColor: '#E3F2FD',
     paddingHorizontal: 16,
@@ -539,6 +640,17 @@ const styles = StyleSheet.create({
 
   cardLabel: { fontSize: 13, color: '#555', marginTop: 3 },
   cardValue: { fontWeight: '600', color: '#1a1a1a' },
+
+  positionText: { fontSize: 22, fontWeight: '700', color: '#FF9800', marginVertical: 4 },
+  youreNextBadge: {
+    backgroundColor: '#E8F5E9',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    alignSelf: 'flex-start',
+    marginVertical: 4,
+  },
+  youreNextText: { fontSize: 16, fontWeight: '700', color: '#2E7D32' },
 
   countdownBox: {
     marginTop: 10,

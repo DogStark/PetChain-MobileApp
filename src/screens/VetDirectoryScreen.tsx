@@ -1,11 +1,13 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
   KeyboardAvoidingView,
   Modal,
+  PanResponder,
   Platform,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,8 +16,11 @@ import {
   View,
 } from 'react-native';
 
+import { Ionicons } from '@expo/vector-icons';
 import { SkeletonCard } from '../components/SkeletonCard';
+import { getVetReviews, submitVetReview, voteVetReview, type VetReview } from '../services/reviewService';
 import { useMinimumLoadingTime } from '../hooks/useMinimumLoadingTime';
+import mapService from '../services/mapService';
 import {
   getMessages,
   getVetProfile,
@@ -25,21 +30,150 @@ import {
   type VetProfile,
 } from '../services/vetService';
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const RADIUS_MIN = 1;
+const RADIUS_MAX = 50;
+const DEBOUNCE_MS = 300;
+
+const SPECIALTY_OPTIONS = [
+  'General',
+  'Dermatology',
+  'Cardiology',
+  'Oncology',
+  'Surgery',
+  'Dentistry',
+  'Neurology',
+  'Ophthalmology',
+];
+
 type Screen = 'directory' | 'profile' | 'chat';
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// ─── RadiusSlider ─────────────────────────────────────────────────────────────
+
+interface RadiusSliderProps {
+  value: number;
+  onChange: (v: number) => void;
+}
+
+const RadiusSlider: React.FC<RadiusSliderProps> = ({ value, onChange }) => {
+  const trackWidth = useRef(0);
+  const ratio = (value - RADIUS_MIN) / (RADIUS_MAX - RADIUS_MIN);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (e) => {
+        const x = e.nativeEvent.locationX;
+        const r = Math.max(0, Math.min(1, x / (trackWidth.current || 1)));
+        onChange(Math.round(RADIUS_MIN + r * (RADIUS_MAX - RADIUS_MIN)));
+      },
+      onPanResponderMove: (e) => {
+        const x = e.nativeEvent.locationX;
+        const r = Math.max(0, Math.min(1, x / (trackWidth.current || 1)));
+        onChange(Math.round(RADIUS_MIN + r * (RADIUS_MAX - RADIUS_MIN)));
+      },
+    }),
+  ).current;
+
+  return (
+    <View style={sliderStyles.wrapper}>
+      <View
+        style={sliderStyles.track}
+        onLayout={(e) => {
+          trackWidth.current = e.nativeEvent.layout.width;
+        }}
+        {...panResponder.panHandlers}
+      >
+        <View style={[sliderStyles.fill, { width: `${ratio * 100}%` }]} />
+        <View style={[sliderStyles.thumb, { left: `${ratio * 100}%` }]} />
+      </View>
+      <View style={sliderStyles.labels}>
+        <Text style={sliderStyles.labelText}>{RADIUS_MIN} km</Text>
+        <Text style={sliderStyles.labelText}>{RADIUS_MAX} km</Text>
+      </View>
+    </View>
+  );
+};
+
+const sliderStyles = StyleSheet.create({
+  wrapper: { marginVertical: 8 },
+  track: {
+    height: 6,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 3,
+    justifyContent: 'center',
+    marginHorizontal: 8,
+  },
+  fill: { height: 6, backgroundColor: '#4299e1', borderRadius: 3 },
+  thumb: {
+    position: 'absolute',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    borderWidth: 2,
+    borderColor: '#4299e1',
+    top: -7,
+    marginLeft: -10,
+  },
+  labels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 4,
+    paddingHorizontal: 8,
+  },
+  labelText: { fontSize: 11, color: '#718096' },
+});
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
 const VetDirectoryScreen: React.FC = () => {
+  const { colors } = useTheme();
+  const { show: showToast } = useToast();
+
   const [screen, setScreen] = useState<Screen>('directory');
   const [vets, setVets] = useState<VetProfile[]>([]);
   const [selectedVet, setSelectedVet] = useState<VetProfile | null>(null);
   const [loading, setLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Enforce minimum 300ms display for skeleton
   const displayLoading = useMinimumLoadingTime(loading, { minLoadingTime: 300 });
 
-  // Search filters
-  const [specialty, setSpecialty] = useState('');
-  const [radius, setRadius] = useState('25');
+  // Location
+  const [userLat, setUserLat] = useState<number | null>(null);
+  const [userLng, setUserLng] = useState<number | null>(null);
+  const [locationDenied, setLocationDenied] = useState(false);
+
+  // Filters
+  const [radius, setRadius] = useState(25);
+  const [selectedSpecialties, setSelectedSpecialties] = useState<string[]>([]);
   const [availableOnly, setAvailableOnly] = useState(false);
+  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
+
+  // Draft filter state (inside drawer, not applied until confirmed)
+  const [draftRadius, setDraftRadius] = useState(25);
+  const [draftSpecialties, setDraftSpecialties] = useState<string[]>([]);
+  const [draftAvailableOnly, setDraftAvailableOnly] = useState(false);
+
+  // Reviews
+  const [reviews, setReviews] = useState<VetReview[]>([]);
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewText, setReviewText] = useState('');
+  const [submittingReview, setSubmittingReview] = useState(false);
 
   // Chat
   const [messages, setMessages] = useState<VetMessage[]>([]);
@@ -47,35 +181,185 @@ const VetDirectoryScreen: React.FC = () => {
   const [chatLoading, setChatLoading] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
-  const doSearch = useCallback(async () => {
-    setLoading(true);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Location ───────────────────────────────────────────────────────────────
+
+  const requestLocation = useCallback(async () => {
     try {
-      const results = await searchVets({
-        specialty: specialty || undefined,
-        radius: parseFloat(radius) || 25,
-        available: availableOnly || undefined,
-      });
-      setVets(results);
+      const granted = await mapService.requestLocationPermission();
+      if (!granted) {
+        setLocationDenied(true);
+        return;
+      }
+      setLocationDenied(false);
+      const loc = await mapService.getCurrentLocation();
+      setUserLat(loc.latitude);
+      setUserLng(loc.longitude);
     } catch {
-      Alert.alert('Error', 'Failed to search vets');
-    } finally {
-      setLoading(false);
+      setLocationDenied(true);
     }
-  }, [specialty, radius, availableOnly]);
+  }, []);
 
   useEffect(() => {
-    void doSearch();
-  }, [doSearch]);
+    void requestLocation();
+  }, [requestLocation]);
+
+  // ── Search ─────────────────────────────────────────────────────────────────
+
+  const doSearch = useCallback(
+    async (
+      lat: number | null,
+      lng: number | null,
+      r: number,
+      specialties: string[],
+      availOnly: boolean,
+      isRefresh = false,
+    ) => {
+      const hadData = vets.length > 0;
+      setLoading(true);
+      try {
+        const specialtyParam = specialties.length === 1 ? specialties[0] : undefined;
+        const results = await searchVets({
+          lat: lat ?? undefined,
+          lng: lng ?? undefined,
+          radius: r,
+          specialty: specialtyParam,
+          available: availOnly || undefined,
+        });
+
+        // Attach distance client-side and sort
+        const withDist = results.map((v) => {
+          if (lat !== null && lng !== null && v.lat && v.lng) {
+            return { ...v, distance: haversineKm(lat, lng, v.lat, v.lng) };
+          }
+          return v;
+        });
+
+        // Client-side multi-specialty filter when more than one selected
+        const filtered =
+          specialties.length > 1
+            ? withDist.filter((v) =>
+                specialties.some((s) => v.specialty.toLowerCase().includes(s.toLowerCase())),
+              )
+            : withDist;
+
+        const sorted =
+          lat !== null
+            ? [...filtered].sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity))
+            : [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+
+        setVets(sorted);
+      } catch {
+        // A pull-to-refresh on an already-populated list: keep the list,
+        // toast instead of an intrusive blocking alert.
+        if (isRefresh && hadData) {
+          showToast("Couldn't refresh — showing cached data", { variant: 'error' });
+        } else {
+          Alert.alert('Error', 'Failed to search vets');
+        }
+      } finally {
+        setLoading(false);
+      }
+    },
+    [vets.length, showToast],
+  );
+
+  // Debounced re-search when filters change
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      void doSearch(userLat, userLng, radius, selectedSpecialties, availableOnly);
+    }, DEBOUNCE_MS);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userLat, userLng, radius, selectedSpecialties, availableOnly]);
+
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    await doSearch(userLat, userLng, radius, selectedSpecialties, availableOnly, true);
+    setIsRefreshing(false);
+  }, [doSearch, userLat, userLng, radius, selectedSpecialties, availableOnly]);
+
+  // ── Filter drawer ──────────────────────────────────────────────────────────
+
+  const openDrawer = () => {
+    setDraftRadius(radius);
+    setDraftSpecialties(selectedSpecialties);
+    setDraftAvailableOnly(availableOnly);
+    setFilterDrawerOpen(true);
+  };
+
+  const applyFilters = () => {
+    setRadius(draftRadius);
+    setSelectedSpecialties(draftSpecialties);
+    setAvailableOnly(draftAvailableOnly);
+    setFilterDrawerOpen(false);
+  };
+
+  const toggleDraftSpecialty = (s: string) => {
+    setDraftSpecialties((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
+  };
+
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (radius !== 25) n++;
+    if (selectedSpecialties.length) n++;
+    if (availableOnly) n++;
+    return n;
+  }, [radius, selectedSpecialties, availableOnly]);
+
+  // ── Profile / Chat ─────────────────────────────────────────────────────────
 
   const openProfile = useCallback(async (vet: VetProfile) => {
     try {
       const profile = await getVetProfile(vet.id);
       setSelectedVet(profile);
       setScreen('profile');
+      try {
+        const fetchedReviews = await getVetReviews(vet.id, 1);
+        setReviews(fetchedReviews);
+      } catch (err) {
+        console.warn('Failed to load reviews', err);
+      }
     } catch {
       Alert.alert('Error', 'Failed to load vet profile');
     }
   }, []);
+
+  const handleSubmitReview = async () => {
+    if (!selectedVet) return;
+    if (reviewText.trim().length === 0) {
+      Alert.alert('Error', 'Please enter a review text.');
+      return;
+    }
+    setSubmittingReview(true);
+    try {
+      const newReview = await submitVetReview(selectedVet.id, 'user123', reviewRating, reviewText.trim());
+      if (newReview.status === 'pending_moderation') {
+        Alert.alert('Under Review', 'Your review contains flagged words and is pending manual moderation.');
+      } else {
+        setReviews([newReview, ...reviews]);
+      }
+      setReviewText('');
+      setReviewRating(5);
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Failed to submit review. You must have a verified appointment.');
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
+
+  const handleVote = async (reviewId: string, isHelpful: boolean) => {
+    try {
+      const updated = await voteVetReview(reviewId, isHelpful);
+      setReviews((prev) => prev.map((r) => (r.id === reviewId ? updated : r)));
+    } catch (e) {
+      Alert.alert('Error', 'Failed to submit vote.');
+    }
+  };
 
   const openChat = useCallback(async (vet: VetProfile) => {
     setSelectedVet(vet);
@@ -103,48 +387,51 @@ const VetDirectoryScreen: React.FC = () => {
     }
   }, [msgInput, selectedVet]);
 
-  // ─── Directory ───────────────────────────────────────────────────────────────
+  // ── Directory screen ───────────────────────────────────────────────────────
+
   if (screen === 'directory') {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>Vet Directory</Text>
+        {/* Location denied banner */}
+        {locationDenied && (
+          <TouchableOpacity
+            style={styles.locationBanner}
+            onPress={() => void requestLocation()}
+            accessibilityLabel="Enable location for nearest results"
+          >
+            <Text style={styles.locationBannerText}>
+              📍 Enable location for nearest results — tap to retry
+            </Text>
+          </TouchableOpacity>
+        )}
 
-        <View style={styles.filters}>
-          <TextInput
-            style={styles.input}
-            placeholder="Specialty (e.g. Dermatology)"
-            value={specialty}
-            onChangeText={setSpecialty}
-            returnKeyType="search"
-            onSubmitEditing={() => void doSearch()}
-          />
-          <View style={styles.row}>
-            <TextInput
-              style={[styles.input, { flex: 1, marginRight: 8 }]}
-              placeholder="Radius (km)"
-              value={radius}
-              onChangeText={setRadius}
-              keyboardType="numeric"
-            />
-            <TouchableOpacity
-              style={[styles.toggleBtn, availableOnly && styles.toggleActive]}
-              onPress={() => setAvailableOnly((v) => !v)}
-              accessibilityLabel="Toggle available only"
+        {/* Header row */}
+        <View style={styles.headerRow}>
+          <Text style={styles.title}>Vet Directory</Text>
+          <TouchableOpacity
+            style={[styles.filterBtn, activeFilterCount > 0 && styles.filterBtnActive]}
+            onPress={openDrawer}
+            accessibilityLabel="Open filter drawer"
+          >
+            <Text
+              style={[styles.filterBtnText, activeFilterCount > 0 && styles.filterBtnTextActive]}
             >
-              <Text style={availableOnly ? styles.toggleTextActive : styles.toggleText}>
-                Available only
-              </Text>
-            </TouchableOpacity>
-          </View>
-          <TouchableOpacity style={styles.searchBtn} onPress={() => void doSearch()}>
-            <Text style={styles.searchBtnText}>Search</Text>
+              Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+            </Text>
           </TouchableOpacity>
         </View>
 
+        {/* Sort / status bar */}
+        <Text style={styles.sortLabel}>
+          {userLat !== null ? `Sorted by distance · ${radius} km radius` : 'Sorted alphabetically'}
+          {selectedSpecialties.length > 0 ? ` · ${selectedSpecialties.join(', ')}` : ''}
+          {availableOnly ? ' · Available only' : ''}
+        </Text>
+
         {displayLoading ? (
           <View style={styles.list}>
-            {Array.from({ length: 5 }).map((_, index) => (
-              <SkeletonCard key={`skeleton-${index}`} />
+            {Array.from({ length: 5 }).map((_, i) => (
+              <SkeletonCard key={`sk-${i}`} />
             ))}
           </View>
         ) : (
@@ -162,8 +449,10 @@ const VetDirectoryScreen: React.FC = () => {
                   <Text style={styles.vetSub}>{item.specialty}</Text>
                   <Text style={styles.vetSub}>
                     ⭐ {item.rating.toFixed(1)} · {item.reviewCount} reviews
-                    {item.distance !== undefined ? ` · ${item.distance.toFixed(1)} km` : ''}
                   </Text>
+                  {item.distance !== undefined && (
+                    <Text style={styles.distanceText}>📍 {item.distance.toFixed(1)} km away</Text>
+                  )}
                 </View>
                 <View style={[styles.badge, item.available ? styles.badgeGreen : styles.badgeGray]}>
                   <Text style={styles.badgeText}>{item.available ? 'Available' : 'Busy'}</Text>
@@ -172,13 +461,103 @@ const VetDirectoryScreen: React.FC = () => {
             )}
             ListEmptyComponent={<Text style={styles.empty}>No vets found.</Text>}
             contentContainerStyle={styles.list}
+            refreshControl={
+              <RefreshControl
+                refreshing={isRefreshing}
+                onRefresh={() => void handleRefresh()}
+                colors={[colors.primary]}
+                tintColor={colors.primary}
+              />
+            }
           />
         )}
+
+        {/* Filter drawer modal */}
+        <Modal
+          visible={filterDrawerOpen}
+          animationType="slide"
+          transparent
+          onRequestClose={() => setFilterDrawerOpen(false)}
+        >
+          <View style={styles.drawerOverlay}>
+            <View style={styles.drawer}>
+              <View style={styles.drawerHeader}>
+                <Text style={styles.drawerTitle}>Filters</Text>
+                <TouchableOpacity onPress={() => setFilterDrawerOpen(false)}>
+                  <Text style={styles.drawerClose}>✕</Text>
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView contentContainerStyle={styles.drawerBody}>
+                {/* Radius */}
+                <Text style={styles.drawerLabel}>Distance radius: {draftRadius} km</Text>
+                <RadiusSlider value={draftRadius} onChange={setDraftRadius} />
+
+                {/* Specialty multi-select */}
+                <Text style={styles.drawerLabel}>Specialty</Text>
+                <View style={styles.specialtyGrid}>
+                  {SPECIALTY_OPTIONS.map((s) => {
+                    const active = draftSpecialties.includes(s);
+                    return (
+                      <TouchableOpacity
+                        key={s}
+                        style={[styles.specialtyChip, active && styles.specialtyChipActive]}
+                        onPress={() => toggleDraftSpecialty(s)}
+                        accessibilityLabel={`Toggle ${s} specialty`}
+                        accessibilityState={{ selected: active }}
+                      >
+                        <Text
+                          style={[
+                            styles.specialtyChipText,
+                            active && styles.specialtyChipTextActive,
+                          ]}
+                        >
+                          {s}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* Available only */}
+                <TouchableOpacity
+                  style={styles.drawerToggleRow}
+                  onPress={() => setDraftAvailableOnly((v) => !v)}
+                  accessibilityLabel="Toggle accepts new patients"
+                >
+                  <Text style={styles.drawerToggleLabel}>Accepts new patients</Text>
+                  <View style={[styles.togglePill, draftAvailableOnly && styles.togglePillActive]}>
+                    <View
+                      style={[styles.toggleDot, draftAvailableOnly && styles.toggleDotActive]}
+                    />
+                  </View>
+                </TouchableOpacity>
+              </ScrollView>
+
+              <View style={styles.drawerFooter}>
+                <TouchableOpacity
+                  style={styles.drawerResetBtn}
+                  onPress={() => {
+                    setDraftRadius(25);
+                    setDraftSpecialties([]);
+                    setDraftAvailableOnly(false);
+                  }}
+                >
+                  <Text style={styles.drawerResetText}>Reset</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.drawerApplyBtn} onPress={applyFilters}>
+                  <Text style={styles.drawerApplyText}>Apply Filters</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </View>
     );
   }
 
-  // ─── Profile ─────────────────────────────────────────────────────────────────
+  // ── Profile screen ─────────────────────────────────────────────────────────
+
   if (screen === 'profile' && selectedVet) {
     return (
       <ScrollView style={styles.container} contentContainerStyle={styles.profileContent}>
@@ -198,6 +577,12 @@ const VetDirectoryScreen: React.FC = () => {
         <Text style={styles.value}>
           ⭐ {selectedVet.rating.toFixed(1)} ({selectedVet.reviewCount} reviews)
         </Text>
+        {selectedVet.distance !== undefined && (
+          <>
+            <Text style={styles.label}>Distance</Text>
+            <Text style={styles.value}>📍 {selectedVet.distance.toFixed(1)} km away</Text>
+          </>
+        )}
         <Text style={styles.label}>Address</Text>
         <Text style={styles.value}>{selectedVet.address || '—'}</Text>
         <Text style={styles.label}>Phone</Text>
@@ -210,11 +595,63 @@ const VetDirectoryScreen: React.FC = () => {
         >
           <Text style={styles.searchBtnText}>💬 Message</Text>
         </TouchableOpacity>
+
+        <View style={styles.reviewsSection}>
+          <Text style={styles.reviewsTitle}>Reviews</Text>
+          
+          <View style={styles.reviewForm}>
+            <Text style={styles.label}>Leave a Review</Text>
+            <View style={styles.starsRow}>
+              {[1, 2, 3, 4, 5].map((star) => (
+                <TouchableOpacity key={star} onPress={() => setReviewRating(star)}>
+                  <Ionicons name={star <= reviewRating ? 'star' : 'star-outline'} size={28} color="#ecc94b" />
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TextInput
+              style={styles.reviewInput}
+              placeholder="Share your experience (max 500 chars)"
+              value={reviewText}
+              onChangeText={setReviewText}
+              maxLength={500}
+              multiline
+            />
+            <TouchableOpacity style={styles.submitReviewBtn} onPress={handleSubmitReview} disabled={submittingReview}>
+              <Text style={styles.submitReviewText}>{submittingReview ? 'Submitting...' : 'Submit Review'}</Text>
+            </TouchableOpacity>
+          </View>
+
+          {reviews.map((r) => (
+            <View key={r.id} style={styles.reviewCard}>
+              <View style={styles.reviewHeader}>
+                <View style={styles.starsRowSmall}>
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <Ionicons key={star} name={star <= r.rating ? 'star' : 'star-outline'} size={14} color="#ecc94b" />
+                  ))}
+                </View>
+                <Text style={styles.reviewDate}>{new Date(r.created_at).toLocaleDateString()}</Text>
+              </View>
+              <Text style={styles.reviewBody}>{r.text}</Text>
+              <View style={styles.voteRow}>
+                <TouchableOpacity style={styles.voteBtn} onPress={() => handleVote(r.id, true)}>
+                  <Ionicons name="thumbs-up-outline" size={16} color="#718096" />
+                  <Text style={styles.voteText}>Helpful ({r.helpful_votes})</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.voteBtn} onPress={() => handleVote(r.id, false)}>
+                  <Ionicons name="thumbs-down-outline" size={16} color="#718096" />
+                  <Text style={styles.voteText}>Not Helpful ({r.not_helpful_votes})</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))}
+          {reviews.length === 0 && <Text style={styles.empty}>No reviews yet.</Text>}
+        </View>
       </ScrollView>
     );
   }
 
-  // ─── Chat ─────────────────────────────────────────────────────────────────────
+  // ── Chat screen ────────────────────────────────────────────────────────────
+
   if (screen === 'chat' && selectedVet) {
     return (
       <KeyboardAvoidingView
@@ -230,7 +667,11 @@ const VetDirectoryScreen: React.FC = () => {
         </View>
 
         {chatLoading ? (
-          <ActivityIndicator style={styles.loader} size="large" color="#4299e1" />
+          <View style={styles.chatList}>
+            {Array.from({ length: 4 }).map((_, index) => (
+              <SkeletonCard key={`chat-skeleton-${index}`} height={64} lines={2} />
+            ))}
+          </View>
         ) : (
           <FlatList
             data={messages}
@@ -284,38 +725,45 @@ const VetDirectoryScreen: React.FC = () => {
   return null;
 };
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
-  title: { fontSize: 20, fontWeight: '700', color: '#1a202c', padding: 16, paddingBottom: 8 },
-  filters: { paddingHorizontal: 16, paddingBottom: 8 },
-  input: {
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginBottom: 8,
-    fontSize: 14,
-    color: '#1a202c',
-  },
-  row: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
-  toggleBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  toggleActive: { backgroundColor: '#4299e1', borderColor: '#4299e1' },
-  toggleText: { color: '#718096', fontSize: 13 },
-  toggleTextActive: { color: '#fff', fontSize: 13 },
-  searchBtn: {
-    backgroundColor: '#4299e1',
-    borderRadius: 8,
+
+  // Location banner
+  locationBanner: {
+    backgroundColor: '#EBF8FF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#BEE3F8',
+    paddingHorizontal: 16,
     paddingVertical: 10,
-    alignItems: 'center',
   },
-  searchBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+  locationBannerText: { fontSize: 13, color: '#2B6CB0', fontWeight: '500' },
+
+  // Header
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 4,
+  },
+  title: { fontSize: 20, fontWeight: '700', color: '#1a202c' },
+  filterBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#CBD5E0',
+    backgroundColor: '#F7FAFC',
+  },
+  filterBtnActive: { backgroundColor: '#4299e1', borderColor: '#4299e1' },
+  filterBtnText: { fontSize: 13, color: '#4A5568', fontWeight: '600' },
+  filterBtnTextActive: { color: '#fff' },
+  sortLabel: { fontSize: 12, color: '#718096', paddingHorizontal: 16, paddingBottom: 8 },
+
+  // List
   loader: { marginTop: 40 },
   list: { padding: 12 },
   card: {
@@ -329,11 +777,111 @@ const styles = StyleSheet.create({
   cardInfo: { flex: 1 },
   vetName: { fontSize: 15, fontWeight: '600', color: '#1a202c' },
   vetSub: { fontSize: 13, color: '#718096', marginTop: 2 },
+  distanceText: { fontSize: 13, color: '#4299e1', fontWeight: '600', marginTop: 4 },
   badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
   badgeGreen: { backgroundColor: '#c6f6d5' },
   badgeGray: { backgroundColor: '#e2e8f0' },
   badgeText: { fontSize: 12, fontWeight: '600', color: '#2d3748' },
   empty: { textAlign: 'center', color: '#718096', marginTop: 40 },
+
+  // Filter drawer
+  drawerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  drawer: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '80%',
+  },
+  drawerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EDF2F7',
+  },
+  drawerTitle: { fontSize: 18, fontWeight: '700', color: '#1a202c' },
+  drawerClose: { fontSize: 20, color: '#718096' },
+  drawerBody: { padding: 20, paddingBottom: 8 },
+  drawerLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#4A5568',
+    marginBottom: 8,
+    marginTop: 12,
+  },
+
+  // Specialty chips
+  specialtyGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
+  specialtyChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#CBD5E0',
+    backgroundColor: '#F7FAFC',
+  },
+  specialtyChipActive: { backgroundColor: '#4299e1', borderColor: '#4299e1' },
+  specialtyChipText: { fontSize: 13, color: '#4A5568' },
+  specialtyChipTextActive: { color: '#fff', fontWeight: '600' },
+
+  // Toggle row
+  drawerToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#EDF2F7',
+    marginTop: 8,
+  },
+  drawerToggleLabel: { fontSize: 15, color: '#1a202c' },
+  togglePill: {
+    width: 44,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#CBD5E0',
+    justifyContent: 'center',
+    padding: 2,
+  },
+  togglePillActive: { backgroundColor: '#4299e1' },
+  toggleDot: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#fff',
+    alignSelf: 'flex-start',
+  },
+  toggleDotActive: { alignSelf: 'flex-end' },
+
+  // Drawer footer
+  drawerFooter: {
+    flexDirection: 'row',
+    gap: 12,
+    padding: 20,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 20,
+    borderTopWidth: 1,
+    borderTopColor: '#EDF2F7',
+  },
+  drawerResetBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#CBD5E0',
+    alignItems: 'center',
+  },
+  drawerResetText: { fontSize: 15, color: '#4A5568', fontWeight: '600' },
+  drawerApplyBtn: {
+    flex: 2,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: '#4299e1',
+    alignItems: 'center',
+  },
+  drawerApplyText: { fontSize: 15, color: '#fff', fontWeight: '700' },
+
+  // Profile
   profileContent: { padding: 16 },
   back: { marginBottom: 8 },
   backText: { color: '#4299e1', fontSize: 16 },
@@ -345,6 +893,15 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   value: { fontSize: 15, color: '#1a202c', marginTop: 2 },
+  searchBtn: {
+    backgroundColor: '#4299e1',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  searchBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+
+  // Chat
   chatHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -387,6 +944,26 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   sendBtnText: { color: '#fff', fontWeight: '600' },
+
+  // Reviews
+  reviewsSection: { marginTop: 32, borderTopWidth: 1, borderTopColor: '#e2e8f0', paddingTop: 16, paddingBottom: 40 },
+  reviewsTitle: { fontSize: 18, fontWeight: '700', color: '#1a202c', marginBottom: 16 },
+  reviewForm: { backgroundColor: '#f7fafc', padding: 16, borderRadius: 8, marginBottom: 24 },
+  starsRow: { flexDirection: 'row', marginBottom: 12, gap: 4, marginTop: 8 },
+  starsRowSmall: { flexDirection: 'row', gap: 2 },
+  reviewInput: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 8, padding: 12, minHeight: 80, textAlignVertical: 'top', marginBottom: 12 },
+  submitReviewBtn: { backgroundColor: '#4299e1', padding: 12, borderRadius: 8, alignItems: 'center' },
+  submitReviewText: { color: '#fff', fontWeight: '600' },
+  reviewCard: { padding: 16, borderBottomWidth: 1, borderBottomColor: '#edf2f7', backgroundColor: '#fff' },
+  reviewHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  reviewDate: { fontSize: 12, color: '#a0aec0' },
+  reviewBody: { fontSize: 14, color: '#4a5568', marginBottom: 12, lineHeight: 20 },
+  voteRow: { flexDirection: 'row', gap: 16 },
+  voteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  voteText: { fontSize: 13, color: '#718096' },
 });
+
+// suppress unused wsRef warning — kept for future WebSocket integration
+void wsRef;
 
 export default VetDirectoryScreen;

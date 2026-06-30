@@ -9,6 +9,7 @@
 import { randomUUID } from 'crypto';
 
 import { cacheKey, get as cacheGet, invalidate, set as cacheSet } from '../services/cacheService';
+import { sendToUser, type NotificationTopic } from '../services/pushService';
 import { query } from '../src/db';
 import logger from '../utils/logger';
 
@@ -139,6 +140,67 @@ export async function resolveTemplate(
     body: interpolate(tmpl.body, vars),
     locale: usedLocale,
   };
+}
+
+// ─── User locale lookup ───────────────────────────────────────────────────────
+
+/**
+ * Looks up a user's preferred_language. Falls back to 'en' if the user
+ * is missing or the column is empty for any reason.
+ */
+async function getUserPreferredLanguage(userId: string): Promise<string> {
+  const { rows } = await query('SELECT preferred_language FROM users WHERE id = $1', [userId]);
+  const lang = rows[0]?.preferred_language as string | undefined;
+  return lang && lang.trim() ? lang : 'en';
+}
+
+// ─── Send ─────────────────────────────────────────────────────────────────────
+
+export interface SendNotificationOptions {
+  /** Push topic used for subscription/preference gating in pushService. */
+  topic: NotificationTopic;
+  /** Extra payload passed through to the push job (e.g. for deep-linking). */
+  data?: Record<string, unknown>;
+}
+
+/**
+ * Sends a push notification to `userId` using the localized template for
+ * `key`, rendered with `vars`. The user's `preferred_language` is read from
+ * the DB and used to select the template locale, falling back to English
+ * (via resolveTemplate) if no translation exists for that locale.
+ *
+ * Returns the number of push jobs enqueued (see pushService.sendToUser),
+ * and the locale that was actually used for the rendered copy.
+ *
+ * @throws if no template exists for the key in any supported locale
+ * @throws if required variables are missing for the resolved template
+ */
+export async function sendNotification(
+  userId: string,
+  key: string,
+  vars: TemplateVariables = {},
+  options: SendNotificationOptions,
+): Promise<{ enqueued: number; locale: string }> {
+  const preferredLanguage = await getUserPreferredLanguage(userId);
+  const rendered = await resolveTemplate(key, vars, preferredLanguage);
+
+  const enqueued = await sendToUser(
+    userId,
+    options.topic,
+    rendered.title,
+    rendered.body,
+    options.data,
+  );
+
+  logger.info('notification_sent', {
+    userId,
+    key,
+    locale: rendered.locale,
+    topic: options.topic,
+    enqueued,
+  });
+
+  return { enqueued, locale: rendered.locale };
 }
 
 // ─── Admin CRUD ───────────────────────────────────────────────────────────────
