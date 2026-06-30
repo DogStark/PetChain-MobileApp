@@ -45,6 +45,7 @@
     "codegen": "graphql-codegen --config codegen.ts",
     "migrations:validate": "tsx scripts/validate-migrations.ts",
     "check:empty-tests": "tsx scripts/check-empty-test-files.ts",
+    "check:translations": "tsx scripts/check-translations.ts",
     "test:migrations": "tsx scripts/test-migrations.ts",
     "openapi:generate": "tsx scripts/generate-openapi.ts",
     "openapi:check": "tsx scripts/generate-openapi.ts --check",

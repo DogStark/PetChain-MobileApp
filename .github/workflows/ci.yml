@@ -44,6 +44,9 @@ jobs:
       - name: Check for empty test files
         run: npm run check:empty-tests
 
+      - name: Check translations (no missing Spanish keys)
+        run: npm run check:translations
+
       - name: Lint
         run: npm run lint
 
