@@ -9,7 +9,6 @@
  * Add to CI:
  *   - run: npx ts-node scripts/check-translations.ts
  */
-import * as fs from 'fs';
 import * as path from 'path';
 
 const LOCALES_DIR = path.join(__dirname, '../src/i18n/locales');
@@ -18,7 +17,7 @@ const SUPPORTED = ['en', 'es'];
 
 type NestedRecord = { [key: string]: string | NestedRecord };
 
-function flattenKeys(obj: NestedRecord, prefix = ''): string[] {
+export function flattenKeys(obj: NestedRecord, prefix = ''): string[] {
   const keys: string[] = [];
   for (const [k, v] of Object.entries(obj)) {
     const full = prefix ? `${prefix}.${k}` : k;
@@ -31,13 +30,18 @@ function flattenKeys(obj: NestedRecord, prefix = ''): string[] {
   return keys;
 }
 
-function loadLocale(locale: string): NestedRecord {
-  const filePath = path.join(LOCALES_DIR, `${locale}.json`);
-  if (!fs.existsSync(filePath)) {
-    console.error(`Missing locale file: ${filePath}`);
+export function loadLocale(locale: string): NestedRecord {
+  const localeFile = path.join(LOCALES_DIR, locale);
+
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const mod = require(localeFile) as { default?: NestedRecord } | NestedRecord;
+  const data = (mod as { default?: NestedRecord }).default ?? (mod as NestedRecord);
+
+  if (!data || typeof data !== 'object') {
+    console.error(`Locale file did not export a valid object: ${localeFile}`);
     process.exit(1);
   }
-  return JSON.parse(fs.readFileSync(filePath, 'utf8')) as NestedRecord;
+  return data;
 }
 
 let hasErrors = false;
