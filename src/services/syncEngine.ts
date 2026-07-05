@@ -6,7 +6,13 @@ import apiClient from './apiClient';
 import { executeSql } from './localDB';
 import { networkMonitor } from '../utils/networkMonitor';
 
-export type SyncEntityType = 'pet' | 'appointment' | 'medication' | 'medicalRecord';
+export type SyncEntityType =
+  | 'pet'
+  | 'appointment'
+  | 'medication'
+  | 'medicalRecord'
+  | 'streak'
+  | 'badge';
 export type SyncAction = 'create' | 'update' | 'delete';
 export type ConflictResolutionStrategy = 'last-write-wins' | 'server-wins' | 'client-wins';
 export type SyncEventType = 'queued' | 'started' | 'progress' | 'completed' | 'failed' | 'conflict';

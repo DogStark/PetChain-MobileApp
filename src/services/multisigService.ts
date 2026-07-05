@@ -4,7 +4,10 @@
  * co-signing request flow, status polling, and key rotation from the mobile app.
  */
 import apiClient from './apiClient';
-import { sendAlertNotification, transferVaccinationNotifications } from './notificationService';
+import {
+  sendAlertNotification,
+  cancelAndTransferVaccinationNotifications,
+} from './notificationService';
 import type {
   JointOwnershipResponse,
   PendingTransactionResponse,
@@ -258,7 +261,7 @@ export async function initiateOwnershipTransfer(
     );
     // Cancel scheduled vaccination reminders on the current owner's device
     // and signal the backend to re-push them to the new owner.
-    await transferVaccinationNotifications(data.petId, data.newOwnerUserId);
+    await cancelAndTransferVaccinationNotifications(data.petId, data.newOwnerUserId);
     return response.data;
   } catch (error) {
     throw toMultisigError(error);

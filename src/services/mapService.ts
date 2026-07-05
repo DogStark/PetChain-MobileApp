@@ -345,7 +345,7 @@ class MapService {
     const online = await networkMonitor.isOnline();
     if (online) {
       try {
-        const response = await apiClient.get<{ data: VetClinic }>(`/clinics/${clinicId}`);
+        const response = await apiClient.get<any>(`/clinics/${clinicId}`);
         return response.data?.data ?? response.data;
       } catch {
         // Fall through to local cache

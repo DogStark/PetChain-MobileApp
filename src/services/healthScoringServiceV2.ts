@@ -77,13 +77,15 @@ class HealthScoringServiceV2 {
   async getScoreHistory(
     petId: string,
     days: number = 90,
-  ): Promise<Array<{
-    score: number;
-    date: string;
-    explanation?: HealthScoreExplanation;
-    confidenceMin?: number;
-    confidenceMax?: number;
-  }>> {
+  ): Promise<
+    Array<{
+      score: number;
+      date: string;
+      explanation?: HealthScoreExplanation;
+      confidenceMin?: number;
+      confidenceMax?: number;
+    }>
+  > {
     try {
       const response = await api.get(`/api/health-scoring/v2/history/${petId}?days=${days}`);
       return response.data;

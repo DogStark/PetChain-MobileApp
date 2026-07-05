@@ -1,11 +1,11 @@
 import * as StoreReview from 'expo-store-review';
 
+import apiClient from '../../backend/services/apiClient';
 import {
   engagementTracker,
   type EngagementEvent,
   NEGATIVE_EVENTS,
 } from '../utils/engagementTracker';
-import apiClient from '../../backend/services/apiClient';
 
 const analytics = {
   track: (event: string, props?: object) => console.log('[analytics]', event, props),
@@ -50,7 +50,12 @@ export interface VetReview {
   not_helpful_votes: number;
 }
 
-export const submitVetReview = async (vetId: string, userId: string, rating: number, text: string): Promise<VetReview> => {
+export const submitVetReview = async (
+  vetId: string,
+  userId: string,
+  rating: number,
+  text: string,
+): Promise<VetReview> => {
   const { data } = await apiClient.post<VetReview>(`/reviews`, { vetId, userId, rating, text });
   return data;
 };
@@ -69,4 +74,3 @@ export const voteVetReview = async (reviewId: string, isHelpful: boolean): Promi
   const { data } = await apiClient.post<VetReview>(`/reviews/${reviewId}/vote`, { isHelpful });
   return data;
 };
-

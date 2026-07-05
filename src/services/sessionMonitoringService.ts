@@ -15,9 +15,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import apiClient from './apiClient';
 import config from '../config';
+import { type DeviceMetadata, getDefaultDevice } from './deviceFingerprint';
 import { InactivityTracker, SESSION_TIMEOUT_MS } from './inactivityTracker';
 import { scheduleTokenRefresh } from './tokenRefreshScheduler';
-import { type DeviceMetadata, getDefaultDevice } from './deviceFingerprint';
 
 // ─── Re-exports (backwards-compatible public API) ─────────────────────────────
 

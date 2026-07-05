@@ -16,10 +16,10 @@ import * as BackgroundFetch from 'expo-background-fetch';
 import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 
-import { logError } from '../utils/errorLogger';
 import apiClient from './apiClient';
 import { getItem, setItem, removeItem } from './localDB';
 import { getLostFoundReports, type LostFoundLocation } from './lostFoundService';
+import { logError } from '../utils/errorLogger';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -100,7 +100,9 @@ function haversineKm(a: LostFoundLocation, b: LostFoundLocation): number {
  * Register a geofence alert when a pet is marked as lost.
  * Safe to call multiple times — updates the existing entry if reportId matches.
  */
-export async function registerGeofenceAlert(alert: Omit<GeofenceAlert, 'expiresAt'>): Promise<void> {
+export async function registerGeofenceAlert(
+  alert: Omit<GeofenceAlert, 'expiresAt'>,
+): Promise<void> {
   const alerts = await loadGeofences();
 
   // Remove any existing entry for the same report

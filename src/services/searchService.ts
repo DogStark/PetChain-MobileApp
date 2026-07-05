@@ -69,7 +69,7 @@ export async function globalSearch(
       type?: string;
     }[];
   },
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<SearchResults> {
   if (!query.trim()) {
     return { query, total: 0, items: [], fromCache: false };
