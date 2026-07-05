@@ -57,15 +57,10 @@ async function loadKeywords(): Promise<void> {
   if (Date.now() < _cacheExpiry) return;
 
   try {
-    const result = await query(
-      `SELECT word, type FROM moderation_keywords`,
-      [],
-    );
+    const result = await query(`SELECT word, type FROM moderation_keywords`, []);
 
     const keywords: Array<{ word: string; type: KeywordType }> = result.rows as any;
-    _blocklistCache = keywords
-      .filter((k) => k.type === 'block')
-      .map((k) => k.word.toLowerCase());
+    _blocklistCache = keywords.filter((k) => k.type === 'block').map((k) => k.word.toLowerCase());
     _whitelistCache = keywords
       .filter((k) => k.type === 'whitelist')
       .map((k) => k.word.toLowerCase());
@@ -144,10 +139,9 @@ export async function addKeyword(
 }
 
 export async function removeKeyword(word: string): Promise<boolean> {
-  const result = await query(
-    `DELETE FROM moderation_keywords WHERE word = $1`,
-    [word.toLowerCase().trim()],
-  );
+  const result = await query(`DELETE FROM moderation_keywords WHERE word = $1`, [
+    word.toLowerCase().trim(),
+  ]);
   invalidateModerationCache();
   return (result.rowCount ?? 0) > 0;
 }

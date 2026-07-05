@@ -38,7 +38,7 @@ export class StreamManager extends EventEmitter {
   private closeFunction: (() => void) | null = null;
   private reconnectAttempts = 0;
   private consecutiveFailures = 0;
-  private reconnectTimeout: NodeJS.Timeout | null = null;
+  private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private isHealthy = true;
 
   constructor(
@@ -237,6 +237,7 @@ export interface StreamStatus {
   currentCursor: string | null;
   subscribedAccounts: Set<string>;
   error: string | null;
+  unhealthyStreamId?: string;
 }
 
 // ─── Default Configuration ────────────────────────────────────────────────────
@@ -310,7 +311,12 @@ export class HorizonStreamService extends EventEmitter {
         horizonUrl: this.config.horizonUrl,
       });
 
-      const streamManager = new StreamManager(streamId, this.server, this.config.cursorStorage, this.config);
+      const streamManager = new StreamManager(
+        streamId,
+        this.server,
+        this.config.cursorStorage,
+        this.config,
+      );
 
       // Attach listeners
       streamManager.on('message', (transaction) => {

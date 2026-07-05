@@ -51,7 +51,14 @@ export interface PushReceipt {
   title: string;
   body: string;
   topic: string;
-  status: 'pending' | 'delivered' | 'failed' | 'opened' | 'device_not_registered' | 'message_too_big' | 'invalid_credentials';
+  status:
+    | 'pending'
+    | 'delivered'
+    | 'failed'
+    | 'opened'
+    | 'device_not_registered'
+    | 'message_too_big'
+    | 'invalid_credentials';
   errorCode?: string;
   errorMessage?: string;
   isCritical: boolean;
@@ -123,11 +130,7 @@ function isIanaTimezone(tz: string): boolean {
   }
 }
 
-export function localTimeToUtc(
-  localDate: string,
-  localTime: string,
-  timezone: string,
-): Date {
+export function localTimeToUtc(localDate: string, localTime: string, timezone: string): Date {
   const [year, month, day] = localDate.split('-').map(Number);
   const [hour, minute] = localTime.split(':').map(Number);
   const localIso = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`;
@@ -138,9 +141,7 @@ export function localTimeToUtc(
 
 function getTimezoneOffsetMs(isoDate: string, timezone: string): number {
   const utcDate = new Date(isoDate + 'Z');
-  const tzDate = new Date(
-    utcDate.toLocaleString('en-US', { timeZone: timezone }),
-  );
+  const tzDate = new Date(utcDate.toLocaleString('en-US', { timeZone: timezone }));
   return utcDate.getTime() - tzDate.getTime();
 }
 
@@ -183,17 +184,28 @@ export async function scheduleAtLocalTime(
   // Store in Redis sorted set for delayed processing
   const redis = getRedisClient();
   const jobRef = `${userId}:${topic}:${utcDate.getTime()}`;
-  await redis.zadd(K.scheduled, utcDate.getTime(), JSON.stringify({
-    jobRef,
+  await redis.zadd(
+    K.scheduled,
+    utcDate.getTime(),
+    JSON.stringify({
+      jobRef,
+      userId,
+      topic,
+      title,
+      body,
+      data: data ?? {},
+      timezone: tz,
+    }),
+  );
+
+  logger.info('push_scheduled', {
     userId,
     topic,
-    title,
-    body,
-    data: data ?? {},
+    localDate,
+    localTime,
     timezone: tz,
-  }));
-
-  logger.info('push_scheduled', { userId, topic, localDate, localTime, timezone: tz, utcTime: utcDate.toISOString() });
+    utcTime: utcDate.toISOString(),
+  });
   return utcDate;
 }
 
@@ -297,7 +309,12 @@ export async function rescheduleForTimezoneChange(
   }
 
   await setUserTimezone(userId, newTimezone);
-  logger.info('push_rescheduled_for_timezone', { userId, from: oldTz, to: newTimezone, count: toReschedule.length });
+  logger.info('push_rescheduled_for_timezone', {
+    userId,
+    from: oldTz,
+    to: newTimezone,
+    count: toReschedule.length,
+  });
 }
 
 // ─── Device token management ──────────────────────────────────────────────────
@@ -534,11 +551,7 @@ export async function checkPendingReceipts(): Promise<{
       }
 
       // SMS fallback for critical undelivered notifications after 30 minutes
-      if (
-        receipt.isCritical &&
-        status !== 'delivered' &&
-        status !== 'device_not_registered'
-      ) {
+      if (receipt.isCritical && status !== 'delivered' && status !== 'device_not_registered') {
         const createdAt = new Date(receipt.createdAt).getTime();
         if (Date.now() - createdAt > SMS_FALLBACK_TIMEOUT_MS && !receipt.smsFallbackAttempted) {
           receipt.smsFallbackAttempted = true;

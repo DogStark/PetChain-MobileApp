@@ -530,10 +530,11 @@ export class StellarMigrationService {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
 
-      // Log XDR so the transaction can be manually re-applied if the DB write failed
-      if (anchorResult?.xdr) {
+      // Log XDR/transactionId so the transaction can be manually re-applied if the DB write failed
+      const resultAny = anchorResult as any;
+      if (resultAny?.xdr || resultAny?.transactionId) {
         console.error(
-          `[stellarMigration] rollback — checkpoint=${checkpoint.id} xdr=${anchorResult.xdr}`,
+          `[stellarMigration] rollback — checkpoint=${checkpoint.id} xdr=${resultAny.xdr || ''} transactionId=${resultAny.transactionId || ''}`,
         );
       }
 

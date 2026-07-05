@@ -156,7 +156,10 @@ describe('shelterIntegrationService — syncShelter', () => {
     // We provide a subset where the last record has already been processed (updated),
     // so we verify the partial threshold logic is exercised via the sync result status.
     const partialRecords = records.slice(0, 4);
-    const resultFull = await shelterIntegrationService.syncShelter('shelter-partial', partialRecords);
+    const resultFull = await shelterIntegrationService.syncShelter(
+      'shelter-partial',
+      partialRecords,
+    );
     expect(resultFull.status).toBe('success'); // all 4 succeeded
 
     // Now simulate a partial scenario by directly asserting the threshold math:
@@ -173,14 +176,18 @@ describe('shelterIntegrationService — syncShelter', () => {
   it('rolls back and sets status to "failed" when <80% of records succeed', async () => {
     // Inject errors directly by calling syncShelter with pre-seeded error records.
     // We simulate this via a subclass override for testability.
-    const service = new (class extends (shelterIntegrationService.constructor as typeof import('../shelterIntegrationService').ShelterIntegrationService) {
-      override async syncShelter(shelterId: string, records: Array<{ id: string; data: ShelterPet }>) {
-        // Simulate 1 success, 4 failures out of 5 → 20% success rate → 'failed'
-        const base = await super.syncShelter(shelterId, records);
-        // Manually construct the result we want to test:
-        return base;
-      }
-    })();
+    const service =
+      new (class extends (shelterIntegrationService.constructor as typeof import('../shelterIntegrationService').ShelterIntegrationService) {
+        override async syncShelter(
+          shelterId: string,
+          records: Array<{ id: string; data: ShelterPet }>,
+        ) {
+          // Simulate 1 success, 4 failures out of 5 → 20% success rate → 'failed'
+          const base = await super.syncShelter(shelterId, records);
+          // Manually construct the result we want to test:
+          return base;
+        }
+      })();
 
     // For direct behavioural testing, verify the failure path indirectly:
     // A sync with 0 records should be 100% success (empty batches)

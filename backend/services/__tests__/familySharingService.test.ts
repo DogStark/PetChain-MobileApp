@@ -566,25 +566,25 @@ describe('updatePetAccess', () => {
 // ---------------------------------------------------------------------------
 
 describe('permission checks', () => {
-  it('checkPetAccess returns hasAccess=true with level for granted user', () => {
+  it('checkPetAccess returns hasAccess=true with level for granted user', async () => {
     const svc = freshService();
     svc.grantPetAccess('pet-8', OWNER, {
       userId: MEMBER,
       permissionLevel: PetAccessLevel.CAREGIVER,
     });
-    const result = svc.checkPetAccess('pet-8', MEMBER);
+    const result = await svc.checkPetAccess('pet-8', MEMBER);
     expect(result.hasAccess).toBe(true);
     expect(result.permissionLevel).toBe(PetAccessLevel.CAREGIVER);
   });
 
-  it('checkPetAccess returns hasAccess=false for user with no grant', () => {
+  it('checkPetAccess returns hasAccess=false for user with no grant', async () => {
     const svc = freshService();
-    const result = svc.checkPetAccess('pet-8', STRANGER);
+    const result = await svc.checkPetAccess('pet-8', STRANGER);
     expect(result.hasAccess).toBe(false);
     expect(result.reason).toBeTruthy();
   });
 
-  it('canEditPet returns true for CAREGIVER and ADMIN, false for VIEWER', () => {
+  it('canEditPet returns true for CAREGIVER and ADMIN, false for VIEWER', async () => {
     const svc = freshService();
     svc.grantPetAccess('pet-9', OWNER, {
       userId: 'care',
@@ -592,22 +592,22 @@ describe('permission checks', () => {
     });
     svc.grantPetAccess('pet-9', OWNER, { userId: 'adm', permissionLevel: PetAccessLevel.ADMIN });
     svc.grantPetAccess('pet-9', OWNER, { userId: 'view', permissionLevel: PetAccessLevel.VIEWER });
-    expect(svc.canEditPet('pet-9', 'care')).toBe(true);
-    expect(svc.canEditPet('pet-9', 'adm')).toBe(true);
-    expect(svc.canEditPet('pet-9', 'view')).toBe(false);
-    expect(svc.canEditPet('pet-9', STRANGER)).toBe(false);
+    expect(await svc.canEditPet('pet-9', 'care')).toBe(true);
+    expect(await svc.canEditPet('pet-9', 'adm')).toBe(true);
+    expect(await svc.canEditPet('pet-9', 'view')).toBe(false);
+    expect(await svc.canEditPet('pet-9', STRANGER)).toBe(false);
   });
 
-  it('canManagePetAccess returns true only for ADMIN', () => {
+  it('canManagePetAccess returns true only for ADMIN', async () => {
     const svc = freshService();
     svc.grantPetAccess('pet-10', OWNER, {
       userId: 'care',
       permissionLevel: PetAccessLevel.CAREGIVER,
     });
     svc.grantPetAccess('pet-10', OWNER, { userId: 'adm', permissionLevel: PetAccessLevel.ADMIN });
-    expect(svc.canManagePetAccess('pet-10', 'care')).toBe(false);
-    expect(svc.canManagePetAccess('pet-10', 'adm')).toBe(true);
-    expect(svc.canManagePetAccess('pet-10', STRANGER)).toBe(false);
+    expect(await svc.canManagePetAccess('pet-10', 'care')).toBe(false);
+    expect(await svc.canManagePetAccess('pet-10', 'adm')).toBe(true);
+    expect(await svc.canManagePetAccess('pet-10', STRANGER)).toBe(false);
   });
 });
 

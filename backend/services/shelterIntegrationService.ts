@@ -82,7 +82,7 @@ function storeResult(result: ShelterSyncResult): void {
 /**
  * Returns the last `limit` sync results for a given shelter, most-recent first.
  */
-export function getSyncResults(shelterId: string, limit = MAX_RESULTS_PER_SHELTER): ShelterSyncResult[] {
+function getSyncResults(shelterId: string, limit = MAX_RESULTS_PER_SHELTER): ShelterSyncResult[] {
   return syncResults
     .filter((r) => r.shelterId === shelterId)
     .slice(-limit)
@@ -92,7 +92,7 @@ export function getSyncResults(shelterId: string, limit = MAX_RESULTS_PER_SHELTE
 /**
  * Returns all shelters that have sync history, each with their last `limit` results.
  */
-export function getAllSyncResults(limit = MAX_RESULTS_PER_SHELTER): Record<string, ShelterSyncResult[]> {
+function getAllSyncResults(limit = MAX_RESULTS_PER_SHELTER): Record<string, ShelterSyncResult[]> {
   const shelterIds = [...new Set(syncResults.map((r) => r.shelterId))];
   const out: Record<string, ShelterSyncResult[]> = {};
   for (const id of shelterIds) {

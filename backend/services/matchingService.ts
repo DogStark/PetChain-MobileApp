@@ -229,8 +229,7 @@ export function computeAdoptionScore(
   const criteria: MatchCriterion[] = [];
 
   // 1. Home type
-  const homeTypeMatch =
-    !pet.preferredHomeType || pet.preferredHomeType.includes(adopter.homeType);
+  const homeTypeMatch = !pet.preferredHomeType || pet.preferredHomeType.includes(adopter.homeType);
   criteria.push({
     label: 'Home type',
     matched: homeTypeMatch,
@@ -337,7 +336,10 @@ export function computeAdoptionScore(
   });
 
   // Compute weighted score
-  const totalWeight = criteria.reduce((sum, c) => sum + (c.matched ? c.weight : c.weight < 0.05 ? c.weight : 0), 0);
+  const totalWeight = criteria.reduce(
+    (sum, c) => sum + (c.matched ? c.weight : c.weight < 0.05 ? c.weight : 0),
+    0,
+  );
   // Cap the base weight sum to 1.0 then scale to 100
   const maxPossibleWeight = 1.0;
   const rawScore = Math.min(totalWeight / maxPossibleWeight, 1) * 100;

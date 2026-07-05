@@ -1,4 +1,5 @@
-import StellarSdk, {
+import * as StellarSdk from '@stellar/stellar-sdk';
+import {
   Asset,
   Keypair,
   Memo,
@@ -7,7 +8,7 @@ import StellarSdk, {
   TransactionBuilder,
 } from '@stellar/stellar-sdk';
 
-const server = new StellarSdk.Server(
+const server = new StellarSdk.Horizon.Server(
   process.env.STELLAR_HORIZON_URL || 'https://horizon-testnet.stellar.org',
 );
 const networkPassphrase = Networks.TESTNET;

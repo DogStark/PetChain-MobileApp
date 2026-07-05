@@ -198,13 +198,11 @@ describe('HorizonStreamService', () => {
 
       expect(mockStreamBuilder.cursor).toHaveBeenCalledWith('stored_cursor_123');
     });
-
   });
 
   // ─── Error Recovery & Reconnection Tests ──────────────────────────────────────
 
   describe('reconnection with exponential backoff', () => {
-
     it('applies exponential backoff: 1s, 2s, 4s, ..., max 30s', async () => {
       await service.startTransactionStream(['GACCOUNT1']);
 
@@ -343,7 +341,6 @@ describe('HorizonStreamService', () => {
       onMessageHandler(mockTx);
       jest.runAllTimers();
     });
-
   });
 
   // ─── WebSocket Broadcast Tests ────────────────────────────────────────────────
@@ -372,10 +369,7 @@ describe('HorizonStreamService', () => {
 
       service.stopAllStreams();
 
-      expect(loggerService.warn).toHaveBeenCalledWith(
-        'Error closing stream',
-        expect.any(Object),
-      );
+      expect(loggerService.warn).toHaveBeenCalledWith('Error closing stream', expect.any(Object));
     });
   });
 

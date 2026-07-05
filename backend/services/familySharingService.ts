@@ -5,7 +5,13 @@
 
 import { randomUUID } from 'crypto';
 
-import { cacheKey, get as cacheGet, set as cacheSet, invalidate as cacheInvalidate, getCacheMetrics } from './cacheService';
+import {
+  cacheKey,
+  get as cacheGet,
+  set as cacheSet,
+  invalidate as cacheInvalidate,
+  getCacheMetrics,
+} from './cacheService';
 import type {
   ActivityFeedEntry,
   CreateFamilyGroupInput,
@@ -488,7 +494,10 @@ export function updatePetAccess(
 
 // ─── Permission Checks ─────────────────────────────────────────────────────────
 
-export async function checkPetAccess(petId: string, userId: string): Promise<PermissionCheckResult> {
+export async function checkPetAccess(
+  petId: string,
+  userId: string,
+): Promise<PermissionCheckResult> {
   const key = permissionCacheKey(userId, petId);
   const cached = await cacheGet<PermissionCheckResult>(key);
   if (cached !== null) return cached;

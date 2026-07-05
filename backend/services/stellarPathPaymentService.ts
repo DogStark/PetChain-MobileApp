@@ -5,7 +5,7 @@ import type { Horizon } from '@stellar/stellar-sdk';
 
 import config from '../config';
 import paymentService from './paymentService';
-import type { Payment, SubscriptionPlan } from '../models/Payment';
+import type { Payment, SubscriptionPlan, Subscription } from '../models/Payment';
 import { SUBSCRIPTION_PLANS } from '../models/Payment';
 
 export interface StellarAssetInput {
@@ -54,7 +54,7 @@ export interface PreparedPayment {
 
 export interface SubmittedPaymentResult {
   payment: Payment;
-  subscription: ReturnType<typeof paymentService.confirmPayment>['subscription'];
+  subscription: Subscription;
   transactionHash: string;
   quote: PaymentPathQuote;
 }
@@ -268,7 +268,7 @@ export class StellarPathPaymentService {
 
     const tx = new StellarSdk.Transaction(input.signedTransactionXdr, NETWORK_PASSPHRASE);
     const submitted = await this.server.submitTransaction(tx);
-    const confirmed = paymentService.confirmPayment(input.paymentId);
+    const confirmed = await paymentService.confirmPayment(input.paymentId);
 
     recordAudit({
       paymentId: input.paymentId,

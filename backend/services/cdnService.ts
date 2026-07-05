@@ -130,10 +130,7 @@ export function verifySignedUrl(key: string, expires: string, sig: string): bool
 export function generateMedicalRecordSignedUrl(key: string): string {
   const expiry = Math.floor(Date.now() / 1000) + CDN_SIGNED_URL_TTL_S;
   const payload = `medical:${key}:${expiry}`;
-  const sig = crypto
-    .createHmac('sha256', CDN_MEDICAL_SIGNING_SECRET)
-    .update(payload)
-    .digest('hex');
+  const sig = crypto.createHmac('sha256', CDN_MEDICAL_SIGNING_SECRET).update(payload).digest('hex');
 
   const params = new URLSearchParams({ expires: String(expiry), sig, type: 'medical' });
   return `${CDN_BASE_URL}/${key}?${params.toString()}`;
@@ -143,11 +140,7 @@ export function generateMedicalRecordSignedUrl(key: string): string {
  * Verifies a medical record attachment signed URL.
  * Returns false for unsigned (legacy) URLs — those should return 403.
  */
-export function verifyMedicalRecordSignedUrl(
-  key: string,
-  expires: string,
-  sig: string,
-): boolean {
+export function verifyMedicalRecordSignedUrl(key: string, expires: string, sig: string): boolean {
   const expiry = Number(expires);
   if (isNaN(expiry) || Date.now() / 1000 > expiry) return false;
 

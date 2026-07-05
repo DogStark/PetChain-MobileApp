@@ -435,9 +435,7 @@ function extractVetInfo(text: string): {
   if (phoneMatch) {
     data.vetPhone = phoneMatch[0].trim();
     // High confidence for valid phone formats
-    const isValidFormat = /^\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}$/.test(
-      phoneMatch[0],
-    );
+    const isValidFormat = /^\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}$/.test(phoneMatch[0]);
     confidence.vetPhone = { value: isValidFormat ? 0.9 : 0.65, source: 'extracted' };
   }
 
@@ -547,7 +545,7 @@ function extractDiagnoses(text: string): { data: Diagnosis[]; confidence: FieldC
   });
 
   const limitedDiagnoses = diagnoses.slice(0, 10);
-  
+
   // Calculate confidence: high if explicitly labeled, lower if keyword-matched
   let confidenceValue = 0.3; // Base for empty
   if (limitedDiagnoses.length > 0) {
@@ -587,7 +585,7 @@ function extractTreatments(text: string): { data: Treatment[]; confidence: Field
   }
 
   const limitedTreatments = treatments.slice(0, 5);
-  
+
   return {
     data: limitedTreatments,
     confidence: {
@@ -654,7 +652,7 @@ function extractPrescriptions(text: string): {
   });
 
   const limitedPrescriptions = prescriptions.slice(0, 10);
-  
+
   // Calculate confidence: high if explicitly structured, medium if keyword-matched
   let confidenceValue = 0.3;
   if (limitedPrescriptions.length > 0) {
@@ -711,7 +709,7 @@ function extractVaccinations(text: string): {
   });
 
   const limitedVaccinations = vaccinations.slice(0, 10);
-  
+
   // Calculate confidence
   let confidenceValue = 0.3;
   if (limitedVaccinations.length > 0) {

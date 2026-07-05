@@ -1,6 +1,6 @@
 /**
  * Comprehensive tests for MultisigService
- * 
+ *
  * Covers:
  * - Co-signer invites (happy path, duplicates, TTL expiry)
  * - Invite acceptance (valid token, invalid token, already-accepted)
@@ -26,9 +26,15 @@ import type { JointOwnership, CoOwnerInvite } from '../../models/JointOwnership'
 
 jest.mock('@stellar/stellar-sdk', () => {
   const mockBuilder = {
-    addOperation: jest.fn(function () { return this; }),
-    addMemo: jest.fn(function () { return this; }),
-    setTimeout: jest.fn(function () { return this; }),
+    addOperation: jest.fn(function () {
+      return this;
+    }),
+    addMemo: jest.fn(function () {
+      return this;
+    }),
+    setTimeout: jest.fn(function () {
+      return this;
+    }),
     build: jest.fn(() => ({
       toXDR: jest.fn(() => 'MOCK_XDR'),
       sign: jest.fn(function (keypair) {
@@ -288,9 +294,7 @@ describe('MultisigService', () => {
         advanceTimers: false,
       });
 
-      await expect(service.acceptCoOwnerInvite(invite.id, 'user2')).rejects.toThrow(
-        'expired',
-      );
+      await expect(service.acceptCoOwnerInvite(invite.id, 'user2')).rejects.toThrow('expired');
 
       jest.useRealTimers();
     });

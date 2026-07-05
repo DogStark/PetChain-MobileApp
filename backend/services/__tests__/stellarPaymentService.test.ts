@@ -52,7 +52,8 @@ const mockBuilder = {
 (StellarSdk.Operation.payment as unknown as jest.Mock).mockImplementation((input) => input);
 (StellarSdk.Memo.text as unknown as jest.Mock).mockImplementation((memo) => memo);
 
-const { processRefund } = require('../stellarPaymentService') as typeof import('../stellarPaymentService');
+const { processRefund } =
+  require('../stellarPaymentService') as typeof import('../stellarPaymentService');
 
 function computeIdempotencyKey(
   sourceAccount: string,

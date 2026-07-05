@@ -167,9 +167,7 @@ export async function cleanupExpiredPaymentIdempotencyKeys(now = new Date()): Pr
   return cleanupExpiredIdempotencyKeys(now);
 }
 
-export function startPaymentIdempotencyCleanupJob(
-  intervalMs = 60 * 60 * 1000,
-): NodeJS.Timeout {
+export function startPaymentIdempotencyCleanupJob(intervalMs = 60 * 60 * 1000): NodeJS.Timeout {
   const timer = setInterval(() => {
     cleanupExpiredIdempotencyKeys().catch(() => undefined);
   }, intervalMs) as unknown as NodeJS.Timeout;

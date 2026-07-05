@@ -5,6 +5,7 @@
  */
 
 import { randomUUID } from 'crypto';
+
 import Stripe from 'stripe';
 
 import type {
@@ -12,12 +13,13 @@ import type {
   Payment,
   Subscription,
   SubscriptionPlan,
+  PaymentProvider,
 } from '../models/Payment';
 import { SUBSCRIPTION_PLANS } from '../models/Payment';
 
 // Initialize Stripe client
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-  apiVersion: '2024-11-20',
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_dummy', {
+  apiVersion: '2024-11-20' as any,
 });
 
 // In-memory stores for now (replace with database queries in production)
@@ -122,7 +124,9 @@ async function createPaymentIntent(
  * Confirm payment by processing the Stripe payment intent.
  * Verifies intent succeeded, then activates subscription.
  */
-async function confirmPayment(paymentId: string): Promise<{ payment: Payment; subscription: Subscription }> {
+async function confirmPayment(
+  paymentId: string,
+): Promise<{ payment: Payment; subscription: Subscription }> {
   const payment = payments.get(paymentId);
   if (!payment) {
     throw new Error('Payment not found');
@@ -197,7 +201,9 @@ async function refundPayment(paymentId: string): Promise<Payment> {
   // Check 30-day refund window
   const createdDate = new Date(payment.createdAt);
   const now_date = new Date();
-  const daysSinceCreation = Math.floor((now_date.getTime() - createdDate.getTime()) / (1000 * 60 * 60 * 24));
+  const daysSinceCreation = Math.floor(
+    (now_date.getTime() - createdDate.getTime()) / (1000 * 60 * 60 * 24),
+  );
 
   if (daysSinceCreation > REFUND_WINDOW_DAYS) {
     throw new Error(`Refunds only available within ${REFUND_WINDOW_DAYS} days of purchase`);
@@ -253,6 +259,37 @@ function cancelSubscription(userId: string): Subscription {
   return sub;
 }
 
+/**
+ * Initiate a payment (non-Stripe, e.g. App Store, Google Play, Stellar).
+ * Returns a pending Payment record.
+ */
+function initiatePayment(input: {
+  userId: string;
+  plan: SubscriptionPlan;
+  provider: PaymentProvider;
+  providerTransactionId?: string;
+}): Payment {
+  const t = now();
+  const payment: Payment = {
+    id: randomUUID(),
+    userId: input.userId,
+    amount:
+      input.plan === 'premium_annual'
+        ? SUBSCRIPTION_PLANS[input.plan].priceAnnual
+        : SUBSCRIPTION_PLANS[input.plan].priceMonthly,
+    currency: 'USD',
+    status: 'pending',
+    provider: input.provider,
+    providerTransactionId: input.providerTransactionId,
+    plan: input.plan,
+    createdAt: t,
+    updatedAt: t,
+  };
+
+  payments.set(payment.id, payment);
+  return payment;
+}
+
 export default {
   getPlans,
   getSubscription,
@@ -261,4 +298,5 @@ export default {
   refundPayment,
   getPaymentHistory,
   cancelSubscription,
+  initiatePayment,
 };

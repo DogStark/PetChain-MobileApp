@@ -10,8 +10,8 @@
  *    emit push notifications via pushService.
  */
 
+import { sendToUser } from './pushService';
 import { query } from '../src/db/index';
-import pushService from './pushService';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -139,16 +139,18 @@ export async function notifyNearbyLostPetOwners(
 
     await Promise.allSettled(
       owners.map(async (owner) => {
-        await pushService.sendPushToUser(owner.ownerId, {
-          title: '🐾 Possible match found nearby!',
-          body: `A "found pet" was reported near your lost pet "${owner.title}". Tap to view.`,
-          data: {
+        await sendToUser(
+          owner.ownerId,
+          'sos_notifications',
+          '🐾 Possible match found nearby!',
+          `A "found pet" was reported near your lost pet "${owner.title}". Tap to view.`,
+          {
             type: 'lost_found_match',
             deepLink: `petchain://lost-found/${encodeURIComponent(foundReportId)}`,
             lostReportId: owner.reportId,
             foundReportId,
           },
-        });
+        );
         notified++;
       }),
     );
@@ -223,9 +225,7 @@ export async function createLostFoundReport(data: {
   location: LostFoundLocation;
   ownerId: string;
 }): Promise<LostFoundReport> {
-  const expiresAt = new Date(
-    Date.now() + GEOFENCE_TTL_DAYS * 24 * 60 * 60 * 1000,
-  ).toISOString();
+  const expiresAt = new Date(Date.now() + GEOFENCE_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   const result = await query(
     `
