@@ -40,6 +40,7 @@ module.exports = tseslint.config(
       'jest.setup.js',
       '.detoxrc.js',
       'e2e/**',
+      '.maestro/**',
       'backend/docs/**',
       'backend/scripts/**',
       'backend/tests/**',

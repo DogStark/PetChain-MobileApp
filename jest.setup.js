@@ -26,5 +26,5 @@ afterAll(() => {
   console.error = originalError;
 });
 
-// Mock timers for consistent testing
-jest.useFakeTimers();
+// Use real timers by default for consistent async behavior in tests
+jest.useRealTimers();

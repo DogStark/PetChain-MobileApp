@@ -7,6 +7,7 @@ module.exports = {
   transformIgnorePatterns: ['/node_modules/(?!(otplib|@otplib|expo-updates|expo-constants)/)'],
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json'],
   moduleNameMapper: {
+    '^test-renderer$': 'react-test-renderer',
     '^react-native$': '<rootDir>/src/__mocks__/react-native.ts',
     '^react-native-keychain$': '<rootDir>/src/__mocks__/react-native-keychain.ts',
     '^react-native-image-picker$': '<rootDir>/src/__mocks__/react-native-image-picker.ts',
@@ -24,6 +25,7 @@ module.exports = {
     '^@sentry/react-native$': '<rootDir>/src/__mocks__/@sentry/react-native.ts',
     '^expo-splash-screen$': '<rootDir>/src/__mocks__/expo-splash-screen.ts',
     '^pg$': '<rootDir>/src/__mocks__/pg.js',
+    '^archiver$': '<rootDir>/src/__mocks__/archiver.js',
     '^@elastic/elasticsearch$': '<rootDir>/src/__mocks__/@elastic/elasticsearch.js',
     '^socket\\.io$': '<rootDir>/src/__mocks__/socket.io.js',
     '^socket\\.io-client$': '<rootDir>/src/__mocks__/socket.io-client.js',
