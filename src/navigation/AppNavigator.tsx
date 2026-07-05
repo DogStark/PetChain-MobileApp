@@ -53,6 +53,7 @@ const TravelCertificateScreen = React.lazy(() => import('../screens/TravelCertif
 const TrustlineScreen = React.lazy(() => import('../screens/TrustlineScreen'));
 const VaccinationScreen = React.lazy(() => import('../screens/VaccinationScreen'));
 const VetMapScreen = React.lazy(() => import('../screens/VetMapScreen'));
+import analyticsService from '../services/analyticsService';
 import { extractDeepLinkParams } from '../services/notificationService';
 import performance from '../utils/performance';
 

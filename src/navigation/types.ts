@@ -46,6 +46,7 @@ export type PetStackParamList = {
   PetListScreen: undefined;
   Adoption: undefined;
   PetDetail: { petId: string };
+  Achievements: undefined;
   AuditHistory: {
     entityType: 'pet' | 'medication' | 'appointment';
     entityId: string;
