@@ -27,7 +27,7 @@ function formatCountdown(seconds: number): string {
 const SessionTimeoutModal: React.FC = () => {
   const [visible, setVisible] = useState(false);
   const [secondsRemaining, setSecondsRemaining] = useState(120);
-  const stayButtonRef = useRef<TouchableOpacity>(null);
+  const stayButtonRef = useRef<any>(null);
 
   const dismiss = useCallback(() => {
     setVisible(false);

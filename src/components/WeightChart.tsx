@@ -17,6 +17,7 @@ import {
   buildWeightChartAccessibilityLabel,
   filterDataByRange,
   formatDateLabel,
+  rangeLabel,
   type DateRangeFilter,
   type WeightDataPoint,
 } from './weightChartAccessibility';

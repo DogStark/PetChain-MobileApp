@@ -1,10 +1,4 @@
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useRef,
-  useState,
-} from 'react';
+import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
 import { Animated, StyleSheet, Text } from 'react-native';
 
 import { useTheme } from './ThemeContext';

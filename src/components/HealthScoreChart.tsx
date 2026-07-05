@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Dimensions } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
 import Svg, {
   Line,
   Circle,
@@ -43,7 +43,10 @@ interface Props {
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CHART_PADDING = { top: 20, right: 16, bottom: 40, left: 48 };
 
-function filterDataByRange(data: HealthScoreDataPoint[], range: DateRangeFilter): HealthScoreDataPoint[] {
+function filterDataByRange(
+  data: HealthScoreDataPoint[],
+  range: DateRangeFilter,
+): HealthScoreDataPoint[] {
   const now = new Date();
   const cutoff = new Date(now);
 
@@ -79,11 +82,11 @@ function scoreColor(score: number): string {
 
 function describeTrend(data: HealthScoreDataPoint[]): string {
   if (data.length < 2) return 'Insufficient data';
-  
+
   const firstScore = data[0].score;
   const lastScore = data[data.length - 1].score;
   const change = lastScore - firstScore;
-  
+
   if (Math.abs(change) < 3) return 'stable';
   if (change > 0) return `improving by ${Math.abs(change)} points`;
   return `declining by ${Math.abs(change)} points`;
@@ -91,7 +94,12 @@ function describeTrend(data: HealthScoreDataPoint[]): string {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-const HealthScoreChart: React.FC<Props> = ({ data, medicalEvents = [], onExport, height = 300 }) => {
+const HealthScoreChart: React.FC<Props> = ({
+  data,
+  medicalEvents = [],
+  onExport,
+  height = 300,
+}) => {
   const colors = useAppTheme();
   const [selectedRange, setSelectedRange] = useState<DateRangeFilter>('90D');
   const [selectedPoint, setSelectedPoint] = useState<number | null>(null);
@@ -276,13 +284,18 @@ const HealthScoreChart: React.FC<Props> = ({ data, medicalEvents = [], onExport,
           {filteredEvents.map((event, idx) => {
             const eventDate = new Date(event.date);
             const eventIndex = filteredData.findIndex(
-              (d) => Math.abs(new Date(d.date).getTime() - eventDate.getTime()) < 24 * 60 * 60 * 1000,
+              (d) =>
+                Math.abs(new Date(d.date).getTime() - eventDate.getTime()) < 24 * 60 * 60 * 1000,
             );
             if (eventIndex === -1) return null;
 
             const x = CHART_PADDING.left + xScale(eventIndex);
             const color =
-              event.type === 'vaccination' ? colors.info : event.type === 'treatment' ? colors.warning : colors.error;
+              event.type === 'vaccination'
+                ? colors.info
+                : event.type === 'treatment'
+                  ? colors.warning
+                  : colors.error;
 
             return (
               <React.Fragment key={`event-${idx}`}>
@@ -330,14 +343,7 @@ const HealthScoreChart: React.FC<Props> = ({ data, medicalEvents = [], onExport,
                   onPress={() => setSelectedPoint(isSelected ? null : idx)}
                 />
                 {isSelected && (
-                  <Circle
-                    cx={x}
-                    cy={y}
-                    r={10}
-                    fill="none"
-                    stroke={pointColor}
-                    strokeWidth="1.5"
-                  />
+                  <Circle cx={x} cy={y} r={10} fill="none" stroke={pointColor} strokeWidth="1.5" />
                 )}
               </React.Fragment>
             );
