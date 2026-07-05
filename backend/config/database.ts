@@ -41,8 +41,7 @@ export async function instrumentedQuery(
   const result = await pool.query(textOrConfig as string, params);
   const durationMs = Date.now() - start;
 
-  const rawText =
-    typeof textOrConfig === 'string' ? textOrConfig : (textOrConfig.text ?? '');
+  const rawText = typeof textOrConfig === 'string' ? textOrConfig : (textOrConfig.text ?? '');
   const sanitised = sanitizeQueryText(rawText);
   const rowCount = result.rowCount ?? 0;
 
@@ -138,4 +137,15 @@ export async function checkDatabaseConnection(): Promise<void> {
   } finally {
     client.release();
   }
+}
+
+/**
+ * Returns connection pool statistics.
+ */
+export function getPoolStats() {
+  return {
+    total: pool.totalCount,
+    idle: pool.idleCount,
+    waiting: pool.waitingCount,
+  };
 }

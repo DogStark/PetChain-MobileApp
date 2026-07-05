@@ -99,7 +99,9 @@ if (require.main === module) {
   if (process.env.ADD_DELAY_ROUTE) {
     app.get('/delay', async (req, res) => {
       console.log('[Test] Delay route started');
-      await new Promise(resolve => setTimeout(resolve, Number(process.env.ADD_DELAY_ROUTE) || 2000));
+      await new Promise((resolve) =>
+        setTimeout(resolve, Number(process.env.ADD_DELAY_ROUTE) || 2000),
+      );
       console.log('[Test] Delay route finished');
       res.json({ ok: true });
     });
@@ -119,7 +121,7 @@ if (require.main === module) {
 
     // 1. Stop accepting new connections & wait for in-flight requests
     console.log(`[Shutdown] Stopping HTTP server...`);
-    
+
     const serverClosePromise = new Promise<void>((resolve, reject) => {
       server.close((err) => {
         if (err) reject(err);

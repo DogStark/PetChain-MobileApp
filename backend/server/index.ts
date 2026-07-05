@@ -3,8 +3,8 @@ import http from 'http';
 import { createApp, setReadiness } from './app';
 import { checkDatabaseConnection, runMigrations } from '../config/database';
 import apiKeyService from '../services/apiKeyService';
-import { startPaymentIdempotencyCleanupJob } from '../services/stellarPaymentService';
 import { startReceiptCheckJob, startScheduledProcessor } from '../services/pushService';
+import { startPaymentIdempotencyCleanupJob } from '../services/stellarPaymentService';
 import logger from '../utils/logger';
 
 const PORT = Number(process.env.PORT) || 3000;

@@ -44,6 +44,7 @@ import usersRouter from './routes/users';
 import vaccinationsRouter from './routes/vaccinations';
 import vetsRouter from './routes/vets';
 import vitalsRouter from './routes/vitals';
+import { getPoolStats } from '../config/database';
 import { attachAudit } from '../middleware/auditLog';
 import { authRateLimiter, dataRateLimiter, publicRateLimiter } from '../middleware/rateLimiter';
 import activityRouter from '../src/routes/activity';
@@ -60,8 +61,6 @@ import notificationsRouter from '../src/routes/notifications';
 import notificationTemplatesRouter from '../src/routes/notificationTemplates';
 import oauthRouter from '../src/routes/oauth';
 import shelterRouter from '../src/routes/shelter';
-
-import { getPoolStats } from '../config/database';
 
 // Readiness probe state — set to false while the process is draining
 let isReady = true;
