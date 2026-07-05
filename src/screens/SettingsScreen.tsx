@@ -18,7 +18,6 @@ import {
 
 import LanguageSelector from '../components/LanguageSelector';
 import type { NotificationPreferences, User } from '../models/User';
-import { isHapticEnabled, setHapticEnabled } from '../utils/hapticFeedback';
 import {
   disableBiometricAuthentication,
   isBiometricAuthenticationAvailable,
@@ -27,15 +26,13 @@ import {
   requestPasswordReset,
   promptForBiometricSetup,
 } from '../services/authService';
-import {
-  getEntitySyncStatuses,
-  type EntitySyncRecord,
-} from '../services/cloudSyncService';
+import { getEntitySyncStatuses, type EntitySyncRecord } from '../services/cloudSyncService';
+import { type SyncEntityType } from '../services/syncService';
 import { getUserProfile, saveUserProfile, updateUserProfile } from '../services/userService';
 import { useAppTheme } from '../theme';
+import { isHapticEnabled, setHapticEnabled } from '../utils/hapticFeedback';
 import { formatAddress } from '../utils/localeValues';
 import { useTheme, type ThemeMode } from '../utils/useTheme';
-import { type SyncEntityType } from '../services/syncService';
 
 // ─── App version info ─────────────────────────────────────────────────────────
 // Pulled from expo-constants at runtime; fallback to package values.
@@ -163,9 +160,10 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
   const [loggingOut, setLoggingOut] = useState(false);
   const [exportRequesting, setExportRequesting] = useState(false);
   const [hapticEnabled, setHapticEnabledState] = useState(true);
-  const [entitySyncStatuses, setEntitySyncStatuses] = useState<
-    Record<SyncEntityType, EntitySyncRecord> | null
-  >(null);
+  const [entitySyncStatuses, setEntitySyncStatuses] = useState<Record<
+    SyncEntityType,
+    EntitySyncRecord
+  > | null>(null);
 
   // ── Load profile on mount ──────────────────────────────────────────────────
 

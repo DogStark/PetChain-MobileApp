@@ -147,7 +147,10 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
     if (!detailItem) return;
     try {
       await cancelEntityNotification(detailItem.id);
-      Alert.alert('Reminder dismissed', `Notifications for ${detailItem.vaccineName} have been cancelled.`);
+      Alert.alert(
+        'Reminder dismissed',
+        `Notifications for ${detailItem.vaccineName} have been cancelled.`,
+      );
       setDetailVisible(false);
     } catch {
       Alert.alert('Error', 'Could not dismiss the reminder.');
@@ -175,7 +178,10 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
       setReminders((prev) =>
         prev.map((r) => (r.id === detailItem.id ? { ...r, dueDate: rescheduleDate } : r)),
       );
-      Alert.alert('Rescheduled', `Reminders for ${detailItem.vaccineName} rescheduled to ${formatLocalDate(rescheduleDate)}.`);
+      Alert.alert(
+        'Rescheduled',
+        `Reminders for ${detailItem.vaccineName} rescheduled to ${formatLocalDate(rescheduleDate)}.`,
+      );
       setDetailVisible(false);
     } catch {
       Alert.alert('Error', 'Could not reschedule the reminder.');
@@ -220,11 +226,7 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
   // ─── Render helpers ───────────────────────────────────────────────────────
   const renderNextDueDate = (item: VaccinationReminder) => {
     if (item.status === 'administered') return null;
-    return (
-      <Text style={styles.nextDue}>
-        Next due: {formatLocalDate(item.dueDate)}
-      </Text>
-    );
+    return <Text style={styles.nextDue}>Next due: {formatLocalDate(item.dueDate)}</Text>;
   };
 
   const renderReminder = ({ item }: { item: VaccinationReminder }) => (
@@ -369,8 +371,7 @@ const VaccinationScreen: React.FC<VaccinationScreenProps> = ({ petId: initialPet
                 <Text style={styles.detailModalRow}>{detailItem.schedule.notes}</Text>
                 {detailItem.reminderDates.length > 0 && (
                   <Text style={styles.detailModalRow}>
-                    Scheduled reminders:{' '}
-                    {detailItem.reminderDates.map(formatLocalDate).join(', ')}
+                    Scheduled reminders: {detailItem.reminderDates.map(formatLocalDate).join(', ')}
                   </Text>
                 )}
 

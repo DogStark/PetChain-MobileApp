@@ -17,10 +17,7 @@ import {
 } from 'react-native';
 
 import type { PetStackParamList } from '../navigation/types';
-import {
-  fetchMatchScore,
-  type AdoptionMatchResult,
-} from '../services/adoptionMatchingService';
+import { fetchMatchScore, type AdoptionMatchResult } from '../services/adoptionMatchingService';
 import shelterIntegrationService, {
   type AdoptShelterPetResult,
   type BrowseShelterPetsFilters,
@@ -188,11 +185,13 @@ const AdoptionScreen: React.FC = () => {
     // Kick off lazy score fetch on first render of this card
     void loadMatchScore(item.id);
     const match = matchScores[item.id];
-    const scoreColor =
-      !match ? '#6b7280'
-        : match.score >= 80 ? '#16a34a'
-        : match.score >= 60 ? '#d97706'
-        : '#dc2626';
+    const scoreColor = !match
+      ? '#6b7280'
+      : match.score >= 80
+        ? '#16a34a'
+        : match.score >= 60
+          ? '#d97706'
+          : '#dc2626';
 
     return (
       <TouchableOpacity style={styles.petCard} onPress={() => setSelectedPet(item)}>
@@ -484,9 +483,7 @@ const AdoptionScreen: React.FC = () => {
               </View>
               <View style={styles.scoreCircleRow}>
                 <View style={styles.scoreCircle}>
-                  <Text style={styles.scoreCircleValue}>
-                    {matchScores[selectedPet.id]!.score}%
-                  </Text>
+                  <Text style={styles.scoreCircleValue}>{matchScores[selectedPet.id]!.score}%</Text>
                   <Text style={styles.scoreCircleLabel}>match</Text>
                 </View>
               </View>
@@ -495,7 +492,9 @@ const AdoptionScreen: React.FC = () => {
                   <View key={c.label} style={styles.criterionRow}>
                     <Text style={styles.criterionCheck}>{c.matched ? '✓' : '✗'}</Text>
                     <View style={styles.criterionBody}>
-                      <Text style={[styles.criterionLabel, !c.matched && styles.criterionLabelFail]}>
+                      <Text
+                        style={[styles.criterionLabel, !c.matched && styles.criterionLabelFail]}
+                      >
                         {c.label}
                       </Text>
                       <Text style={styles.criterionExplanation}>{c.explanation}</Text>

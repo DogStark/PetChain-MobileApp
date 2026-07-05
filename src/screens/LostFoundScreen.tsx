@@ -14,6 +14,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 
+import { EmptyState } from '../components/EmptyState';
 import type { RootStackParamList } from '../navigation/types';
 import geofenceService from '../services/geofenceService';
 import lostFoundService, {
@@ -22,7 +23,6 @@ import lostFoundService, {
 } from '../services/lostFoundService';
 import mapService, { type Location } from '../services/mapService';
 import petService, { type Pet } from '../services/petService';
-import { EmptyState } from '../components/EmptyState';
 import { pickImage } from '../utils/imageUtils';
 
 const DEFAULT_RADIUS_KM = 25;
@@ -217,9 +217,7 @@ const LostFoundScreen: React.FC = () => {
           <Text style={styles.cardTitle}>{item.title}</Text>
           <View style={styles.cardTagRow}>
             <Text style={styles.cardTag}>{item.type === 'lost' ? 'Lost' : 'Found'}</Text>
-            {item.type === 'lost' && (
-              <Text style={styles.geofenceTag}>📍 5 km alert</Text>
-            )}
+            {item.type === 'lost' && <Text style={styles.geofenceTag}>📍 5 km alert</Text>}
           </View>
         </View>
         <Text style={styles.cardMeta}>Species: {item.species}</Text>
@@ -288,7 +286,11 @@ const LostFoundScreen: React.FC = () => {
             <EmptyState
               icon="search"
               title={selectedTab === 'lost' ? 'No Lost Pets Nearby' : 'No Found Pets Nearby'}
-              description={selectedTab === 'lost' ? 'No active lost pet reports in your area.' : 'No active found pet reports in your area.'}
+              description={
+                selectedTab === 'lost'
+                  ? 'No active lost pet reports in your area.'
+                  : 'No active found pet reports in your area.'
+              }
               buttonText="Create a report"
               onPress={() => setCreateModalVisible(true)}
             />

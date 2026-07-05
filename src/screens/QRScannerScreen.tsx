@@ -271,9 +271,7 @@ const QRScannerScreen: React.FC<QRScannerScreenProps> = ({
         accessibilityLabel="Scan a PetChain QR code to access pet records, or enter a code manually"
         accessibilityRole="text"
       >
-        <Text style={styles.footerText}>
-          Scan a PetChain QR code to access pet records
-        </Text>
+        <Text style={styles.footerText}>Scan a PetChain QR code to access pet records</Text>
         <TouchableOpacity
           style={styles.manualEntryButton}
           onPress={onManualEntry}

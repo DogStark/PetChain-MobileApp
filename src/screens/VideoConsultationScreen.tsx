@@ -158,13 +158,13 @@ const VideoConsultationScreen: React.FC<Props> = ({
           }
         });
 
-        const stats: NetworkStats = {
+        const netStats: NetworkStats = {
           packetLossPct: Math.round(packetLoss * 10) / 10,
           rttMs: Math.round(rttMs),
           bitrateKbps: Math.round(bitrateKbps),
         };
-        setNetworkStats(stats);
-        statsHistoryRef.current.push(stats);
+        setNetworkStats(netStats);
+        statsHistoryRef.current.push(netStats);
 
         // Derive quality tier
         let quality: NetworkQuality;
@@ -454,8 +454,7 @@ const VideoConsultationScreen: React.FC<Props> = ({
         statsHistoryRef.current.reduce((s, r) => s + r.packetLossPct, 0) /
         statsHistoryRef.current.length;
       const avgRtt =
-        statsHistoryRef.current.reduce((s, r) => s + r.rttMs, 0) /
-        statsHistoryRef.current.length;
+        statsHistoryRef.current.reduce((s, r) => s + r.rttMs, 0) / statsHistoryRef.current.length;
       logError(new Error('WebRTC post-call stats'), {
         consultationId,
         avgPacketLossPct: Math.round(avgLoss * 10) / 10,
@@ -597,14 +596,22 @@ const VideoConsultationScreen: React.FC<Props> = ({
 
       {/* 4-bar network quality indicator */}
       {(() => {
-        const bars = networkQuality === 'excellent' ? 4
-          : networkQuality === 'good' ? 3
-          : networkQuality === 'poor' ? 2
-          : 1;
-        const barColor = networkQuality === 'excellent' ? '#4caf50'
-          : networkQuality === 'good' ? '#8bc34a'
-          : networkQuality === 'poor' ? '#ff9800'
-          : '#f44336';
+        const bars =
+          networkQuality === 'excellent'
+            ? 4
+            : networkQuality === 'good'
+              ? 3
+              : networkQuality === 'poor'
+                ? 2
+                : 1;
+        const barColor =
+          networkQuality === 'excellent'
+            ? '#4caf50'
+            : networkQuality === 'good'
+              ? '#8bc34a'
+              : networkQuality === 'poor'
+                ? '#ff9800'
+                : '#f44336';
         const label = networkQuality.charAt(0).toUpperCase() + networkQuality.slice(1);
         return (
           <View style={styles.qualityBadge}>
@@ -636,10 +643,7 @@ const VideoConsultationScreen: React.FC<Props> = ({
       {showUnstableBanner && (
         <View style={styles.unstableBanner}>
           <Text style={styles.unstableBannerText}>🚨 Connection unstable</Text>
-          <TouchableOpacity
-            style={styles.audioOnlyBtn}
-            onPress={() => void switchToAudioOnly()}
-          >
+          <TouchableOpacity style={styles.audioOnlyBtn} onPress={() => void switchToAudioOnly()}>
             <Text style={styles.audioOnlyBtnText}>Switch to audio only</Text>
           </TouchableOpacity>
         </View>

@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -16,11 +17,17 @@ import {
   View,
 } from 'react-native';
 
-import { Ionicons } from '@expo/vector-icons';
 import { SkeletonCard } from '../components/SkeletonCard';
-import { getVetReviews, submitVetReview, voteVetReview, type VetReview } from '../services/reviewService';
+import { useTheme } from '../context/ThemeContext';
+import { useToast } from '../context/ToastContext';
 import { useMinimumLoadingTime } from '../hooks/useMinimumLoadingTime';
 import mapService from '../services/mapService';
+import {
+  getVetReviews,
+  submitVetReview,
+  voteVetReview,
+  type VetReview,
+} from '../services/reviewService';
 import {
   getMessages,
   getVetProfile,
@@ -180,6 +187,8 @@ const VetDirectoryScreen: React.FC = () => {
   const [msgInput, setMsgInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  // suppress unused wsRef warning — kept for future WebSocket integration
+  void wsRef;
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -337,16 +346,27 @@ const VetDirectoryScreen: React.FC = () => {
     }
     setSubmittingReview(true);
     try {
-      const newReview = await submitVetReview(selectedVet.id, 'user123', reviewRating, reviewText.trim());
+      const newReview = await submitVetReview(
+        selectedVet.id,
+        'user123',
+        reviewRating,
+        reviewText.trim(),
+      );
       if (newReview.status === 'pending_moderation') {
-        Alert.alert('Under Review', 'Your review contains flagged words and is pending manual moderation.');
+        Alert.alert(
+          'Under Review',
+          'Your review contains flagged words and is pending manual moderation.',
+        );
       } else {
         setReviews([newReview, ...reviews]);
       }
       setReviewText('');
       setReviewRating(5);
     } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to submit review. You must have a verified appointment.');
+      Alert.alert(
+        'Error',
+        e.message || 'Failed to submit review. You must have a verified appointment.',
+      );
     } finally {
       setSubmittingReview(false);
     }
@@ -598,13 +618,17 @@ const VetDirectoryScreen: React.FC = () => {
 
         <View style={styles.reviewsSection}>
           <Text style={styles.reviewsTitle}>Reviews</Text>
-          
+
           <View style={styles.reviewForm}>
             <Text style={styles.label}>Leave a Review</Text>
             <View style={styles.starsRow}>
               {[1, 2, 3, 4, 5].map((star) => (
                 <TouchableOpacity key={star} onPress={() => setReviewRating(star)}>
-                  <Ionicons name={star <= reviewRating ? 'star' : 'star-outline'} size={28} color="#ecc94b" />
+                  <Ionicons
+                    name={star <= reviewRating ? 'star' : 'star-outline'}
+                    size={28}
+                    color="#ecc94b"
+                  />
                 </TouchableOpacity>
               ))}
             </View>
@@ -616,8 +640,14 @@ const VetDirectoryScreen: React.FC = () => {
               maxLength={500}
               multiline
             />
-            <TouchableOpacity style={styles.submitReviewBtn} onPress={handleSubmitReview} disabled={submittingReview}>
-              <Text style={styles.submitReviewText}>{submittingReview ? 'Submitting...' : 'Submit Review'}</Text>
+            <TouchableOpacity
+              style={styles.submitReviewBtn}
+              onPress={handleSubmitReview}
+              disabled={submittingReview}
+            >
+              <Text style={styles.submitReviewText}>
+                {submittingReview ? 'Submitting...' : 'Submit Review'}
+              </Text>
             </TouchableOpacity>
           </View>
 
@@ -626,7 +656,12 @@ const VetDirectoryScreen: React.FC = () => {
               <View style={styles.reviewHeader}>
                 <View style={styles.starsRowSmall}>
                   {[1, 2, 3, 4, 5].map((star) => (
-                    <Ionicons key={star} name={star <= r.rating ? 'star' : 'star-outline'} size={14} color="#ecc94b" />
+                    <Ionicons
+                      key={star}
+                      name={star <= r.rating ? 'star' : 'star-outline'}
+                      size={14}
+                      color="#ecc94b"
+                    />
                   ))}
                 </View>
                 <Text style={styles.reviewDate}>{new Date(r.created_at).toLocaleDateString()}</Text>
@@ -946,15 +981,40 @@ const styles = StyleSheet.create({
   sendBtnText: { color: '#fff', fontWeight: '600' },
 
   // Reviews
-  reviewsSection: { marginTop: 32, borderTopWidth: 1, borderTopColor: '#e2e8f0', paddingTop: 16, paddingBottom: 40 },
+  reviewsSection: {
+    marginTop: 32,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+    paddingTop: 16,
+    paddingBottom: 40,
+  },
   reviewsTitle: { fontSize: 18, fontWeight: '700', color: '#1a202c', marginBottom: 16 },
   reviewForm: { backgroundColor: '#f7fafc', padding: 16, borderRadius: 8, marginBottom: 24 },
   starsRow: { flexDirection: 'row', marginBottom: 12, gap: 4, marginTop: 8 },
   starsRowSmall: { flexDirection: 'row', gap: 2 },
-  reviewInput: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 8, padding: 12, minHeight: 80, textAlignVertical: 'top', marginBottom: 12 },
-  submitReviewBtn: { backgroundColor: '#4299e1', padding: 12, borderRadius: 8, alignItems: 'center' },
+  reviewInput: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 8,
+    padding: 12,
+    minHeight: 80,
+    textAlignVertical: 'top',
+    marginBottom: 12,
+  },
+  submitReviewBtn: {
+    backgroundColor: '#4299e1',
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
   submitReviewText: { color: '#fff', fontWeight: '600' },
-  reviewCard: { padding: 16, borderBottomWidth: 1, borderBottomColor: '#edf2f7', backgroundColor: '#fff' },
+  reviewCard: {
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#edf2f7',
+    backgroundColor: '#fff',
+  },
   reviewHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
   reviewDate: { fontSize: 12, color: '#a0aec0' },
   reviewBody: { fontSize: 14, color: '#4a5568', marginBottom: 12, lineHeight: 20 },
@@ -962,8 +1022,5 @@ const styles = StyleSheet.create({
   voteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   voteText: { fontSize: 13, color: '#718096' },
 });
-
-// suppress unused wsRef warning — kept for future WebSocket integration
-void wsRef;
 
 export default VetDirectoryScreen;

@@ -380,7 +380,7 @@ const ImportRecordScreen: React.FC<Props> = ({ petId, petName, onBack, onImporte
           {/* Vet Information */}
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>Veterinarian Information</Text>
-            
+
             <View>
               {getFieldWarningLabel(extracted?.fieldConfidence?.vetName?.value) && (
                 <Text style={styles.fieldWarning}>
@@ -453,7 +453,7 @@ const ImportRecordScreen: React.FC<Props> = ({ petId, petName, onBack, onImporte
           {/* Visit Dates */}
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>Visit Dates</Text>
-            
+
             <View>
               {getFieldWarningLabel(extracted?.fieldConfidence?.visitDate?.value) && (
                 <Text style={styles.fieldWarning}>
@@ -934,7 +934,7 @@ async function getAuthToken(): Promise<string> {
  */
 function getFieldBorderStyle(confidence?: number) {
   if (!confidence) return {};
-  
+
   if (confidence < 0.4) {
     return {
       borderColor: '#f44336',
@@ -942,7 +942,7 @@ function getFieldBorderStyle(confidence?: number) {
       backgroundColor: '#ffebee',
     };
   }
-  
+
   if (confidence < 0.7) {
     return {
       borderColor: '#ffc107',
@@ -950,7 +950,7 @@ function getFieldBorderStyle(confidence?: number) {
       backgroundColor: '#fff8e1',
     };
   }
-  
+
   return {};
 }
 
@@ -959,26 +959,29 @@ function getFieldBorderStyle(confidence?: number) {
  */
 function getFieldWarningLabel(confidence?: number): string | null {
   if (!confidence) return null;
-  
+
   if (confidence < 0.4) {
     return '⚠ Could not extract — enter manually';
   }
-  
+
   if (confidence < 0.7) {
     return '⚠ Low confidence — please verify';
   }
-  
+
   return null;
 }
 
 /**
  * Count fields that need review
  */
-function countFieldsNeedingReview(record: ExtractedRecord | null): { needsReview: number; total: number } {
+function countFieldsNeedingReview(record: ExtractedRecord | null): {
+  needsReview: number;
+  total: number;
+} {
   if (!record || !record.fieldConfidence) {
     return { needsReview: 0, total: 0 };
   }
-  
+
   const fields = [
     record.fieldConfidence.vetName,
     record.fieldConfidence.vetClinic,
@@ -991,9 +994,9 @@ function countFieldsNeedingReview(record: ExtractedRecord | null): { needsReview
     record.fieldConfidence.prescriptions,
     record.fieldConfidence.vaccinations,
   ].filter(Boolean);
-  
-  const needsReview = fields.filter(f => f && f.value < 0.7).length;
-  
+
+  const needsReview = fields.filter((f) => f && f.value < 0.7).length;
+
   return { needsReview, total: fields.length };
 }
 
@@ -1002,7 +1005,7 @@ function countFieldsNeedingReview(record: ExtractedRecord | null): { needsReview
  */
 function canAcceptAll(record: ExtractedRecord | null): boolean {
   if (!record || !record.fieldConfidence) return false;
-  
+
   const fields = [
     record.fieldConfidence.vetName,
     record.fieldConfidence.vetClinic,
@@ -1015,8 +1018,8 @@ function canAcceptAll(record: ExtractedRecord | null): boolean {
     record.fieldConfidence.prescriptions,
     record.fieldConfidence.vaccinations,
   ].filter(Boolean);
-  
-  return fields.every(f => f && f.value >= 0.7);
+
+  return fields.every((f) => f && f.value >= 0.7);
 }
 
 export default ImportRecordScreen;

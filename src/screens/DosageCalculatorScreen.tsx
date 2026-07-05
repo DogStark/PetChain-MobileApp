@@ -11,6 +11,8 @@ import {
 } from 'react-native';
 
 import type { Species } from '../models/Pet';
+import { requestVetApproval, type DosageApprovalRequest } from '../services/dosageApprovalService';
+import { createNote } from '../services/noteService';
 import {
   DRUG_DATABASE,
   type DosageResult,
@@ -20,8 +22,6 @@ import {
   getDrugsForSpecies,
   lookupDrug,
 } from '../utils/dosageCalculator';
-import { requestVetApproval, type DosageApprovalRequest } from '../services/dosageApprovalService';
-import { createNote } from '../services/noteService';
 
 const SPECIES_OPTIONS: { label: string; value: Species }[] = [
   { label: 'Dog', value: 'dog' },
@@ -90,7 +90,8 @@ const DosageCalculatorScreen: React.FC = () => {
     frequency: 24,
     startDate: new Date().toISOString(),
   });
-  const [pendingApprovalRequest, setPendingApprovalRequest] = useState<DosageApprovalRequest | null>(null);
+  const [pendingApprovalRequest, setPendingApprovalRequest] =
+    useState<DosageApprovalRequest | null>(null);
   const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
 
   const availableDrugs = useMemo(() => getDrugsForSpecies(species), [species]);
@@ -397,11 +398,10 @@ const DosageCalculatorScreen: React.FC = () => {
           <View style={styles.pendingApprovalBadge}>
             <Text style={styles.pendingApprovalTitle}>⏳ Pending Vet Review</Text>
             <Text style={styles.pendingApprovalText}>
-              Request sent to veterinarian on {new Date(pendingApprovalRequest.requestedAt).toLocaleDateString()}
+              Request sent to veterinarian on{' '}
+              {new Date(pendingApprovalRequest.requestedAt).toLocaleDateString()}
             </Text>
-            <Text style={styles.pendingApprovalText}>
-              Request ID: {pendingApprovalRequest.id}
-            </Text>
+            <Text style={styles.pendingApprovalText}>Request ID: {pendingApprovalRequest.id}</Text>
           </View>
         )}
 
@@ -559,7 +559,9 @@ const DosageCalculatorScreen: React.FC = () => {
             keyboardType="numeric"
             placeholder="e.g. 12"
             value={String(approvalData.frequency)}
-            onChangeText={(v) => setApprovalData((prev) => ({ ...prev, frequency: parseInt(v) || 24 }))}
+            onChangeText={(v) =>
+              setApprovalData((prev) => ({ ...prev, frequency: parseInt(v) || 24 }))
+            }
             accessibilityLabel="Medication frequency in hours"
           />
 

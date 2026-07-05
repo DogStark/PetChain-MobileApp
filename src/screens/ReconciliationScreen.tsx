@@ -225,7 +225,9 @@ const ReconciliationScreen: React.FC<Props> = ({ onBack }) => {
             <Text style={styles.resultPet}>{item.petName ?? item.petId}</Text>
           </View>
         </View>
-        <Text style={styles.resultDate}>Visit: {new Date(item.visitDate).toLocaleDateString()}</Text>
+        <Text style={styles.resultDate}>
+          Visit: {new Date(item.visitDate).toLocaleDateString()}
+        </Text>
         {item.reason ? <Text style={styles.resultReason}>{item.reason}</Text> : null}
 
         <View style={styles.diffRow}>

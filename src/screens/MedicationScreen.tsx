@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 
 import { EmptyState } from '../components/EmptyState';
+import MultiStepFormHeader from '../components/MultiStepFormHeader';
 import { SkeletonCard } from '../components/SkeletonCard';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';

@@ -111,10 +111,7 @@ const NearbyVetScreen: React.FC<Props> = ({ onBack, countryCode }) => {
     : allClinics;
 
   const noEmergencyClinicsNearby =
-    emergencyMode &&
-    !loading &&
-    !locationError &&
-    displayClinics.length === 0;
+    emergencyMode && !loading && !locationError && displayClinics.length === 0;
 
   const nationalLine = getNationalEmergencyLine(countryCode);
 
@@ -192,9 +189,7 @@ const NearbyVetScreen: React.FC<Props> = ({ onBack, countryCode }) => {
       <View style={[styles.header, emergencyMode && styles.headerEmergency]}>
         {onBack ? (
           <TouchableOpacity onPress={onBack} accessibilityLabel="Go back" style={styles.backBtn}>
-            <Text style={[styles.backText, emergencyMode && styles.backTextEmergency]}>
-              ‹ Back
-            </Text>
+            <Text style={[styles.backText, emergencyMode && styles.backTextEmergency]}>‹ Back</Text>
           </TouchableOpacity>
         ) : null}
         <Text style={[styles.title, emergencyMode && styles.titleEmergency]}>
@@ -248,9 +243,7 @@ const NearbyVetScreen: React.FC<Props> = ({ onBack, countryCode }) => {
           <Text style={styles.fallbackTitle}>
             No 24h emergency clinics found within {EMERGENCY_RADIUS_KM} km
           </Text>
-          <Text style={styles.fallbackBody}>
-            Call your national animal emergency line:
-          </Text>
+          <Text style={styles.fallbackBody}>Call your national animal emergency line:</Text>
           <TouchableOpacity
             style={styles.fallbackCallBtn}
             onPress={() => handleCallNow(nationalLine.number)}
@@ -266,9 +259,7 @@ const NearbyVetScreen: React.FC<Props> = ({ onBack, countryCode }) => {
           keyExtractor={(item) => item.id}
           renderItem={renderClinic}
           contentContainerStyle={styles.list}
-          ListEmptyComponent={
-            <Text style={styles.empty}>No vet clinics found nearby.</Text>
-          }
+          ListEmptyComponent={<Text style={styles.empty}>No vet clinics found nearby.</Text>}
           removeClippedSubviews
           maxToRenderPerBatch={10}
           windowSize={5}

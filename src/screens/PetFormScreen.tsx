@@ -41,6 +41,12 @@ const SPECIAL_BREEDS: BreedInsight[] = [
 
 const DEBOUNCE_MS = 300;
 
+const FORM_STEPS = [
+  { title: 'Core details' },
+  { title: 'Size & age' },
+  { title: 'Medical details' },
+];
+
 interface Props {
   /** Pass a pet to edit; omit for add mode. */
   pet?: Pet;
@@ -135,9 +141,7 @@ const PetFormScreen: React.FC<Props> = ({ pet, ownerId = '', onBack, onSaved }) 
   // If editing a pet with a known breed, pre-select it
   useEffect(() => {
     if (pet?.breed && allBreeds.length > 0) {
-      const found = allBreeds.find(
-        (b) => b.name.toLowerCase() === (pet.breed ?? '').toLowerCase(),
-      );
+      const found = allBreeds.find((b) => b.name.toLowerCase() === (pet.breed ?? '').toLowerCase());
       if (found) setSelectedBreed(found);
     }
   }, [pet, allBreeds]);
@@ -166,9 +170,7 @@ const PetFormScreen: React.FC<Props> = ({ pet, ownerId = '', onBack, onSaved }) 
         .filter((b) => b.name.toLowerCase().includes(normalized))
         .slice(0, 6);
       // Always append the special-case options so the user can pick them
-      const specials = SPECIAL_BREEDS.filter((s) =>
-        s.name.toLowerCase().includes(normalized),
-      );
+      const specials = SPECIAL_BREEDS.filter((s) => s.name.toLowerCase().includes(normalized));
       setBreedSuggestions([...matched, ...specials]);
     }, DEBOUNCE_MS);
   };
@@ -365,13 +367,13 @@ const PetFormScreen: React.FC<Props> = ({ pet, ownerId = '', onBack, onSaved }) 
                 <View style={styles.suggestionsRow}>
                   {breedSuggestions.map((suggestion) => (
                     <TouchableOpacity
-                      key={suggestion}
-                      onPress={() => selectBreedSuggestion(suggestion)}
+                      key={suggestion.id}
+                      onPress={() => selectBreed(suggestion)}
                       style={styles.suggestionChip}
                       accessibilityRole="button"
-                      accessibilityLabel={`Select ${suggestion}`}
+                      accessibilityLabel={`Select ${suggestion.name}`}
                     >
-                      <Text style={styles.suggestionText}>{suggestion}</Text>
+                      <Text style={styles.suggestionText}>{suggestion.name}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>
@@ -462,7 +464,7 @@ const PetFormScreen: React.FC<Props> = ({ pet, ownerId = '', onBack, onSaved }) 
             </TouchableOpacity>
           )}
           <Text style={styles.photoHint}>{photoUri ? 'Change photo' : 'Add photo'}</Text>
-        </TouchableOpacity>
+        </View>
 
         {/* Fields */}
         <View style={styles.formCard}>
@@ -504,7 +506,10 @@ const PetFormScreen: React.FC<Props> = ({ pet, ownerId = '', onBack, onSaved }) 
 
             {/* Selected breed preview — shown after a breed is chosen */}
             {selectedBreed && (
-              <View style={styles.selectedBreedRow} accessibilityLabel={`Selected breed: ${selectedBreed.name}`}>
+              <View
+                style={styles.selectedBreedRow}
+                accessibilityLabel={`Selected breed: ${selectedBreed.name}`}
+              >
                 {getBreedImageSource(selectedBreed) ? (
                   <Image
                     source={getBreedImageSource(selectedBreed)!}
@@ -648,6 +653,26 @@ const styles = StyleSheet.create({
   saveBtnDisabled: { opacity: 0.5 },
   saveBtnText: { color: '#fff', fontWeight: '600' },
   content: { padding: 16 },
+  stepActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 16,
+    marginBottom: 16,
+  },
+  secondaryBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ccc',
+    backgroundColor: '#fff',
+  },
+  secondaryBtnText: {
+    color: '#666',
+    fontWeight: '600',
+    fontSize: 14,
+  },
   photoSection: { alignItems: 'center', marginBottom: 20 },
   photo: { width: 100, height: 100, borderRadius: 50, marginBottom: 8 },
   photoPlaceholder: { backgroundColor: '#e8f5e9', justifyContent: 'center', alignItems: 'center' },

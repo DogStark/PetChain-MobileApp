@@ -46,7 +46,7 @@ const GlobalSearchScreen: React.FC<Props> = ({ onSelectResult, onQuickAction }) 
   const [recents, setRecents] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { isOnline } = useOfflineStatus();
 
   // Load recents on mount
@@ -54,32 +54,29 @@ const GlobalSearchScreen: React.FC<Props> = ({ onSelectResult, onQuickAction }) 
     getRecentSearches().then(setRecents);
   }, []);
 
-  const performSearch = useCallback(
-    (searchText: string, searchCategory: SearchCategory) => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+  const performSearch = useCallback((searchText: string, searchCategory: SearchCategory) => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
 
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
-      setLoading(true);
-      globalSearch(searchText, searchCategory, undefined, controller.signal)
-        .then((res) => {
-          if (!controller.signal.aborted) {
-            setResults(res.items);
-            setFromCache(res.fromCache);
-            setLoading(false);
-          }
-        })
-        .catch((err) => {
-          if (!controller.signal.aborted) {
-            setLoading(false);
-          }
-        });
-    },
-    []
-  );
+    setLoading(true);
+    globalSearch(searchText, searchCategory, undefined, controller.signal)
+      .then((res) => {
+        if (!controller.signal.aborted) {
+          setResults(res.items);
+          setFromCache(res.fromCache);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
+      });
+  }, []);
 
   const handleQueryChange = useCallback(
     (text: string) => {

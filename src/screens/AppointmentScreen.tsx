@@ -14,10 +14,12 @@ import {
   View,
   Alert,
 } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
+// @ts-expect-error: Swipeable subpath does not declare types in react-native-gesture-handler
+import Swipeable from 'react-native-gesture-handler/Swipeable';
 import { v4 as uuid } from 'uuid';
 
 import { EmptyState } from '../components/EmptyState';
+import MultiStepFormHeader from '../components/MultiStepFormHeader';
 import { SkeletonCard } from '../components/SkeletonCard';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';

@@ -11,6 +11,8 @@ import {
   View,
 } from 'react-native';
 
+import { EmptyState } from '../components/EmptyState';
+import api from '../services/api';
 import {
   type DocumentCategory,
   type DocumentMeta,
@@ -24,9 +26,7 @@ import {
   saveDocumentLocally,
   uploadDocument,
 } from '../services/documentService';
-import { EmptyState } from '../components/EmptyState';
 import { useSecureScreen } from '../utils/secureScreen';
-import api from '../services/api';
 
 const CATEGORIES: { label: string; value: DocumentCategory }[] = [
   { label: 'Vaccination', value: 'vaccination' },
@@ -89,9 +89,7 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
     setReportJobStatus('queued');
     setReportJobId(null);
     try {
-      const res = await api.post<{ jobId: string }>(
-        `/reports/pets/${petId.trim()}/health`,
-      );
+      const res = await api.post<{ jobId: string }>(`/reports/pets/${petId.trim()}/health`);
       const jobId = res.data?.jobId;
       if (!jobId) throw new Error('No jobId returned');
       setReportJobId(jobId);

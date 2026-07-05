@@ -43,7 +43,9 @@ const STATUS_ORDER: ClaimStatus[] = ['submitted', 'under_review', 'approved'];
 /** Claims have no per-step timestamps, so derive a best-effort timeline from
  * the claim's submittedAt/updatedAt and current status. */
 function buildTimeline(claim: InsuranceClaim) {
-  const currentIndex = STATUS_ORDER.indexOf(claim.status === 'denied' ? 'under_review' : claim.status);
+  const currentIndex = STATUS_ORDER.indexOf(
+    claim.status === 'denied' ? 'under_review' : claim.status,
+  );
   return TIMELINE_STEPS.map((step, i) => {
     const stepIndex = STATUS_ORDER.indexOf(step.status);
     const reached = claim.status === 'denied' ? stepIndex <= 1 : stepIndex <= currentIndex;
@@ -64,7 +66,9 @@ function expectedCompletionDate(claim: InsuranceClaim): string {
 }
 
 function buildAppealMailto(claim: InsuranceClaim): string {
-  const subject = encodeURIComponent(`Appeal for denied claim #${claim.id.slice(0, 8).toUpperCase()}`);
+  const subject = encodeURIComponent(
+    `Appeal for denied claim #${claim.id.slice(0, 8).toUpperCase()}`,
+  );
   const body = encodeURIComponent(
     `Hello,\n\nI would like to appeal the denial of my insurance claim #${claim.id
       .slice(0, 8)
@@ -285,10 +289,7 @@ const InsuranceScreen: React.FC = () => {
                     </View>
                     <View style={styles.timelineTextCol}>
                       <Text
-                        style={[
-                          styles.timelineLabel,
-                          !step.reached && styles.timelineLabelPending,
-                        ]}
+                        style={[styles.timelineLabel, !step.reached && styles.timelineLabelPending]}
                       >
                         {step.label}
                       </Text>

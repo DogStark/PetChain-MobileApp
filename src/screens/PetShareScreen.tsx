@@ -396,6 +396,12 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginTop: 8,
   },
+  qrShareBtnText: {
+    color: '#4CAF50',
+    fontWeight: '700',
+    fontSize: 14,
+    textAlign: 'center',
+  },
   qrOptionsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',

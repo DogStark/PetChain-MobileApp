@@ -13,13 +13,13 @@ import {
 } from 'react-native';
 
 import MedicalRecordAttachments from '../components/MedicalRecordAttachments';
+import { requireBiometric, verifyPin } from '../services/authService';
 import {
   getMedicalRecords,
   searchMedicalRecords,
   type MedicalRecord,
   type RecordFilters,
 } from '../services/medicalRecordService';
-import { requireBiometric, verifyPin } from '../services/authService';
 import sessionMonitoringService from '../services/sessionMonitoringService';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -357,7 +357,7 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
             }}
             keyboardType="number-pad"
             secureTextEntry
-            maxLength= {10}
+            maxLength={10}
             accessibilityLabel="PIN input"
             onSubmitEditing={handlePinSubmit}
           />

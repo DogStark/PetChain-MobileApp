@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import { EmptyState } from '../components/EmptyState';
 import { HeaderOfflineStatus, useOfflineStatus } from '../components/OfflineIndicator';
 import { OptimizedImage } from '../components/OptimizedImage';
 import PaywallModal from '../components/PaywallModal';
 import PetAggregateView from '../components/PetAggregateView';
 import PetSelectorBar from '../components/PetSelectorBar';
-import { EmptyState } from '../components/EmptyState';
 import { RetryError } from '../components/RetryError';
 import { SkeletonCard } from '../components/SkeletonCard';
 import SOSButton from '../components/SOSButton';
