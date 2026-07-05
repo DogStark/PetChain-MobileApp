@@ -213,16 +213,22 @@ router.get('/moderation/keywords', async (_req: Request, res: Response) => {
 });
 
 router.post('/moderation/keywords', async (req: Request, res: Response) => {
-  const { word, type, addedBy } = req.body as { word?: string; type?: KeywordType; addedBy?: string };
+  const { word, type, addedBy } = req.body as {
+    word?: string;
+    type?: KeywordType;
+    addedBy?: string;
+  };
   if (!word?.trim() || !type || !['block', 'whitelist'].includes(type)) {
-    return res.status(400).json({ success: false, message: 'word and type (block|whitelist) are required' });
+    return res
+      .status(400)
+      .json({ success: false, message: 'word and type (block|whitelist) are required' });
   }
   const keyword = await addKeyword(word.trim(), type, addedBy);
   return res.status(201).json({ success: true, keyword });
 });
 
 router.delete('/moderation/keywords/:word', async (req: Request, res: Response) => {
-  const removed = await removeKeyword(decodeURIComponent(req.params.word));
+  const removed = await removeKeyword(decodeURIComponent(req.params.word as string));
   if (!removed) {
     return res.status(404).json({ success: false, message: 'Keyword not found' });
   }

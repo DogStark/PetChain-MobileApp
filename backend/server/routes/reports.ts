@@ -9,14 +9,15 @@
  * Job status stored in Redis with 1-hour TTL.
  * #595
  */
-import express from 'express';
 import { randomUUID } from 'crypto';
 
+import express from 'express';
+
+import { getRedisClient } from '../../config/redis';
 import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
 import { generateHealthReport } from '../../services/reportService';
 import { sendError } from '../response';
 import { store } from '../store';
-import { getRedisClient } from '../../config/redis';
 
 const router = express.Router();
 router.use(authenticateJWT);

@@ -15,7 +15,7 @@ import {
   getLostFoundReports,
   findFoundReportsNear,
   notifyNearbyLostPetOwners,
-} from '../services/lostFoundService';
+} from '../../services/lostFoundService';
 
 const router = Router();
 
@@ -100,7 +100,7 @@ router.get('/reports/:id/matches', async (req: Request, res: Response) => {
     const matches = await findFoundReportsNear(
       report.location,
       radiusKm ? Number(radiusKm) : 30,
-      id,
+      id as string,
     );
 
     return res.json({ success: true, data: { data: matches, total: matches.length } });
@@ -135,11 +135,10 @@ router.post('/notify-owners', async (req: Request, res: Response) => {
     const { reports } = await getLostFoundReports({ type: 'found' });
     const found = reports.find((r) => r.id === foundReportId);
 
-    const notified = await notifyNearbyLostPetOwners(
-      foundReportId,
-      found?.title ?? 'Found pet',
-      { latitude, longitude },
-    );
+    const notified = await notifyNearbyLostPetOwners(foundReportId, found?.title ?? 'Found pet', {
+      latitude,
+      longitude,
+    });
 
     return res.json({ success: true, data: { notified } });
   } catch (err) {

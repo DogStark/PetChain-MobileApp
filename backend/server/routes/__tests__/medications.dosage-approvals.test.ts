@@ -15,13 +15,15 @@ jest.mock('../../../middleware/auth', () => ({
     };
     next();
   },
-  authorizeRoles: (...roles: any[]) => (req: any, res: any, next: any) => {
-    if (roles.includes(req.user.role)) {
-      next();
-    } else {
-      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Insufficient permissions' } });
-    }
-  },
+  authorizeRoles:
+    (...roles: any[]) =>
+    (req: any, res: any, next: any) => {
+      if (roles.includes(req.user.role)) {
+        next();
+      } else {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Insufficient permissions' } });
+      }
+    },
 }));
 
 // Mock audit logger

@@ -14,10 +14,7 @@ import {
   listSupportRequests,
   updateSupportRequest,
 } from '../../server/supportRequests';
-import {
-  getAllSyncResults,
-  getSyncResults,
-} from '../../services/shelterIntegrationService';
+import { getAllSyncResults, getSyncResults } from '../../services/shelterIntegrationService';
 
 const router = Router();
 
@@ -446,7 +443,8 @@ function getServerMetrics(req: AuthenticatedRequest) {
  * Requires admin authentication.
  */
 router.get('/slow-queries', authenticate, requireAdmin, (_req, res: Response) => {
-  const { getSlowQueries } = require('../../middleware/performanceLogger') as typeof import('../../middleware/performanceLogger');
+  const { getSlowQueries } =
+    require('../../middleware/performanceLogger') as typeof import('../../middleware/performanceLogger');
   return res.json({ queries: getSlowQueries() });
 });
 

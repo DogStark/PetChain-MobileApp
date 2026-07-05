@@ -4,8 +4,8 @@ import express from 'express';
 
 import { authenticateJWT, authorizeRoles, type AuthenticatedRequest } from '../../middleware/auth';
 import { UserRole } from '../../models/UserRole';
-import { sendNotification } from '../../services/notificationTemplateService';
 import { ok, sendError } from '../../server/response';
+import { sendNotification } from '../../services/notificationTemplateService';
 import {
   ALL_TOPICS,
   type NotificationTopic,

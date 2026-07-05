@@ -312,9 +312,9 @@ router.post('/pets/:petId/share', (req: AuthenticatedRequest, res) => {
  * GET /pets/:petId/access
  * List who has access to a pet
  */
-router.get('/pets/:petId/access', (req: AuthenticatedRequest, res) => {
+router.get('/pets/:petId/access', async (req: AuthenticatedRequest, res) => {
   // Check if user has access to pet
-  const access = familySharingService.checkPetAccess(req.params.petId, req.user!.id);
+  const access = await familySharingService.checkPetAccess(req.params.petId, req.user!.id);
   if (!access.hasAccess) {
     return sendError(res, 403, 'FORBIDDEN', 'You do not have access to this pet');
   }
@@ -408,8 +408,8 @@ router.get('/:id/activity', (req: AuthenticatedRequest, res) => {
  * GET /pets/:petId/activity
  * Get pet activity feed
  */
-router.get('/pets/:petId/activity', (req: AuthenticatedRequest, res) => {
-  const access = familySharingService.checkPetAccess(req.params.petId, req.user!.id);
+router.get('/pets/:petId/activity', async (req: AuthenticatedRequest, res) => {
+  const access = await familySharingService.checkPetAccess(req.params.petId, req.user!.id);
   if (!access.hasAccess) {
     return sendError(res, 403, 'FORBIDDEN', 'You do not have access to this pet');
   }
@@ -459,8 +459,8 @@ router.post('/pets/:petId/transfer-ownership', (req: AuthenticatedRequest, res) 
  * GET /pets/:petId/ownership-history
  * Get pet ownership transfer history
  */
-router.get('/pets/:petId/ownership-history', (req: AuthenticatedRequest, res) => {
-  const access = familySharingService.checkPetAccess(req.params.petId, req.user!.id);
+router.get('/pets/:petId/ownership-history', async (req: AuthenticatedRequest, res) => {
+  const access = await familySharingService.checkPetAccess(req.params.petId, req.user!.id);
   if (!access.hasAccess) {
     return sendError(res, 403, 'FORBIDDEN', 'You do not have access to this pet');
   }

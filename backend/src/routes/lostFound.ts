@@ -3,7 +3,6 @@ import { randomUUID } from 'crypto';
 import express from 'express';
 
 import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
-import { sendNotification } from '../../services/notificationTemplateService';
 import { ok, sendError } from '../../server/response';
 import {
   findNearbyMatches,
@@ -11,6 +10,7 @@ import {
   type LostFoundLocation,
   type LostFoundReport,
 } from '../../services/matchingService';
+import { sendNotification } from '../../services/notificationTemplateService';
 
 const router = express.Router();
 router.use(authenticateJWT);

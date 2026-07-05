@@ -518,12 +518,7 @@ router.post('/check-conflicts', (req: AuthenticatedRequest, res) => {
   };
 
   if (!body.petId?.trim() || !body.vetId?.trim() || !body.date?.trim() || !body.time?.trim()) {
-    return sendError(
-      res,
-      400,
-      'VALIDATION_ERROR',
-      'petId, vetId, date, and time are required',
-    );
+    return sendError(res, 400, 'VALIDATION_ERROR', 'petId, vetId, date, and time are required');
   }
 
   const petId = body.petId.trim();
@@ -593,21 +588,11 @@ router.post('/check-conflicts', (req: AuthenticatedRequest, res) => {
   });
 });
 
-function timeRangesOverlap(
-  start1: Date,
-  end1: Date,
-  start2: Date,
-  end2: Date,
-): boolean {
+function timeRangesOverlap(start1: Date, end1: Date, start2: Date, end2: Date): boolean {
   return start1 < end2 && end1 > start2;
 }
 
-function minGapBetweenRanges(
-  start1: Date,
-  end1: Date,
-  start2: Date,
-  end2: Date,
-): number {
+function minGapBetweenRanges(start1: Date, end1: Date, start2: Date, end2: Date): number {
   if (end1 <= start2) return Math.max(0, start2.getTime() - end1.getTime());
   if (end2 <= start1) return Math.max(0, start1.getTime() - end2.getTime());
   return 0; // Ranges overlap

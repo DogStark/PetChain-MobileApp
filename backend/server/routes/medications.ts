@@ -218,85 +218,91 @@ router.get('/dosage-approvals/:id', (req: AuthenticatedRequest, res) => {
   }
 
   // Owners can view their own requests, vets can view requests assigned to them
-  if (
-    req.user!.role === UserRole.OWNER &&
-    request.requestedBy !== req.user!.id
-  ) {
+  if (req.user!.role === UserRole.OWNER && request.requestedBy !== req.user!.id) {
     return sendError(res, 403, 'FORBIDDEN', 'Not authorized to view this request');
   }
 
-  if (
-    req.user!.role === UserRole.VET &&
-    request.vetId !== req.user!.id
-  ) {
+  if (req.user!.role === UserRole.VET && request.vetId !== req.user!.id) {
     return sendError(res, 403, 'FORBIDDEN', 'Not authorized to view this request');
   }
 
   return res.json(ok(request));
 });
 
-router.post('/dosage-approvals/:id/approve', authorizeRoles(UserRole.VET, UserRole.ADMIN), (req, res) => {
-  const request = approvalRequests.get(req.params.id);
-  if (!request) {
-    return sendError(res, 404, 'NOT_FOUND', 'Approval request not found');
-  }
+router.post(
+  '/dosage-approvals/:id/approve',
+  authorizeRoles(UserRole.VET, UserRole.ADMIN),
+  (req, res) => {
+    const request = approvalRequests.get(req.params.id);
+    if (!request) {
+      return sendError(res, 404, 'NOT_FOUND', 'Approval request not found');
+    }
 
-  if (request.status !== 'pending') {
-    return sendError(res, 400, 'INVALID_STATE', 'Request has already been processed');
-  }
+    if (request.status !== 'pending') {
+      return sendError(res, 400, 'INVALID_STATE', 'Request has already been processed');
+    }
 
-  const body = req.body as { approvedDose?: string; approvedDoseUnit?: string; vetNotes?: string };
+    const body = req.body as {
+      approvedDose?: string;
+      approvedDoseUnit?: string;
+      vetNotes?: string;
+    };
 
-  const before = { ...request };
-  request.status = body.approvedDose ? 'modified' : 'approved';
-  request.approvedDose = body.approvedDose;
-  request.approvedDoseUnit = body.approvedDoseUnit;
-  request.vetNotes = body.vetNotes;
-  request.approvedAt = new Date().toISOString();
+    const before = { ...request };
+    request.status = body.approvedDose ? 'modified' : 'approved';
+    request.approvedDose = body.approvedDose;
+    request.approvedDoseUnit = body.approvedDoseUnit;
+    request.vetNotes = body.vetNotes;
+    request.approvedAt = new Date().toISOString();
 
-  approvalRequests.set(request.id, request);
+    approvalRequests.set(request.id, request);
 
-  void logAuditTrail({
-    req: req as AuthenticatedRequest,
-    entityType: 'dosage_approval',
-    entityId: request.id,
-    action: 'APPROVE',
-    before,
-    after: request,
-  });
+    void logAuditTrail({
+      req: req as AuthenticatedRequest,
+      entityType: 'dosage_approval',
+      entityId: request.id,
+      action: 'UPDATE',
+      before,
+      after: request,
+    });
 
-  return res.json(ok(request, 'Dosage approved'));
-});
+    return res.json(ok(request, 'Dosage approved'));
+  },
+);
 
-router.post('/dosage-approvals/:id/reject', authorizeRoles(UserRole.VET, UserRole.ADMIN), (req, res) => {
-  const request = approvalRequests.get(req.params.id);
-  if (!request) {
-    return sendError(res, 404, 'NOT_FOUND', 'Approval request not found');
-  }
+router.post(
+  '/dosage-approvals/:id/reject',
+  authorizeRoles(UserRole.VET, UserRole.ADMIN),
+  (req, res) => {
+    const request = approvalRequests.get(req.params.id);
+    if (!request) {
+      return sendError(res, 404, 'NOT_FOUND', 'Approval request not found');
+    }
 
-  if (request.status !== 'pending') {
-    return sendError(res, 400, 'INVALID_STATE', 'Request has already been processed');
-  }
+    if (request.status !== 'pending') {
+      return sendError(res, 400, 'INVALID_STATE', 'Request has already been processed');
+    }
 
-  const body = req.body as { vetNotes?: string };
+    const body = req.body as { vetNotes?: string };
 
-  const before = { ...request };
-  request.status = 'rejected';
-  request.vetNotes = body.vetNotes;
-  request.approvedAt = new Date().toISOString();
+    const before = { ...request };
+    request.status = 'rejected';
+    request.vetNotes = body.vetNotes;
+    request.approvedAt = new Date().toISOString();
 
-  approvalRequests.set(request.id, request);
+    approvalRequests.set(request.id, request);
 
-  void logAuditTrail({
-    req: req as AuthenticatedRequest,
-    entityType: 'dosage_approval',
-    entityId: request.id,
-    action: 'REJECT',
-    before,
-    after: request,
-  });
+    void logAuditTrail({
+      req: req as AuthenticatedRequest,
+      entityType: 'dosage_approval',
+      entityId: request.id,
+      action: 'UPDATE',
+      before,
+      after: request,
+    });
 
-  return res.json(ok(request, 'Dosage rejected'));
-});
+    return res.json(ok(request, 'Dosage rejected'));
+  },
+);
 
 export default router;

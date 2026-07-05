@@ -320,7 +320,8 @@ router.post('/attachments/signed-url', (req: AuthenticatedRequest, res) => {
   if (key.includes('..') || key.startsWith('/')) {
     return sendError(res, 400, 'BAD_REQUEST', 'Invalid key');
   }
-  const { reissueMedicalRecordSignedUrl } = require('../../services/cdnService') as typeof import('../../services/cdnService');
+  const { reissueMedicalRecordSignedUrl } =
+    require('../../services/cdnService') as typeof import('../../services/cdnService');
   const signedUrl = reissueMedicalRecordSignedUrl(key.trim());
   return res.json(ok({ signedUrl }));
 });
