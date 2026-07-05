@@ -1,6 +1,6 @@
 import wearableService, { detectAnomaliesForPet } from '../../services/wearableService';
 
-jest.mock('../../src/db', () => ({
+jest.mock('../../db', () => ({
   query: jest.fn(),
 }));
 
@@ -9,7 +9,7 @@ jest.mock('../../../src/services/notificationService', () => ({
 }));
 
 const { sendAlertNotification } = require('../../../src/services/notificationService');
-const { query } = require('../../src/db');
+const { query } = require('../../db');
 
 describe('wearableService', () => {
   beforeEach(() => {
