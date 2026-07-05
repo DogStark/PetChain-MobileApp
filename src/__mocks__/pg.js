@@ -6,4 +6,11 @@ const Pool = jest.fn().mockImplementation(() => ({
   on: jest.fn(),
 }));
 
-module.exports = { Pool };
+const Client = jest.fn().mockImplementation(() => ({
+  connect: jest.fn().mockResolvedValue(undefined),
+  query: jest.fn().mockResolvedValue({ rows: [] }),
+  end: jest.fn().mockResolvedValue(undefined),
+  on: jest.fn(),
+}));
+
+module.exports = { Pool, Client };
