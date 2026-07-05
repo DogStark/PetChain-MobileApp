@@ -25,25 +25,28 @@ export class EncryptionService {
   async encryptRecord(payload: unknown): Promise<EncryptedPayload> {
     const keyVersion = await this.getCurrentKeyVersion();
     const key = await this.getKey(keyVersion);
+    const parsedKey = CryptoJS.enc.Hex.parse(key);
     const iv = CryptoJS.lib.WordArray.random(12).toString(CryptoJS.enc.Hex);
-    const encrypted = CryptoJS.AES.encrypt(JSON.stringify(payload), key, {
+    const encrypted = CryptoJS.AES.encrypt(JSON.stringify(payload), parsedKey, {
       iv: CryptoJS.enc.Hex.parse(iv),
     });
     const ciphertext = encrypted.ciphertext.toString(CryptoJS.enc.Base64);
-    const tag = CryptoJS.HmacSHA256(`${iv}:${ciphertext}`, key).toString(CryptoJS.enc.Hex);
+    const tag = CryptoJS.HmacSHA256(`${iv}:${ciphertext}`, parsedKey).toString(CryptoJS.enc.Hex);
     return { ciphertext, iv, tag, keyVersion, algorithm: 'AES-256-GCM' };
   }
 
   async decryptRecord<T = unknown>(payload: EncryptedPayload): Promise<T> {
     const key = await this.getKey(payload.keyVersion);
-    const expectedTag = CryptoJS.HmacSHA256(`${payload.iv}:${payload.ciphertext}`, key).toString(
-      CryptoJS.enc.Hex,
-    );
+    const parsedKey = CryptoJS.enc.Hex.parse(key);
+    const expectedTag = CryptoJS.HmacSHA256(
+      `${payload.iv}:${payload.ciphertext}`,
+      parsedKey,
+    ).toString(CryptoJS.enc.Hex);
     if (expectedTag !== payload.tag) throw new Error('Encrypted record authentication failed');
 
     const decrypted = CryptoJS.AES.decrypt(
       { ciphertext: CryptoJS.enc.Base64.parse(payload.ciphertext) } as CryptoJS.lib.CipherParams,
-      key,
+      parsedKey,
       { iv: CryptoJS.enc.Hex.parse(payload.iv) },
     ).toString(CryptoJS.enc.Utf8);
 

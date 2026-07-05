@@ -2,8 +2,8 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import axios, { type AxiosResponse } from 'axios';
 import CryptoJS from 'crypto-js';
 
-import { CircuitBreaker, retryWithBackoff } from '../utils/circuitBreaker';
 import type { MedicalRecord } from './medicalRecordService';
+import { CircuitBreaker, retryWithBackoff } from '../utils/circuitBreaker';
 
 // ==============================
 // TYPES (UNCHANGED)
@@ -114,8 +114,8 @@ export class BlockchainServiceError extends Error {
 // ==============================
 
 const handleBlockchainError = (error: unknown): never => {
-  if (axios.isAxiosError(error)) {
-    const status = error.response?.status;
+  if (axios.isAxiosError(error) || (error && typeof error === 'object' && 'response' in error)) {
+    const status = (error as any).response?.status;
     const message = error.response?.data?.message || error.message;
 
     throw new BlockchainServiceError(`Blockchain API error (${status}): ${message}`, 'API_ERROR');
@@ -370,9 +370,7 @@ export const getStellarNetworkInfo = async (): Promise<{
           network: STELLAR_NETWORK,
           horizonUrl: HORIZON_URL,
           passphrase:
-            STELLAR_NETWORK === 'PUBLIC'
-              ? StellarSdk.Networks.PUBLIC
-              : StellarSdk.Networks.TESTNET,
+            STELLAR_NETWORK === 'PUBLIC' ? StellarSdk.Networks.PUBLIC : StellarSdk.Networks.TESTNET,
           currentLedger: latestLedger.sequence,
           latestLedger: latestLedger.sequence,
         };
@@ -428,7 +426,10 @@ export const getStellarAccountDetails = async (
       }
     }
 
-    if (axios.isAxiosError(error) && error.response?.status === 404) {
+    if (
+      (axios.isAxiosError(error) || (error && typeof error === 'object' && 'response' in error)) &&
+      (error as any).response?.status === 404
+    ) {
       throw new BlockchainServiceError('Account not found on Stellar network', 'ACCOUNT_NOT_FOUND');
     }
     handleBlockchainError(error);
@@ -454,7 +455,7 @@ export const fundTestnetAccount = async (publicKey: string): Promise<boolean> =>
 
 /**
  * Submit a transaction to Stellar network with circuit breaker and exponential backoff retry.
- * 
+ *
  * - Wraps calls in circuit breaker (3 failures → open for 8s)
  * - Retries on 503/504/429 with exponential backoff + jitter (max 3 attempts)
  * - Returns typed errors so callers can distinguish network vs. logic failures
@@ -463,21 +464,21 @@ export const submitStellarTransaction = async (
   transaction: StellarSdk.Transaction,
 ): Promise<StellarSdk.Horizon.HorizonApi.SubmitTransactionResponse> => {
   try {
-    // Wrap in circuit breaker to prevent hammering degraded endpoint
-    return await horizonCircuitBreaker.execute(async () => {
-      // Retry with exponential backoff for transient failures (503, 504, 429)
-      return await retryWithBackoff(
-        async () => {
+    // Retry with exponential backoff for transient failures (503, 504, 429)
+    return await retryWithBackoff(
+      async () => {
+        // Wrap in circuit breaker to prevent hammering degraded endpoint
+        return await horizonCircuitBreaker.execute(async () => {
           const server = getStellarServer();
           return await server.submitTransaction(transaction);
-        },
-        {
-          maxRetries: 3,
-          baseDelayMs: 100,
-          maxDelayMs: 8000,
-        },
-      );
-    });
+        });
+      },
+      {
+        maxRetries: 3,
+        baseDelayMs: 100,
+        maxDelayMs: 8000,
+      },
+    );
   } catch (error) {
     // Map circuit breaker errors to typed BlockchainServiceError
     if (error && typeof error === 'object' && 'name' in error) {
@@ -494,7 +495,7 @@ export const submitStellarTransaction = async (
     if (
       error &&
       (error as { response?: { data?: { extras?: { result_codes?: { transaction?: string } } } } })
-        .response?.data
+        .response?.data?.extras?.result_codes
     ) {
       const txError = error as {
         response: { data: { extras?: { result_codes?: { transaction?: string } } } };
@@ -507,8 +508,8 @@ export const submitStellarTransaction = async (
     }
 
     // Handle other axios/network errors
-    if (axios.isAxiosError(error)) {
-      const status = error.response?.status;
+    if (axios.isAxiosError(error) || (error && typeof error === 'object' && 'response' in error)) {
+      const status = (error as any).response?.status;
       const message = error.response?.data?.message || error.message;
 
       // All retry attempts exhausted

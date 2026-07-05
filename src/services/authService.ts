@@ -1,6 +1,7 @@
 import axios, { type AxiosInstance } from 'axios';
 import * as SecureStore from 'expo-secure-store';
 
+import sessionMonitoringService from './sessionMonitoringService';
 import type {
   LoginRequest,
   LoginResponse,
@@ -24,7 +25,6 @@ import {
   storeSecureTokens,
 } from '../utils/encryption/keychain';
 import { logError } from '../utils/errorLogger';
-import sessionMonitoringService from './sessionMonitoringService';
 
 // ─── Custom error ─────────────────────────────────────────────────────────────
 

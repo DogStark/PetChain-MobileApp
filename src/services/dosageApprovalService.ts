@@ -1,5 +1,5 @@
-import { sendMessage } from './vetService';
 import { upsertMedication } from './localDB';
+import { sendMessage } from './vetService';
 import type { Medication } from '../models/Medication';
 import type { DosageResult } from '../utils/dosageCalculator';
 
@@ -109,7 +109,7 @@ export async function approveDosage(
     requestedBy: '',
     status: approvedDose ? 'modified' : 'approved',
     approvedDose,
-    approvedDoseUnit,
+    approvedDoseUnit: approvedUnit,
     vetNotes,
     approvedAt: new Date().toISOString(),
   };
