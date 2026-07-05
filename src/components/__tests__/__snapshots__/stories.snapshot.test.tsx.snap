@@ -293,11 +293,84 @@ exports[`Storybook component snapshots PermissionRationaleModal OpenSettings has
 
 exports[`Storybook component snapshots PermissionRationaleModal has correct title: PermissionRationaleModal_title 1`] = `"Components/PermissionRationaleModal"`;
 
-exports[`Storybook component snapshots PetAggregateView Default has valid args: PetAggregateView_Default 1`] = `
+exports[`Storybook component snapshots PetAggregateView EmptyState has valid args: PetAggregateView_EmptyState 1`] = `
 {
   "args": {
     "onSelectPet": "[function mockConstructor]",
   },
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots PetAggregateView ErrorState has valid args: PetAggregateView_ErrorState 1`] = `
+{
+  "args": {
+    "onSelectPet": "[function mockConstructor]",
+  },
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots PetAggregateView FreePlanLimitReached has valid args: PetAggregateView_FreePlanLimitReached 1`] = `
+{
+  "args": {
+    "onSelectPet": "[function mockConstructor]",
+  },
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots PetAggregateView LoadingState has valid args: PetAggregateView_LoadingState 1`] = `
+{
+  "args": {
+    "onSelectPet": "[function mockConstructor]",
+  },
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots PetAggregateView MultiplePets has valid args: PetAggregateView_MultiplePets 1`] = `
+{
+  "args": {
+    "onSelectPet": "[function mockConstructor]",
+  },
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots PetAggregateView PetWithActiveHealthAlert has valid args: PetAggregateView_PetWithActiveHealthAlert 1`] = `
+{
+  "args": {
+    "onSelectPet": "[function mockConstructor]",
+  },
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots PetAggregateView PetWithNoPhoto has valid args: PetAggregateView_PetWithNoPhoto 1`] = `
+{
+  "args": {
+    "onSelectPet": "[function mockConstructor]",
+  },
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots PetAggregateView PremiumPlanMaxPets has valid args: PetAggregateView_PremiumPlanMaxPets 1`] = `
+{
+  "args": {
+    "onSelectPet": "[function mockConstructor]",
+  },
+  "hasRender": true,
+}
+`;
+
+exports[`Storybook component snapshots PetAggregateView SinglePet has valid args: PetAggregateView_SinglePet 1`] = `
+{
+  "args": {
+    "onSelectPet": "[function mockConstructor]",
+  },
+  "hasRender": true,
 }
 `;
 
@@ -568,6 +641,21 @@ exports[`Storybook component snapshots VetVerifiedBadge Verified has valid args:
 `;
 
 exports[`Storybook component snapshots VetVerifiedBadge has correct title: VetVerifiedBadge_title 1`] = `"Components/VetVerifiedBadge"`;
+
+exports[`Storybook component snapshots WeightChart AccessibleView has valid args: WeightChart_AccessibleView 1`] = `
+{
+  "args": {
+    "data": "[Array(14)]",
+    "height": 300,
+    "onExport": "[function mockConstructor]",
+    "petName": "Buddy",
+    "vetRecommendedRange": {
+      "max": 5.5,
+      "min": 4.5,
+    },
+  },
+}
+`;
 
 exports[`Storybook component snapshots WeightChart Empty has valid args: WeightChart_Empty 1`] = `
 {

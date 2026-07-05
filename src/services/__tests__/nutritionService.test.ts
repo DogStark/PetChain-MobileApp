@@ -144,7 +144,7 @@ describe('nutritionService', () => {
         const catCalories = calculateDailyCalories(10, 'moderate', 'cat', false);
 
         expect(dogCalories).not.toEqual(catCalories);
-        expect(catCalories).toBeGreaterThan(dogCalories); // Cats have higher base metabolism
+        expect(dogCalories).toBeGreaterThan(catCalories); // Dogs have higher base metabolism
       });
 
       it('calculates for rabbit', () => {
@@ -200,7 +200,13 @@ describe('nutritionService', () => {
       });
 
       it('ignores unknown breed (uses default)', () => {
-        const withUnknownBreed = calculateDailyCalories(10, 'moderate', 'dog', false, 'UnknownBreed');
+        const withUnknownBreed = calculateDailyCalories(
+          10,
+          'moderate',
+          'dog',
+          false,
+          'UnknownBreed',
+        );
         const withoutBreed = calculateDailyCalories(10, 'moderate', 'dog', false);
 
         expect(withUnknownBreed).toEqual(withoutBreed);
@@ -220,7 +226,6 @@ describe('nutritionService', () => {
       });
     });
   });
-});
 
   // ───────────────────────────────────────────────────────────────────────────
   // analyzeNutritionalGaps

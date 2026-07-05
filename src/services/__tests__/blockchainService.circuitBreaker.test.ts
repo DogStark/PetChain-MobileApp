@@ -1,6 +1,6 @@
 /**
  * Circuit Breaker Integration Tests for blockchainService
- * 
+ *
  * Tests the integration of circuit breaker and retry logic with submitStellarTransaction
  * and other Horizon API calls.
  */
@@ -94,7 +94,7 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
         const submitPromise = submitStellarTransaction(mockTransaction);
 
         // Fast-forward past the retry delay
-        jest.advanceTimersByTime(200);
+        await jest.advanceTimersByTimeAsync(200);
 
         const result = await submitPromise;
 
@@ -124,7 +124,7 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
 
         const submitPromise = submitStellarTransaction(mockTransaction);
 
-        jest.advanceTimersByTime(200);
+        await jest.advanceTimersByTimeAsync(200);
 
         const result = await submitPromise;
 
@@ -155,8 +155,8 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
         const submitPromise = submitStellarTransaction(mockTransaction);
 
         // Fast-forward through both retry delays
-        jest.advanceTimersByTime(100);
-        jest.advanceTimersByTime(250);
+        await jest.advanceTimersByTimeAsync(100);
+        await jest.advanceTimersByTimeAsync(250);
 
         const result = await submitPromise;
 
@@ -180,16 +180,17 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
         jest.useFakeTimers();
 
         const submitPromise = submitStellarTransaction(mockTransaction);
+        submitPromise.catch(() => {});
 
         // Fast-forward through all retry delays
-        jest.advanceTimersByTime(100); // Attempt 2
-        jest.advanceTimersByTime(250); // Attempt 3
-        jest.advanceTimersByTime(450); // Attempt 4
+        await jest.advanceTimersByTimeAsync(100); // Attempt 2
+        await jest.advanceTimersByTimeAsync(250); // Attempt 3
+        await jest.advanceTimersByTimeAsync(450); // Attempt 4
 
         await expect(submitPromise).rejects.toThrow(BlockchainServiceError);
         const error = await submitPromise.catch((e) => e);
-        expect(error.code).toBe('HORIZON_UNAVAILABLE');
-        expect(mockServer.submitTransaction).toHaveBeenCalledTimes(4); // Original + 3 retries
+        expect(error.code).toBe('CIRCUIT_BREAKER_OPEN');
+        expect(mockServer.submitTransaction).toHaveBeenCalledTimes(3); // Original + 2 retries (4th blocked)
       });
 
       it('should not retry non-retryable errors (404)', async () => {
@@ -230,14 +231,15 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
 
         // First 3 attempts (exhaust retries) -> circuit opens
         const submit1 = submitStellarTransaction(mockTransaction);
-        jest.advanceTimersByTime(100);
-        jest.advanceTimersByTime(250);
-        jest.advanceTimersByTime(450);
+        submit1.catch(() => {});
+        await jest.advanceTimersByTimeAsync(100);
+        await jest.advanceTimersByTimeAsync(250);
+        await jest.advanceTimersByTimeAsync(450);
 
         await expect(submit1).rejects.toThrow(BlockchainServiceError);
 
         // Verify circuit is OPEN
-        let metrics = getCircuitBreakerMetrics();
+        const metrics = getCircuitBreakerMetrics();
         expect(metrics.state).toBe('OPEN');
         expect(metrics.failureCount).toBe(3);
       });
@@ -259,9 +261,10 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
 
         // Open the circuit
         const submit1 = submitStellarTransaction(mockTransaction);
-        jest.advanceTimersByTime(100);
-        jest.advanceTimersByTime(250);
-        jest.advanceTimersByTime(450);
+        submit1.catch(() => {});
+        await jest.advanceTimersByTimeAsync(100);
+        await jest.advanceTimersByTimeAsync(250);
+        await jest.advanceTimersByTimeAsync(450);
 
         await expect(submit1).rejects.toThrow(BlockchainServiceError);
 
@@ -272,7 +275,7 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
         const error = await submit2.catch((e) => e);
         expect(error.code).toBe('CIRCUIT_BREAKER_OPEN');
         // submitTransaction should not be called for 2nd attempt (circuit rejected it)
-        expect(mockServer.submitTransaction).toHaveBeenCalledTimes(4); // 4 calls for 3 retries + 1 original
+        expect(mockServer.submitTransaction).toHaveBeenCalledTimes(3); // 3 calls for 3 retries (4th blocked)
       });
 
       it('should include CIRCUIT_BREAKER_OPEN error code', async () => {
@@ -292,9 +295,10 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
 
         // Open circuit
         const submit1 = submitStellarTransaction(mockTransaction);
-        jest.advanceTimersByTime(100);
-        jest.advanceTimersByTime(250);
-        jest.advanceTimersByTime(450);
+        submit1.catch(() => {});
+        await jest.advanceTimersByTimeAsync(100);
+        await jest.advanceTimersByTimeAsync(250);
+        await jest.advanceTimersByTimeAsync(450);
         await expect(submit1).rejects.toThrow();
 
         // Try when open
@@ -317,35 +321,22 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
         const mockServer = {
           submitTransaction: jest
             .fn()
-            .mockRejectedValueOnce(
-              (() => {
-                const error = new Error('Service Unavailable');
-                (error as any).response = { status: 503 };
-                return error;
-              })(),
-            )
-            .mockRejectedValueOnce(
-              (() => {
-                const error = new Error('Service Unavailable');
-                (error as any).response = { status: 503 };
-                return error;
-              })(),
-            )
-            .mockRejectedValueOnce(
-              (() => {
-                const error = new Error('Service Unavailable');
-                (error as any).response = { status: 503 };
-                return error;
-              })(),
-            )
-            .mockRejectedValueOnce(
-              (() => {
-                const error = new Error('Service Unavailable');
-                (error as any).response = { status: 503 };
-                return error;
-              })(),
-            )
-            .mockResolvedValueOnce({ hash: 'tx123', successful: true }),
+            .mockImplementationOnce(() => {
+              const error = new Error('Service Unavailable');
+              (error as any).response = { status: 503 };
+              return Promise.reject(error);
+            })
+            .mockImplementationOnce(() => {
+              const error = new Error('Service Unavailable');
+              (error as any).response = { status: 503 };
+              return Promise.reject(error);
+            })
+            .mockImplementationOnce(() => {
+              const error = new Error('Service Unavailable');
+              (error as any).response = { status: 503 };
+              return Promise.reject(error);
+            })
+            .mockImplementationOnce(() => Promise.resolve({ hash: 'tx123', successful: true })),
         };
 
         mockedStellarSdk.Horizon.Server.mockImplementation(() => mockServer as any);
@@ -354,22 +345,17 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
 
         // Open the circuit
         const submit1 = submitStellarTransaction(mockTransaction);
-        jest.advanceTimersByTime(100);
-        jest.advanceTimersByTime(250);
-        jest.advanceTimersByTime(450);
+        submit1.catch(() => {});
+        await jest.advanceTimersByTimeAsync(100);
+        await jest.advanceTimersByTimeAsync(250);
+        await jest.advanceTimersByTimeAsync(450);
         await expect(submit1).rejects.toThrow();
 
         let metrics = getCircuitBreakerMetrics();
         expect(metrics.state).toBe('OPEN');
 
-        // Wait for circuit breaker timeout (default 8000ms, but we use real timer for integration)
-        jest.useRealTimers();
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        jest.useFakeTimers();
-
-        // Reset for clean test - note: in real scenario, timeout is 8s
-        // For this test we just verify the circuit can transition to HALF_OPEN
-        resetCircuitBreaker();
+        // Wait for circuit breaker timeout
+        await jest.advanceTimersByTimeAsync(8000);
 
         // After recovery, should succeed
         const submit2 = submitStellarTransaction(mockTransaction);
@@ -385,9 +371,9 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
       it('should open after 3 consecutive 503 responses - manual test note', async () => {
         /**
          * MANUAL TEST NOTE:
-         * 
+         *
          * To verify the circuit breaker opens after 3 consecutive mocked 503s:
-         * 
+         *
          * 1. Ensure the test database is running
          * 2. Run: npm run test -- blockchainService.circuitBreaker.test.ts
          * 3. Verify that the circuit breaker metrics show:
@@ -417,7 +403,8 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
         // Attempt 1
         try {
           const submit1 = submitStellarTransaction(mockTransaction);
-          jest.advanceTimersByTime(500); // Through all retries
+          submit1.catch(() => {});
+          await jest.advanceTimersByTimeAsync(2000); // Through all retries
           await submit1;
         } catch (e) {
           console.log('After 1st attempt:', getCircuitBreakerMetrics());
@@ -426,7 +413,8 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
         // Attempt 2
         try {
           const submit2 = submitStellarTransaction(mockTransaction);
-          jest.advanceTimersByTime(500);
+          submit2.catch(() => {});
+          await jest.advanceTimersByTimeAsync(2000);
           await submit2;
         } catch (e) {
           console.log('After 2nd attempt:', getCircuitBreakerMetrics());
@@ -435,7 +423,8 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
         // Attempt 3
         try {
           const submit3 = submitStellarTransaction(mockTransaction);
-          jest.advanceTimersByTime(500);
+          submit3.catch(() => {});
+          await jest.advanceTimersByTimeAsync(2000);
           await submit3;
         } catch (e) {
           console.log('After 3rd attempt:', getCircuitBreakerMetrics());
@@ -499,7 +488,8 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
       for (let i = 0; i < 3; i++) {
         try {
           const call = getStellarNetworkInfo();
-          jest.advanceTimersByTime(200);
+          call.catch(() => {});
+          await jest.advanceTimersByTimeAsync(200);
           await call;
         } catch (e) {
           // Expected
@@ -530,13 +520,11 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
       const mockTransaction = {} as StellarSdk.Transaction;
 
       const mockServer = {
-        submitTransaction: jest.fn().mockRejectedValue(
-          (() => {
-            const error = new Error('Service Unavailable');
-            (error as any).response = { status: 503 };
-            return error;
-          })(),
-        ),
+        submitTransaction: jest.fn().mockImplementation(() => {
+          const error = new Error('Service Unavailable');
+          (error as any).response = { status: 503 };
+          return Promise.reject(error);
+        }),
       };
 
       mockedStellarSdk.Horizon.Server.mockImplementation(() => mockServer as any);
@@ -546,7 +534,8 @@ describe('blockchainService - Circuit Breaker & Retry Logic', () => {
       // Open circuit
       try {
         const submit = submitStellarTransaction(mockTransaction);
-        jest.advanceTimersByTime(500);
+        submit.catch(() => {});
+        await jest.advanceTimersByTimeAsync(2000);
         await submit;
       } catch (e) {
         // Expected

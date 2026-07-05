@@ -2,7 +2,11 @@
  * Unit tests for src/services/inactivityTracker.ts
  */
 
-import { InactivityTracker, SESSION_TIMEOUT_MS, WARNING_BEFORE_EXPIRY_MS } from '../inactivityTracker';
+import {
+  InactivityTracker,
+  SESSION_TIMEOUT_MS,
+  WARNING_BEFORE_EXPIRY_MS,
+} from '../inactivityTracker';
 
 describe('InactivityTracker', () => {
   beforeEach(() => {

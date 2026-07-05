@@ -1,4 +1,8 @@
-import { requestVetApproval, approveDosage, activateApprovedMedication } from '../dosageApprovalService';
+import {
+  requestVetApproval,
+  approveDosage,
+  activateApprovedMedication,
+} from '../dosageApprovalService';
 import * as vetService from '../vetService';
 import * as localDB from '../localDB';
 import * as noteService from '../noteService';
@@ -158,7 +162,12 @@ describe('dosageApprovalService', () => {
     });
 
     it('should create approval with modified status when dose is changed', async () => {
-      const result = await approveDosage('approval123', '75', 'mg', 'Increased dose for effectiveness');
+      const result = await approveDosage(
+        'approval123',
+        '75',
+        'mg',
+        'Increased dose for effectiveness',
+      );
 
       expect(result.id).toBe('approval123');
       expect(result.status).toBe('modified');
@@ -182,7 +191,9 @@ describe('dosageApprovalService', () => {
       };
 
       const getMedications = jest.fn().mockResolvedValue([mockMedication]);
-      jest.spyOn(require('../medicationService'), 'getMedications').mockImplementation(getMedications);
+      jest
+        .spyOn(require('../medicationService'), 'getMedications')
+        .mockImplementation(getMedications);
       (localDB.upsertMedication as jest.Mock).mockResolvedValue(undefined);
 
       await activateApprovedMedication('med789', '75 mg');
@@ -199,9 +210,13 @@ describe('dosageApprovalService', () => {
 
     it('should throw error when medication not found', async () => {
       const getMedications = jest.fn().mockResolvedValue([]);
-      jest.spyOn(require('../medicationService'), 'getMedications').mockImplementation(getMedications);
+      jest
+        .spyOn(require('../medicationService'), 'getMedications')
+        .mockImplementation(getMedications);
 
-      await expect(activateApprovedMedication('nonexistent', '50 mg')).rejects.toThrow('Medication not found');
+      await expect(activateApprovedMedication('nonexistent', '50 mg')).rejects.toThrow(
+        'Medication not found',
+      );
     });
   });
 });

@@ -33,13 +33,12 @@ const drugNameArb = fc.string({ minLength: 1, maxLength: 30 });
 const drugListArb = fc.array(drugNameArb, { minLength: 1, maxLength: 8 });
 
 /** All valid severity values. */
-const severityArb: fc.Arbitrary<InteractionSeverity> =
-  fc.constantFrom<InteractionSeverity>(
-    'mild',
-    'moderate',
-    'severe',
-    'contraindicated',
-  );
+const severityArb: fc.Arbitrary<InteractionSeverity> = fc.constantFrom<InteractionSeverity>(
+  'mild',
+  'moderate',
+  'severe',
+  'contraindicated',
+);
 
 // ─── Properties ─────────────────────────────────────────────────────────────
 
@@ -74,8 +73,7 @@ describe('drugInteractionService — property-based tests (fast-check)', () => {
           expect(typeof label).toBe('string');
           // The label should contain at least the emoji + the severity keyword
           // e.g. "⚠️ Mild" contains "Mild"
-          const severityCapitalized =
-            severity.charAt(0).toUpperCase() + severity.slice(1);
+          const severityCapitalized = severity.charAt(0).toUpperCase() + severity.slice(1);
           return label.includes(severityCapitalized);
         }),
         { numRuns: 200 },
@@ -101,9 +99,7 @@ describe('drugInteractionService — property-based tests (fast-check)', () => {
       await fc.assert(
         fc.asyncProperty(drugNameArb, drugListArb, async (newDrug, existing) => {
           const result = await checkDrugInteractions(newDrug, existing);
-          expect(result.interactions.length).toBeLessThanOrEqual(
-            existing.length,
-          );
+          expect(result.interactions.length).toBeLessThanOrEqual(existing.length);
         }),
         { numRuns: 200 },
       );
@@ -119,14 +115,8 @@ describe('drugInteractionService — property-based tests (fast-check)', () => {
             // Ensure we only remove within bounds
             const idx = removalIdx % existing.length;
             const fullResult = await checkDrugInteractions(newDrug, existing);
-            const reducedExisting = [
-              ...existing.slice(0, idx),
-              ...existing.slice(idx + 1),
-            ];
-            const reducedResult = await checkDrugInteractions(
-              newDrug,
-              reducedExisting,
-            );
+            const reducedExisting = [...existing.slice(0, idx), ...existing.slice(idx + 1)];
+            const reducedResult = await checkDrugInteractions(newDrug, reducedExisting);
 
             // Removing a drug should never add new interactions
             expect(reducedResult.interactions.length).toBeLessThanOrEqual(

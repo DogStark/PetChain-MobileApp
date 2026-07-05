@@ -42,16 +42,19 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   }),
 }));
 
-const mockGet = jest.fn();
-const mockPost = jest.fn();
-
 jest.mock('../apiClient', () => ({
   __esModule: true,
   default: {
-    get: mockGet,
-    post: mockPost,
+    get: jest.fn(),
+    post: jest.fn(),
   },
 }));
+
+import apiClient from '../apiClient';
+const mockGet = apiClient.get as jest.Mock;
+const mockPost = apiClient.post as jest.Mock;
+
+jest.useRealTimers();
 
 // ─── Imports (after mocks) ────────────────────────────────────────────────────
 

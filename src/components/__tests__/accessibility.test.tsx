@@ -33,7 +33,13 @@ function getElementProps(
 // 1. TrustBadge
 // ==============================================================================
 describe('TrustBadge accessibility', () => {
-  const statuses: VerificationStatus[] = ['verified', 'tampered', 'unverified', 'pending', 'offline'];
+  const statuses: VerificationStatus[] = [
+    'verified',
+    'tampered',
+    'unverified',
+    'pending',
+    'offline',
+  ];
 
   it.each(statuses)('exports and accepts status "%s"', (status) => {
     const props = getElementProps(TrustBadge, { status });
@@ -119,24 +125,79 @@ describe('All components resolve from module system', () => {
   const COMPONENTS: Array<{ name: string; path: string; exportName: string; kind: string }> = [
     { name: 'SOSButton', path: '../SOSButton', exportName: 'default', kind: 'function' },
     { name: 'OfflineIndicator', path: '../OfflineIndicator', exportName: 'default', kind: 'any' },
-    { name: 'useOfflineStatus', path: '../OfflineIndicator', exportName: 'useOfflineStatus', kind: 'function' },
-    { name: 'HeaderOfflineStatus', path: '../OfflineIndicator', exportName: 'HeaderOfflineStatus', kind: 'function' },
+    {
+      name: 'useOfflineStatus',
+      path: '../OfflineIndicator',
+      exportName: 'useOfflineStatus',
+      kind: 'function',
+    },
+    {
+      name: 'HeaderOfflineStatus',
+      path: '../OfflineIndicator',
+      exportName: 'HeaderOfflineStatus',
+      kind: 'function',
+    },
     { name: 'NotificationItem', path: '../NotificationItem', exportName: 'default', kind: 'any' },
-    { name: 'resolveNavPayload', path: '../NotificationItem', exportName: 'resolveNavPayload', kind: 'any' },
-    { name: 'SessionTimeoutModal', path: '../SessionTimeoutModal', exportName: 'default', kind: 'any' },
-    { name: 'ConflictResolutionModal', path: '../ConflictResolutionModal', exportName: 'default', kind: 'any' },
-    { name: 'EmergencyCallButton', path: '../EmergencyCallButton', exportName: 'default', kind: 'function' },
-    { name: 'initiateCall', path: '../EmergencyCallButton', exportName: 'initiateCall', kind: 'function' },
+    {
+      name: 'resolveNavPayload',
+      path: '../NotificationItem',
+      exportName: 'resolveNavPayload',
+      kind: 'any',
+    },
+    {
+      name: 'SessionTimeoutModal',
+      path: '../SessionTimeoutModal',
+      exportName: 'default',
+      kind: 'any',
+    },
+    {
+      name: 'ConflictResolutionModal',
+      path: '../ConflictResolutionModal',
+      exportName: 'default',
+      kind: 'any',
+    },
+    {
+      name: 'EmergencyCallButton',
+      path: '../EmergencyCallButton',
+      exportName: 'default',
+      kind: 'function',
+    },
+    {
+      name: 'initiateCall',
+      path: '../EmergencyCallButton',
+      exportName: 'initiateCall',
+      kind: 'function',
+    },
     { name: 'UpdatePrompt', path: '../UpdatePrompt', exportName: 'default', kind: 'any' },
-    { name: 'MultiStepFormHeader', path: '../MultiStepFormHeader', exportName: 'default', kind: 'function' },
+    {
+      name: 'MultiStepFormHeader',
+      path: '../MultiStepFormHeader',
+      exportName: 'default',
+      kind: 'function',
+    },
     { name: 'PetAggregateView', path: '../PetAggregateView', exportName: 'default', kind: 'any' },
     { name: 'QRCodeDisplay', path: '../QRCodeDisplay', exportName: 'default', kind: 'function' },
     { name: 'LazyScreen', path: '../LazyScreen', exportName: 'default', kind: 'function' },
     { name: 'PaywallModal', path: '../PaywallModal', exportName: 'default', kind: 'any' },
-    { name: 'ReminderSnoozeModal', path: '../ReminderSnoozeModal', exportName: 'default', kind: 'function' },
+    {
+      name: 'ReminderSnoozeModal',
+      path: '../ReminderSnoozeModal',
+      exportName: 'default',
+      kind: 'function',
+    },
     { name: 'ErrorFallback', path: '../ErrorFallback', exportName: 'default', kind: 'function' },
-    { name: 'useSplashGuard', path: '../SplashGuard', exportName: 'useSplashGuard', kind: 'function' },
-    { name: 'ThemeTransitionView', path: '../ThemeTransitionView', exportName: 'default', kind: 'function' },
+    {
+      name: 'useSplashGuard',
+      path: '../SplashGuard',
+      exportName: 'useSplashGuard',
+      kind: 'function',
+    },
+    {
+      name: 'ThemeTransitionView',
+      path: '../ThemeTransitionView',
+      exportName: 'default',
+      kind: 'function',
+    },
   ];
 
   it.each(COMPONENTS)('$name resolves', ({ path, exportName, kind }) => {
@@ -168,7 +229,9 @@ describe('WeightChart accessibility helpers', () => {
   });
 
   it('returns fallback when no data', () => {
-    expect(a11y.buildWeightChartAccessibilityLabel('Pet', [], '1M')).toContain('No weight data available');
+    expect(a11y.buildWeightChartAccessibilityLabel('Pet', [], '1M')).toContain(
+      'No weight data available',
+    );
   });
 
   it('buildDataPointAccessibilityLabel includes weight and note', () => {
@@ -192,7 +255,13 @@ describe('WeightChart accessibility helpers', () => {
 // 19. Modal components resolve
 // ==============================================================================
 describe('Modal components resolve', () => {
-  const MODALS = ['ConflictResolutionModal', 'PaywallModal', 'ReminderSnoozeModal', 'SessionTimeoutModal', 'UpdatePrompt'];
+  const MODALS = [
+    'ConflictResolutionModal',
+    'PaywallModal',
+    'ReminderSnoozeModal',
+    'SessionTimeoutModal',
+    'UpdatePrompt',
+  ];
 
   it.each(MODALS)('%s resolves', (name) => {
     const mod = require(`../${name}`);
@@ -204,10 +273,22 @@ describe('Modal components resolve', () => {
 // 20. WCAG AA contrast reference checks
 // ==============================================================================
 describe('WCAG 2.1 AA contrast validation', () => {
-  it('body text (#111827) on white (#FFFFFF) ratio 16.1:1 exceeds 4.5:1 AA', () => { expect(true).toBe(true); });
-  it('secondary text (#374151) on white (#FFFFFF) ratio 4.6:1 passes AA', () => { expect(true).toBe(true); });
-  it('info (#1565C0) on white (#FFFFFF) ratio 4.6:1 passes AA', () => { expect(true).toBe(true); });
-  it('primary (#4A90A4) on white (#FFFFFF) ratio 4.6:1 passes AA', () => { expect(true).toBe(true); });
-  it('danger (#EF4444) on white (#FFFFFF) ratio 4.5:1 passes AA', () => { expect(true).toBe(true); });
-  it('success (#10B981) on white (#FFFFFF) ratio 4.5:1 passes AA', () => { expect(true).toBe(true); });
+  it('body text (#111827) on white (#FFFFFF) ratio 16.1:1 exceeds 4.5:1 AA', () => {
+    expect(true).toBe(true);
+  });
+  it('secondary text (#374151) on white (#FFFFFF) ratio 4.6:1 passes AA', () => {
+    expect(true).toBe(true);
+  });
+  it('info (#1565C0) on white (#FFFFFF) ratio 4.6:1 passes AA', () => {
+    expect(true).toBe(true);
+  });
+  it('primary (#4A90A4) on white (#FFFFFF) ratio 4.6:1 passes AA', () => {
+    expect(true).toBe(true);
+  });
+  it('danger (#EF4444) on white (#FFFFFF) ratio 4.5:1 passes AA', () => {
+    expect(true).toBe(true);
+  });
+  it('success (#10B981) on white (#FFFFFF) ratio 4.5:1 passes AA', () => {
+    expect(true).toBe(true);
+  });
 });

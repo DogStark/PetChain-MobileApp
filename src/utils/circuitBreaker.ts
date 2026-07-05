@@ -1,6 +1,6 @@
 /**
  * Circuit Breaker Pattern Implementation
- * 
+ *
  * States:
  * - CLOSED: Normal operation, all requests pass through
  * - OPEN: Too many failures, reject all requests immediately
