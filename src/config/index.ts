@@ -1,11 +1,11 @@
 import Constants from 'expo-constants';
 
-type Environment = 'development' | 'staging' | 'production';
+export type Environment = 'development' | 'staging' | 'production';
 
 const extra = Constants.expoConfig?.extra ?? {};
 
 // Resolve env — prefer expo extra (set via app.config.js), fall back to process.env
-function env(key: string, fallback = ''): string {
+export function env(key: string, fallback = ''): string {
   return (extra[key] as string | undefined) ?? (process.env[key] as string | undefined) ?? fallback;
 }
 
