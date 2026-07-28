@@ -212,16 +212,15 @@ describe('useOfflineSync (renderer-level)', () => {
   it('unsubscribes on unmount and guards state updates after unmount', () => {
     // The hook must return the unsubscribe function from onStatusChange so the
     // cleanup path can detach the listener.
-    const unsub = capturedUnsubscribe;
-    expect(unsub).not.toBeNull();
-    expect(unsub!.mock.calls.length).toBe(0);
+    expect(capturedUnsubscribe).not.toBeNull();
+    expect(capturedUnsubscribe?.mock.calls.length).toBe(0);
 
     act(() => {
       tree?.unmount();
       tree = null;
     });
 
-    expect(unsub!.mock.calls.length).toBe(1);
+    expect(capturedUnsubscribe?.mock.calls.length).toBe(1);
 
     // After unmount, the isMounted.current guard short-circuits the closure's
     // setter calls so calling the listener must not throw.
