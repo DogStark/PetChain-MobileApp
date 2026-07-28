@@ -10,11 +10,8 @@ import {
   View,
 } from 'react-native';
 
-import {
-  offlineQueue,
-  type OfflineQueueStatus,
-  type QueuedMutation,
-} from '../services/offlineQueue';
+import useOfflineSync from '../hooks/useOfflineSync';
+import { offlineQueue, type QueuedMutation } from '../services/offlineQueue';
 
 // ─── Type labels ─────────────────────────────────────────────────────────────
 
@@ -38,30 +35,36 @@ function buildBreakdown(queue: QueuedMutation[]): string[] {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 const OfflineIndicator: React.FC = () => {
-  const [status, setStatus] = useState<OfflineQueueStatus | null>(null);
+  const { isOnline, isSyncing, pendingCount } = useOfflineSync();
   const [savedVisible, setSavedVisible] = useState(false);
   const [sheetVisible, setSheetVisible] = useState(false);
   const [pendingItems, setPendingItems] = useState<QueuedMutation[]>([]);
   const visibleAnim = useRef(new Animated.Value(0)).current;
-  const prevOnline = useRef<boolean | null>(null);
+  const prevOnline = useRef(isOnline);
 
+  // Detect an offline → online transition with an empty queue and no active
+  // sync, and surface a "saved" toast. Splitting this effect from the auto-hide
+  // timer (below) is intentional: the toast itself must stay visible for a
+  // fixed 3 s regardless of later state changes, and a single combined effect
+  // would let the cleanup clear the timer early when pendingCount / isSyncing
+  // change after the transition.
   useEffect(() => {
-    void offlineQueue.getStatus().then(setStatus);
-    const unsubscribe = offlineQueue.onStatusChange((s) => {
-      // When coming back online after being offline → show "All changes saved ✓"
-      if (prevOnline.current === false && s.isOnline && !s.isSyncing && s.pendingCount === 0) {
-        setSavedVisible(true);
-        setTimeout(() => setSavedVisible(false), 3000);
-      }
-      prevOnline.current = s.isOnline;
-      setStatus(s);
-    });
-    return unsubscribe;
-  }, []);
+    if (prevOnline.current === false && isOnline && !isSyncing && pendingCount === 0) {
+      setSavedVisible(true);
+    }
+    prevOnline.current = isOnline;
+  }, [isOnline, isSyncing, pendingCount]);
 
-  const shouldShow =
-    savedVisible ||
-    (status !== null && (!status.isOnline || status.isSyncing || status.pendingCount > 0));
+  // Auto-hide the "saved" toast after 3 s. The cleanup here only fires when
+  // `savedVisible` itself transitions, so unrelated state changes do not
+  // cancel the hide timer.
+  useEffect(() => {
+    if (!savedVisible) return undefined;
+    const timer = setTimeout(() => setSavedVisible(false), 3000);
+    return () => clearTimeout(timer);
+  }, [savedVisible]);
+
+  const shouldShow = savedVisible || !isOnline || isSyncing || pendingCount > 0;
 
   useEffect(() => {
     Animated.timing(visibleAnim, {
@@ -77,28 +80,24 @@ const OfflineIndicator: React.FC = () => {
     setSheetVisible(true);
   };
 
-  if (!status && !savedVisible) return null;
-
   let message = '';
   let bgColor = '#666';
 
   if (savedVisible) {
     message = '✓ All changes saved';
     bgColor = '#4CAF50';
-  } else if (status) {
-    if (!status.isOnline) {
-      message =
-        status.pendingCount > 0
-          ? `📴 Offline · ${status.pendingCount} change${status.pendingCount > 1 ? 's' : ''} pending`
-          : '📴 Offline';
-      bgColor = '#d32f2f';
-    } else if (status.isSyncing) {
-      message = '🔄 Syncing…';
-      bgColor = '#4CAF50';
-    } else if (status.pendingCount > 0) {
-      message = `⏳ ${status.pendingCount} change${status.pendingCount > 1 ? 's' : ''} pending sync`;
-      bgColor = '#FFA000';
-    }
+  } else if (!isOnline) {
+    message =
+      pendingCount > 0
+        ? `📴 Offline · ${pendingCount} change${pendingCount > 1 ? 's' : ''} pending`
+        : '📴 Offline';
+    bgColor = '#d32f2f';
+  } else if (isSyncing) {
+    message = '🔄 Syncing…';
+    bgColor = '#4CAF50';
+  } else if (pendingCount > 0) {
+    message = `⏳ ${pendingCount} change${pendingCount > 1 ? 's' : ''} pending sync`;
+    bgColor = '#FFA000';
   }
 
   const translateY = visibleAnim.interpolate({ inputRange: [0, 1], outputRange: [-50, 0] });
@@ -110,6 +109,8 @@ const OfflineIndicator: React.FC = () => {
         style={[styles.container, { backgroundColor: bgColor, transform: [{ translateY }] }]}
         accessibilityLiveRegion="polite"
         accessibilityLabel={message}
+        accessibilityRole="alert"
+        testID="offline-indicator-banner"
       >
         <TouchableOpacity
           onPress={() => void handlePress()}
@@ -117,9 +118,7 @@ const OfflineIndicator: React.FC = () => {
           style={styles.touchable}
         >
           <Text style={styles.text}>{message}</Text>
-          {!savedVisible && (status?.pendingCount ?? 0) > 0 && (
-            <Text style={styles.chevron}>›</Text>
-          )}
+          {!savedVisible && pendingCount > 0 && <Text style={styles.chevron}>›</Text>}
         </TouchableOpacity>
       </Animated.View>
 
@@ -204,28 +203,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   sheetCloseText: { fontSize: 15, fontWeight: '600', color: '#1a1a1a' },
+  headerOffline: { color: '#d32f2f', fontSize: 12, fontWeight: '600' },
 });
 
 export default OfflineIndicator;
 
+// ─── Backward-compatible helpers ─────────────────────────────────────────────
+//
+// These thin wrappers preserve the public exports used by 3 screens
+// (GlobalSearchScreen, PetListScreen, MedicalRecordSearchScreen) and the
+// accessibility test suite. New code should call `useOfflineSync` directly.
+
 export function useOfflineStatus() {
-  const [status, setStatus] = React.useState<OfflineQueueStatus | null>(null);
-
-  useEffect(() => {
-    offlineQueue.getStatus().then(setStatus);
-    const unsubscribe = offlineQueue.onStatusChange(setStatus);
-    return unsubscribe;
-  }, []);
-
-  return {
-    isOnline: status?.isOnline ?? true,
-    isSyncing: status?.isSyncing ?? false,
-    pendingCount: status?.pendingCount ?? 0,
-  };
+  const { isOnline, isSyncing, pendingCount } = useOfflineSync();
+  return { isOnline, isSyncing, pendingCount };
 }
 
 export function HeaderOfflineStatus() {
-  const { isOnline } = useOfflineStatus();
+  const { isOnline } = useOfflineSync();
   if (isOnline) return null;
-  return <Text style={{ color: '#d32f2f', fontSize: 12, fontWeight: '600' }}>Offline</Text>;
+  return <Text style={styles.headerOffline}>Offline</Text>;
 }
