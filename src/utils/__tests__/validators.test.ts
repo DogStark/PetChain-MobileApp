@@ -2,6 +2,7 @@ import {
   isValidEmail,
   isValidPhone,
   isValidPassword,
+  validatePassword,
   isValidDate,
   isNonEmptyString,
   ERROR_MESSAGES,
@@ -25,6 +26,10 @@ describe('isValidPhone', () => {
     expect(isValidPhone(v)).toBe(false);
   });
   it('exports an error message', () => expect(typeof ERROR_MESSAGES.phone).toBe('string'));
+  it('should strip formatting characters', () => {
+    expect(isValidPhone('+1 (234) 567-8901')).toBe(true);
+    expect(isValidPhone('+1.234.567.8901')).toBe(true);
+  });
 });
 
 describe('isValidPassword', () => {
@@ -34,7 +39,42 @@ describe('isValidPassword', () => {
   it.each(['short1A', 'nouppercase1', 'NoNumber!', '', null, undefined])('invalid: %s', (v) => {
     expect(isValidPassword(v)).toBe(false);
   });
+  it('should handle special characters', () => {
+    expect(isValidPassword('P@ssw0rd!')).toBe(true);
+    expect(isValidPassword('Str0ng#Pass')).toBe(true);
+  });
   it('exports an error message', () => expect(typeof ERROR_MESSAGES.password).toBe('string'));
+});
+
+describe('validatePassword', () => {
+  it('should return isValid true for a valid password', () => {
+    const result = validatePassword('Password1');
+    expect(result.isValid).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('should return isValid false for a short password', () => {
+    const result = validatePassword('Ab1');
+    expect(result.isValid).toBe(false);
+    expect(result.error).toBe(ERROR_MESSAGES.password);
+  });
+
+  it('should return isValid false for password without uppercase', () => {
+    const result = validatePassword('password1');
+    expect(result.isValid).toBe(false);
+    expect(result.error).toBe(ERROR_MESSAGES.password);
+  });
+
+  it('should return isValid false for password without a number', () => {
+    const result = validatePassword('Password');
+    expect(result.isValid).toBe(false);
+    expect(result.error).toBe(ERROR_MESSAGES.password);
+  });
+
+  it('should handle null and undefined', () => {
+    expect(validatePassword(null).isValid).toBe(false);
+    expect(validatePassword(undefined).isValid).toBe(false);
+  });
 });
 
 describe('isValidDate', () => {
