@@ -1,6 +1,7 @@
 import CryptoJS from 'crypto-js';
 import { Share } from 'react-native';
 
+import apiClient from './apiClient';
 import { getItem, removeItem, setItem } from './localDB';
 import type { Pet } from '../models/Pet';
 import {
@@ -367,3 +368,75 @@ export const scanQRCode = async (qrData: string): Promise<QRScanResult> => {
 export const validateQRCode = (
   qrData: string,
 ): Promise<{ valid: boolean; petId?: string; error?: string }> => scanQRCode(qrData);
+
+// ─── Canonical named API (issue #794) ─────────────────────────────────────────
+
+/**
+ * Generate a QR payload string for a pet.
+ *
+ * Thin, explicitly-named wrapper over {@link generatePetQRCode} so callers can
+ * use the canonical `generateQRCode` name. Honours expiry / one-time-use
+ * options and persists the payload to the offline cache.
+ */
+export const generateQRCode = (pet: Pet, options: QRCodeOptions = {}): Promise<string> =>
+  generatePetQRCode(pet, options);
+
+/**
+ * Decode a raw QR string into its typed payload without running the full
+ * validation pipeline. Throws a descriptive error on malformed input.
+ *
+ * Use {@link scanQRCode} / {@link validateQRCode} when you also need checksum,
+ * expiry, revocation, and one-time-use enforcement.
+ */
+export const decodeQRPayload = (qrData: string): PetQRData => parseQRCodeData(qrData);
+
+// ─── Backend integration ──────────────────────────────────────────────────────
+
+/** Server-issued QR record for a pet. */
+export interface RemoteQRData {
+  /** Encoded QR payload string, ready to render. */
+  qrData: string;
+  /** Unix ms timestamp after which the code is invalid. */
+  expiresAt?: number;
+  /** Server-side revocation / usage token. */
+  token?: string;
+}
+
+/**
+ * Fetch a server-issued QR code for a pet from the backend. Falls back to the
+ * offline cache when the request fails so scanning still works offline.
+ *
+ * @returns the encoded QR payload string, or `null` if none is available.
+ */
+export const fetchPetQRCode = async (petId: string): Promise<string | null> => {
+  if (!PET_ID_REGEX.test(petId)) {
+    throw new Error('fetchPetQRCode failed: invalid pet ID format');
+  }
+
+  try {
+    const response = await apiClient.get<{ data: RemoteQRData }>(
+      `/pets/${encodeURIComponent(petId)}/qr`,
+    );
+    const remote = response.data?.data;
+    if (remote?.qrData) {
+      await cacheQRPayload(petId, remote.qrData);
+      return remote.qrData;
+    }
+  } catch {
+    // Network / server error — fall back to any cached payload below.
+  }
+
+  return getOfflineQRCode(petId);
+};
+
+/**
+ * Register a locally-generated QR token with the backend so it can be revoked
+ * or usage-tracked server-side. Best-effort — never throws.
+ */
+export const syncQRToken = async (petId: string, token: string): Promise<void> => {
+  try {
+    await apiClient.post(`/pets/${encodeURIComponent(petId)}/qr/tokens`, { token });
+  } catch {
+    // best-effort — server sync is optional; local token state remains valid.
+  }
+};
