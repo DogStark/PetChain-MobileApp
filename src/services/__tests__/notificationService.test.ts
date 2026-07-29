@@ -52,6 +52,14 @@ describe('notificationService', () => {
       expect(await requestPermissions()).toBe(true);
       expect(Notifications.requestPermissionsAsync).toHaveBeenCalled();
     });
+
+    it('should return false if permissions are denied', async () => {
+      (Notifications.getPermissionsAsync as jest.Mock).mockResolvedValue({
+        status: 'denied',
+      });
+      (Notifications.requestPermissionsAsync as jest.Mock).mockResolvedValue({ status: 'denied' });
+      expect(await requestPermissions()).toBe(false);
+    });
   });
 
   describe('preferences', () => {
@@ -243,6 +251,12 @@ describe('notificationService', () => {
 
       expect(Notifications.cancelScheduledNotificationAsync).toHaveBeenCalledTimes(2);
       expect(setItem).toHaveBeenCalledWith('@notification_map', '{}');
+    });
+
+    it('should cancel a single notification by id', async () => {
+      await cancelNotification('notif-456');
+
+      expect(Notifications.cancelScheduledNotificationAsync).toHaveBeenCalledWith('notif-456');
     });
   });
 });
