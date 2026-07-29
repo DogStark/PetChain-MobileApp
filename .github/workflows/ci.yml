@@ -145,8 +145,64 @@ jobs:
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
 
-      - name: Run npm audit
-        run: npm run audit:high
+      - name: Run npm audit (fail on high/critical)
+        id: audit
+        run: |
+          # Capture full JSON report for summary output
+          npm audit --audit-level=high --json > audit-report.json || true
+
+          # Parse severity counts
+          CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' audit-report.json)
+          HIGH=$(jq '.metadata.vulnerabilities.high // 0' audit-report.json)
+          MODERATE=$(jq '.metadata.vulnerabilities.moderate // 0' audit-report.json)
+          LOW=$(jq '.metadata.vulnerabilities.low // 0' audit-report.json)
+
+          # Print summary to CI output
+          echo ""
+          echo "══════════════════════════════════════════"
+          echo "       npm audit — Vulnerability Summary  "
+          echo "══════════════════════════════════════════"
+          echo "  🔴 Critical : $CRITICAL"
+          echo "  🟠 High     : $HIGH"
+          echo "  🟡 Moderate : $MODERATE"
+          echo "  🔵 Low      : $LOW"
+          echo "══════════════════════════════════════════"
+
+          # Write to GitHub Actions step summary
+          echo "## 🔒 npm audit Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔴 Critical | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟠 High | $HIGH |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟡 Moderate | $MODERATE |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔵 Low | $LOW |" >> $GITHUB_STEP_SUMMARY
+
+          # Fail the build if high or critical vulnerabilities are found
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo ""
+            echo "❌ Build failed: $CRITICAL critical and $HIGH high severity vulnerabilities detected."
+            echo "   Run 'npm audit fix' locally to resolve them."
+            exit 1
+          fi
+
+          echo "✅ No high or critical vulnerabilities found."
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-report
+          path: audit-report.json
+          retention-days: 30
+
+      - name: Snyk scan (optional)
+        if: env.SNYK_TOKEN != ''
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
 
   # ─── Storybook build validation ───────────────────────────────────────────
   storybook:
