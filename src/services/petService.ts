@@ -202,6 +202,46 @@ function toPetServiceError(error: unknown, context: Record<string, unknown>): Pe
 // API METHODS
 // ─────────────────────────────────────────────
 
+/**
+ * Optional filters accepted by {@link getPets}.
+ */
+export interface PetQueryFilters {
+  species?: Species;
+  breed?: string;
+  ownerId?: string;
+}
+
+/**
+ * Fetch pets, optionally narrowed by species / breed / owner.
+ * Falls back to the local cache (filtered client-side) when offline.
+ */
+export async function getPets(filters: PetQueryFilters = {}): Promise<Pet[]> {
+  const params: Record<string, string> = {};
+  if (filters.species) params.species = filters.species;
+  if (filters.breed?.trim()) params.breed = filters.breed.trim();
+  if (filters.ownerId?.trim()) params.ownerId = filters.ownerId.trim();
+
+  try {
+    const response = await apiClient.get<ApiResponse<Pet[]> | Pet[]>('/pets', { params });
+    const pets = unwrapApiData(response.data);
+    await cachePets(pets);
+    return pets;
+  } catch (error) {
+    const cached = await getCachedPets();
+    if (cached.length > 0) return matchesFilters(cached, filters);
+    throw toPetServiceError(error, { action: 'get_pets' });
+  }
+}
+
+function matchesFilters(pets: Pet[], filters: PetQueryFilters): Pet[] {
+  return pets.filter(
+    pet =>
+      (!filters.species || pet.species === filters.species) &&
+      (!filters.breed || pet.breed?.toLowerCase() === filters.breed.trim().toLowerCase()) &&
+      (!filters.ownerId || pet.ownerId === filters.ownerId.trim()),
+  );
+}
+
 export async function getAllPets(): Promise<Pet[]> {
   try {
     const response = await apiClient.get<ApiResponse<Pet[]> | Pet[]>('/pets');
@@ -394,6 +434,7 @@ export async function uploadPetPhoto(
 
 // Default export for screens that import petService as default
 const petService = {
+  getPets,
   getAllPets,
   getPetById,
   getPetByQRCode,
