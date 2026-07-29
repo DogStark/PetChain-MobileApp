@@ -7,6 +7,7 @@ import { scanQRCode, type QRScanResult } from './qrCodeService';
 import type { Species } from '../models/Pet';
 import { logError } from '../utils/errorLogger';
 import { pickImage, compressImage, generateThumbnail, uploadToStorage } from '../utils/imageUtils';
+import { sanitizeObject } from '../utils/sanitize';
 
 // ─────────────────────────────────────────────
 // TYPES
@@ -274,8 +275,10 @@ export async function getPetByQRCode(qrCode: string): Promise<Pet> {
 
 export async function createPet(data: CreatePetInput): Promise<Pet> {
   try {
+    // Sanitize all string fields before sending to the API
+    const sanitized = sanitizeObject(data);
     // If online, this will go through, otherwise it throws and we catch
-    const response = await apiClient.post('/pets', data);
+    const response = await apiClient.post('/pets', sanitized);
     const pet = unwrapApiData(response.data);
     await setItem(`${PET_CACHE_PREFIX}${pet.id}`, JSON.stringify(pet));
     return pet;
@@ -313,7 +316,9 @@ export async function updatePet(petId: string, data: UpdatePetInput): Promise<Pe
   }
 
   try {
-    const response = await apiClient.put(`/pets/${encodeURIComponent(id)}`, data);
+    // Sanitize all string fields before sending to the API
+    const sanitized = sanitizeObject(data);
+    const response = await apiClient.put(`/pets/${encodeURIComponent(id)}`, sanitized);
     const pet = unwrapApiData(response.data);
     await setItem(`${PET_CACHE_PREFIX}${pet.id}`, JSON.stringify(pet));
     return pet;
