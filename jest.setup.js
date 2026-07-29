@@ -7,6 +7,21 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 process.env.STELLAR_NETWORK = 'testnet';
 process.env.JWT_SECRET = 'test-secret-key';
 
+// ─── MSW (Mock Service Worker) ────────────────────────────────────────────────
+// Intercepts all outbound HTTP requests in tests and returns realistic fixture
+// data via the handlers defined in src/__mocks__/handlers.ts.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { server } = require('./src/__mocks__/server');
+
+// Start server before all tests; warn on requests with no matching handler
+beforeAll(() => server.listen({ onUnhandledRequest: 'warn' }));
+
+// Reset any per-test handler overrides after each test so they don't leak
+afterEach(() => server.resetHandlers());
+
+// Clean up and stop the server after the test suite completes
+afterAll(() => server.close());
+
 // Suppress console errors in tests unless explicitly needed
 const originalError = console.error;
 beforeAll(() => {
