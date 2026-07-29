@@ -183,6 +183,36 @@ npm run typecheck
 # GitHub Actions workflows are in .github/workflows/
 ```
 
+### API Mocking with MSW (Mock Service Worker)
+
+All tests use [MSW v2](https://mswjs.io/) to intercept HTTP requests and return realistic fixture data, eliminating real network calls in the test suite.
+
+**Setup files:**
+- `src/__mocks__/handlers.ts` — REST handlers for `/auth`, `/pets`, and `/appointments` endpoints with fixture data
+- `src/__mocks__/server.ts` — MSW `setupServer` instance wired to the above handlers
+
+**jest.setup.js** automatically starts and tears down the server around every test suite:
+```js
+beforeAll(() => server.listen({ onUnhandledRequest: 'warn' }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+```
+
+**Override handlers in a single test:**
+```ts
+import { server } from '../../__mocks__/server';
+import { http, HttpResponse } from 'msw';
+
+it('handles 401', async () => {
+  server.use(
+    http.post('http://localhost:3000/api/auth/login', () =>
+      HttpResponse.json({ error: { message: 'Unauthorized' } }, { status: 401 }),
+    ),
+  );
+  // ... rest of test
+});
+```
+
 ---
 
 ## 📄 Legal
