@@ -131,6 +131,7 @@
     "helmet": "^8.0.0",
     "i18next": "^26.0.8",
     "ioredis": "^5.11.0",
+    "is-fullwidth-code-point": "^5.1.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.1.1",
     "node-pg-migrate": "^7.9.1",
@@ -170,6 +171,8 @@
   "devDependencies": {
     "@babel/preset-env": "^7.29.7",
     "@babel/preset-typescript": "^7.29.7",
+    "@commitlint/cli": "^21.2.1",
+    "@commitlint/config-conventional": "^21.2.0",
     "@eslint/js": "9.26.0",
     "@graphql-codegen/cli": "^7.1.1",
     "@graphql-codegen/typescript": "^6.0.2",

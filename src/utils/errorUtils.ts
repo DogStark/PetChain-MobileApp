@@ -1,183 +1,151 @@
 /**
- * errorUtils.ts
- *
- * Normalises API errors into a consistent AppError shape, maps error codes to
- * user-friendly messages, and provides predicate helpers for common error
- * categories (network, auth).
+ * Error utilities for parsing and categorizing API errors.
  */
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────────────────────
 
-export type AppErrorCode =
-  | 'NETWORK_ERROR'
-  | 'TIMEOUT'
-  | 'UNAUTHORIZED'
-  | 'FORBIDDEN'
-  | 'NOT_FOUND'
-  | 'VALIDATION_ERROR'
-  | 'SERVER_ERROR'
-  | 'RATE_LIMITED'
-  | 'CONFLICT'
-  | 'UNKNOWN';
-
-export interface AppError {
-  /** Normalised machine-readable code */
-  code: AppErrorCode;
-  /** Human-readable message safe to display in the UI */
-  message: string;
-  /** Original HTTP status code if available */
+export interface ApiError {
   status?: number;
-  /** Raw underlying error for logging/debugging */
-  originalError?: unknown;
-}
-
-// ─── Error code → user-friendly message map ──────────────────────────────────
-
-const ERROR_MESSAGES: Record<AppErrorCode, string> = {
-  NETWORK_ERROR: 'No internet connection. Please check your network and try again.',
-  TIMEOUT: 'The request timed out. Please try again.',
-  UNAUTHORIZED: 'Your session has expired. Please log in again.',
-  FORBIDDEN: 'You do not have permission to perform this action.',
-  NOT_FOUND: 'The requested resource could not be found.',
-  VALIDATION_ERROR: 'Please check your input and try again.',
-  SERVER_ERROR: 'Something went wrong on our end. Please try again later.',
-  RATE_LIMITED: 'Too many requests. Please wait a moment and try again.',
-  CONFLICT: 'This action conflicts with an existing record.',
-  UNKNOWN: 'An unexpected error occurred. Please try again.',
-};
-
-// ─── HTTP status → AppErrorCode ──────────────────────────────────────────────
-
-function codeFromStatus(status: number): AppErrorCode {
-  if (status === 401) return 'UNAUTHORIZED';
-  if (status === 403) return 'FORBIDDEN';
-  if (status === 404) return 'NOT_FOUND';
-  if (status === 409) return 'CONFLICT';
-  if (status === 422) return 'VALIDATION_ERROR';
-  if (status === 429) return 'RATE_LIMITED';
-  if (status >= 500) return 'SERVER_ERROR';
-  return 'UNKNOWN';
-}
-
-// ─── Core helpers ─────────────────────────────────────────────────────────────
-
-/**
- * Normalises any thrown value (Axios error, fetch Response, plain Error, or
- * unknown) into a structured AppError.
- */
-export function parseApiError(error: unknown): AppError {
-  // Axios-style error with response
-  if (isAxiosError(error)) {
-    const status = error.response?.status;
-    const serverMessage: string | undefined =
-      error.response?.data?.message ?? error.response?.data?.error;
-    const code = status != null ? codeFromStatus(status) : 'NETWORK_ERROR';
-
-    return {
-      code,
-      message: serverMessage ?? ERROR_MESSAGES[code],
-      status,
-      originalError: error,
-    };
-  }
-
-  // Network / connection errors (no response)
-  if (error instanceof Error) {
-    if (
-      error.message.toLowerCase().includes('network') ||
-      error.message.toLowerCase().includes('failed to fetch') ||
-      error.message.toLowerCase().includes('connection')
-    ) {
-      return {
-        code: 'NETWORK_ERROR',
-        message: ERROR_MESSAGES.NETWORK_ERROR,
-        originalError: error,
-      };
-    }
-
-    if (error.message.toLowerCase().includes('timeout')) {
-      return {
-        code: 'TIMEOUT',
-        message: ERROR_MESSAGES.TIMEOUT,
-        originalError: error,
-      };
-    }
-
-    return {
-      code: 'UNKNOWN',
-      message: error.message || ERROR_MESSAGES.UNKNOWN,
-      originalError: error,
-    };
-  }
-
-  return {
-    code: 'UNKNOWN',
-    message: ERROR_MESSAGES.UNKNOWN,
-    originalError: error,
-  };
-}
-
-/**
- * Returns a display-safe string for any error value.
- * Suitable for toast messages and inline UI error text.
- */
-export function getErrorMessage(error: unknown): string {
-  const appError = parseApiError(error);
-  return appError.message;
-}
-
-// ─── Predicates ───────────────────────────────────────────────────────────────
-
-/**
- * Returns true when the error indicates a network connectivity failure
- * (no response received from the server).
- */
-export function isNetworkError(error: unknown): boolean {
-  if (isAxiosError(error) && error.response == null) return true;
-  if (
-    error instanceof Error &&
-    (error.message.toLowerCase().includes('network') ||
-      error.message.toLowerCase().includes('failed to fetch') ||
-      error.message.toLowerCase().includes('connection'))
-  ) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * Returns true when the error is a 401 Unauthorized or 403 Forbidden response,
- * indicating an authentication / authorisation failure.
- */
-export function isAuthError(error: unknown): boolean {
-  if (isAxiosError(error)) {
-    const status = error.response?.status;
-    return status === 401 || status === 403;
-  }
-  const appError = parseApiError(error);
-  return appError.code === 'UNAUTHORIZED' || appError.code === 'FORBIDDEN';
-}
-
-// ─── Internal type guard ──────────────────────────────────────────────────────
-
-interface AxiosLikeError {
-  isAxiosError?: boolean;
+  message?: string;
+  code?: string;
   response?: {
     status?: number;
     data?: {
       message?: string;
-      error?: string;
+      code?: string;
     };
   };
-  message: string;
+  request?: unknown;
 }
 
-function isAxiosError(error: unknown): error is AxiosLikeError {
-  if (error == null || typeof error !== 'object') return false;
+// ─── Error Parsing ───────────────────────────────────────────────────────────
+
+/**
+ * Parse an API error and extract a structured error object.
+ * Handles various error shapes from Axios, Fetch, and generic errors.
+ */
+export function parseApiError(error: unknown): ApiError {
+  if (!error) {
+    return { message: 'An unknown error occurred.' };
+  }
+
+  if (isAxiosLikeError(error)) {
+    return parseAxiosError(error);
+  }
+
+  if (isFetchLikeError(error)) {
+    return parseFetchError(error);
+  }
+
+  if (error instanceof Error) {
+    return { message: error.message };
+  }
+
+  if (typeof error === 'string') {
+    return { message: error };
+  }
+
+  if (typeof error === 'object' && error !== null) {
+    const err = error as Record<string, unknown>;
+    return {
+      status: typeof err.status === 'number' ? err.status : undefined,
+      message: typeof err.message === 'string' ? err.message : undefined,
+      code: typeof err.code === 'string' ? err.code : undefined,
+    };
+  }
+
+  return { message: String(error) };
+}
+
+/**
+ * Extract a human-readable error message from an unknown error.
+ * Returns a fallback message when no specific message can be determined.
+ */
+export function getErrorMessage(error: unknown, fallback = 'An unexpected error occurred.'): string {
+  const parsed = parseApiError(error);
+  return parsed.message ?? fallback;
+}
+
+// ─── Error Predicates ────────────────────────────────────────────────────────
+
+/**
+ * Check if the error is a network-related error.
+ * Matches Axios network errors, Fetch type errors, and errors with network-related codes.
+ */
+export function isNetworkError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+
   const err = error as Record<string, unknown>;
-  // Axios sets isAxiosError = true; also accept any error with a .response shape
+
+  // Axios network error (no response received)
+  if (err.code === 'ERR_NETWORK' || err.message === 'Network Error') return true;
+
+  // Check for network-related error codes
+  if (typeof err.code === 'string' && ['ECONNABORTED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND'].includes(err.code)) {
+    return true;
+  }
+
+  // Request was made but no response received (network issue)
+  if (err.request && !err.response) return true;
+
+  return false;
+}
+
+/**
+ * Check if the error is an authentication/authorization error.
+ * Matches 401 (Unauthorized) and 403 (Forbidden) status codes.
+ */
+export function isAuthError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+
+  const err = error as Record<string, unknown>;
+
+  // Check nested response
+  const response = err.response as Record<string, unknown> | undefined;
+  const status = err.status ?? response?.status;
+
+  if (typeof status === 'number' && (status === 401 || status === 403)) return true;
+
+  // Check for auth-related error codes
+  if (typeof err.code === 'string' && ['UNAUTHORIZED', 'FORBIDDEN', 'AUTH_ERROR'].includes(err.code)) {
+    return true;
+  }
+
+  return false;
+}
+
+// ─── Internal Helpers ────────────────────────────────────────────────────────
+
+function isAxiosLikeError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const err = error as Record<string, unknown>;
   return (
-    err['isAxiosError'] === true ||
-    (typeof err['response'] === 'object' && err['response'] != null)
+    typeof err.config === 'object' ||
+    (err.isAxiosError === true) ||
+    (typeof err.response === 'object' && err.response !== null && typeof (err.response as Record<string, unknown>).status === 'number')
   );
+}
+
+function parseAxiosError(error: Record<string, unknown>): ApiError {
+  const response = error.response as Record<string, unknown> | undefined;
+  const data = response?.data as Record<string, unknown> | undefined;
+
+  return {
+    status: (response?.status ?? error.status) as number | undefined,
+    message: (data?.message ?? error.message ?? response?.statusText) as string | undefined,
+    code: (data?.code ?? error.code) as string | undefined,
+  };
+}
+
+function isFetchLikeError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const err = error as Record<string, unknown>;
+  return typeof err.status === 'number' || typeof err.statusText === 'string';
+}
+
+function parseFetchError(error: Record<string, unknown>): ApiError {
+  return {
+    status: error.status as number | undefined,
+    message: (error.statusText ?? error.message) as string | undefined,
+  };
 }

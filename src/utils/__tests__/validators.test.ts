@@ -1,6 +1,8 @@
 import {
   isValidEmail,
   isValidPhone,
+  isValidPassword,
+  validatePassword,
   isValidDate,
   validatePetAge,
   validateDosage,
@@ -38,6 +40,11 @@ describe('isValidEmail', () => {
   it('exports VALIDATION_ERRORS.email as a string', () => {
     expect(typeof VALIDATION_ERRORS.email).toBe('string');
   });
+  it('exports an error message', () => expect(typeof ERROR_MESSAGES.phone).toBe('string'));
+  it('should strip formatting characters', () => {
+    expect(isValidPhone('+1 (234) 567-8901')).toBe(true);
+    expect(isValidPhone('+1.234.567.8901')).toBe(true);
+  });
 });
 
 // ─── isValidPhone ─────────────────────────────────────────────────────────────
@@ -61,9 +68,43 @@ describe('isValidPhone', () => {
   it('exports VALIDATION_ERRORS.phone as a string', () => {
     expect(typeof VALIDATION_ERRORS.phone).toBe('string');
   });
+  it('should handle special characters', () => {
+    expect(isValidPassword('P@ssw0rd!')).toBe(true);
+    expect(isValidPassword('Str0ng#Pass')).toBe(true);
+  });
+  it('exports an error message', () => expect(typeof ERROR_MESSAGES.password).toBe('string'));
 });
 
-// ─── isValidDate ─────────────────────────────────────────────────────────────
+describe('validatePassword', () => {
+  it('should return isValid true for a valid password', () => {
+    const result = validatePassword('Password1');
+    expect(result.isValid).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('should return isValid false for a short password', () => {
+    const result = validatePassword('Ab1');
+    expect(result.isValid).toBe(false);
+    expect(result.error).toBe(ERROR_MESSAGES.password);
+  });
+
+  it('should return isValid false for password without uppercase', () => {
+    const result = validatePassword('password1');
+    expect(result.isValid).toBe(false);
+    expect(result.error).toBe(ERROR_MESSAGES.password);
+  });
+
+  it('should return isValid false for password without a number', () => {
+    const result = validatePassword('Password');
+    expect(result.isValid).toBe(false);
+    expect(result.error).toBe(ERROR_MESSAGES.password);
+  });
+
+  it('should handle null and undefined', () => {
+    expect(validatePassword(null).isValid).toBe(false);
+    expect(validatePassword(undefined).isValid).toBe(false);
+  });
+});
 
 describe('isValidDate', () => {
   it.each(['2024-01-15', '2000-12-31', '2025-06-30', 'January 1, 2020'])('valid: %s', (v) => {
