@@ -25,6 +25,7 @@ import {
   storeSecureTokens,
 } from '../utils/encryption/keychain';
 import { logError } from '../utils/errorLogger';
+import { sanitizeString } from '../utils/sanitize';
 
 // ─── Custom error ─────────────────────────────────────────────────────────────
 
@@ -150,8 +151,12 @@ export async function login(email: string, password: string): Promise<AuthSessio
     throw error;
   }
 
+  // Sanitize inputs before sending to the API
+  const sanitizedEmail = sanitizeString(email);
+  const sanitizedPassword = sanitizeString(password);
+
   try {
-    const payload: LoginRequest = { email, password };
+    const payload: LoginRequest = { email: sanitizedEmail, password: sanitizedPassword };
     const { data } = await authClient.post<LoginResponse>(API_ENDPOINTS.AUTH_LOGIN, payload);
 
     await storeSecureTokens({
@@ -178,7 +183,7 @@ export async function login(email: string, password: string): Promise<AuthSessio
       logError(err as Error, {
         service: 'authService',
         action: 'login_request',
-        email,
+        email: sanitizedEmail,
         status,
       });
 

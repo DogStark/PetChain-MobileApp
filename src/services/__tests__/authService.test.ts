@@ -583,3 +583,82 @@ describe('AuthError', () => {
     expect(new AuthError('some error', 'CODE').message).toBe('some error');
   });
 });
+
+// ─── Secure token storage (Issue: react-native-keychain migration) ────────────
+//
+// These tests assert that tokens are NEVER written to plain AsyncStorage.
+// They are always routed through react-native-keychain + expo-secure-store
+// (via storeSecureTokens in utils/encryption/keychain.ts).
+
+describe('secure token storage (keychain, not AsyncStorage)', () => {
+  let AsyncStorageMock: { setItem: jest.Mock };
+
+  beforeAll(() => {
+    // Spy on AsyncStorage.setItem — it must never be called with token keys
+    AsyncStorageMock = {
+      setItem: jest.fn(),
+    };
+    jest.doMock('@react-native-async-storage/async-storage', () => AsyncStorageMock);
+  });
+
+  afterAll(() => {
+    jest.dontMock('@react-native-async-storage/async-storage');
+  });
+
+  it('does NOT write the access token to AsyncStorage after login', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+    const tokenWrites = AsyncStorageMock.setItem.mock.calls.filter(
+      ([key]: [string]) =>
+        key?.includes('token') || key?.includes('access') || key?.includes('refresh'),
+    );
+    expect(tokenWrites).toHaveLength(0);
+  });
+
+  it('stores tokens in expo-secure-store (keychain wrapper) after login', async () => {
+    const SecureStore = require('expo-secure-store');
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+    // The encrypted token blob key used by utils/encryption/keychain.ts
+    const TOKEN_BLOB_KEY = 'com.petchain.auth.tokens';
+    expect(SecureStore.setItemAsync).toHaveBeenCalledWith(
+      TOKEN_BLOB_KEY,
+      expect.any(String),
+      expect.anything(),
+    );
+  });
+
+  it('stores the encryption key in react-native-keychain after login', async () => {
+    const Keychain = require('react-native-keychain');
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+    const ENCRYPTION_KEY_SERVICE = 'com.petchain.auth.encryption';
+    const keychainCalls = (Keychain.setGenericPassword as jest.Mock).mock.calls.filter(
+      ([, , opts]: [unknown, unknown, { service?: string } | undefined]) =>
+        opts?.service === ENCRYPTION_KEY_SERVICE,
+    );
+    expect(keychainCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does NOT write the access token to AsyncStorage after register', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await register({ email: 'new@example.com', name: 'New', password: 'Pw1' });
+    const tokenWrites = AsyncStorageMock.setItem.mock.calls.filter(
+      ([key]: [string]) =>
+        key?.includes('token') || key?.includes('access') || key?.includes('refresh'),
+    );
+    expect(tokenWrites).toHaveLength(0);
+  });
+
+  it('removes token from secure store (not AsyncStorage) on logout', async () => {
+    const SecureStore = require('expo-secure-store');
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+    await logout();
+    const TOKEN_BLOB_KEY = 'com.petchain.auth.tokens';
+    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(
+      TOKEN_BLOB_KEY,
+      expect.anything(),
+    );
+  });
+});
