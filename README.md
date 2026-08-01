@@ -170,6 +170,81 @@ Medications:  10 pets × 1 medication = 10 total
 
 ---
 
+## 🔧 Pre-Commit Hooks (Husky + lint-staged)
+
+PetChain enforces code quality automatically on every commit using [Husky](https://typicode.github.io/husky/) and [lint-staged](https://github.com/lint-staged/lint-staged).
+
+### How it works
+
+When you run `git commit`, Husky fires `.husky/pre-commit`, which in turn runs `lint-staged` against the staged files only — so you never wait for the entire codebase to be linted.
+
+```
+git commit
+  └─▶ .husky/pre-commit
+        └─▶ npx lint-staged
+              ├─▶ ESLint --fix   (on staged .ts / .tsx / .js / .jsx)
+              └─▶ Prettier --write (on staged .ts / .tsx / .js / .jsx / .json / .md / .yml)
+```
+
+If ESLint finds errors it **cannot** auto-fix, the commit is aborted and the issues are printed to your terminal. Fix them, `git add` the changes, and try again.
+
+### Configuration
+
+`lint-staged` is configured directly in `package.json`:
+
+```json
+"lint-staged": {
+  "{src,backend}/**/*.{ts,tsx,js,jsx}": [
+    "eslint --fix --max-warnings=-1",
+    "prettier --write"
+  ],
+  "{src,backend}/**/*.{json,md,yml,yaml}": [
+    "prettier --write"
+  ],
+  "*.{ts,tsx,js,jsx}": [
+    "eslint --fix --max-warnings=-1",
+    "prettier --write"
+  ]
+}
+```
+
+Husky is installed via the `prepare` lifecycle script, so hooks are set up automatically after `npm install`.
+
+### Setup (one-time, already runs on `npm install`)
+
+```bash
+npm install          # runs `husky` via the "prepare" script
+```
+
+If hooks are not triggering (e.g. after cloning into an environment where `prepare` was skipped):
+
+```bash
+npx husky            # re-installs the hooks
+```
+
+### Skipping hooks (emergency use only)
+
+```bash
+git commit --no-verify -m "chore: emergency hotfix"
+```
+
+> ⚠️ Only use `--no-verify` when absolutely necessary. All CI checks still run on the pull request.
+
+### Running linters manually
+
+```bash
+# Lint and auto-fix all TypeScript/JavaScript files
+npm run lint:fix
+
+# Check formatting without writing changes
+npm run format:check
+
+# Format all files
+npm run format
+```
+
+---
+
 ## 🧪 Testing
 ```bash
 # Unit tests
