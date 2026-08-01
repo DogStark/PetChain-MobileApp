@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: 🔒 Security Vulnerability
+    url: https://github.com/DogStark/PetChain-MobileApp/security/advisories/new
+    about: Please use GitHub private vulnerability reporting for security issues — do not file a public issue.
+
+  - name: 💬 Community Discussion
+    url: https://github.com/DogStark/PetChain-MobileApp/discussions
+    about: Questions, ideas, or general feedback? Start a discussion instead of an issue.
+
+  - name: 📧 Email Support
+    url: mailto:support@petchain.app
+    about: For account issues or private enquiries, contact us directly.
