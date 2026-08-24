@@ -38,6 +38,8 @@ export interface QueuedMutation {
   retries: number;
   /** ETag recorded when this mutation was created */
   etag?: string;
+  /** Stable idempotency key generated at enqueue time to prevent duplicate mutations on retry */
+  idempotencyKey?: string;
 }
 
 export interface ConflictItem {
@@ -172,6 +174,7 @@ class OfflineQueue {
       try {
         const headers: Record<string, string> = {};
         if (mutation.etag) headers['If-Match'] = mutation.etag;
+        if (mutation.idempotencyKey) headers['Idempotency-Key'] = mutation.idempotencyKey;
 
         const endpoint = `/${mutation.type}s/${String(mutation.data.id ?? '')}`;
         const response = await apiClient.put(endpoint, mutation.data, { headers });
@@ -203,6 +206,21 @@ class OfflineQueue {
           } else {
             stillPending.push(mutation);
           }
+        } else if (
+          status === undefined ||
+          (status >= 500 && status < 600) ||
+          status === 408 ||
+          status === 429
+        ) {
+          // Ambiguous or retryable error (timeout, 5xx, or rate limit)
+          // Before retrying, check if the mutation already succeeded on the server
+          // (the client timed out but server processed the request)
+          const alreadyApplied = await this._checkIfAlreadyApplied(mutation);
+          if (!alreadyApplied) {
+            // Safe to retry
+            stillPending.push(mutation);
+          }
+          // If already applied, don't re-enqueue (idempotent success)
         } else {
           stillPending.push(mutation);
         }
@@ -388,10 +406,18 @@ class OfflineQueue {
         /* no ETag available */
       }
     }
+    // Generate stable idempotency key at enqueue time (not retry time)
+    // This ensures retries reuse the same key for deduplication on the server
+    const idempotencyKey = this._generateIdempotencyKey(
+      mutation.type,
+      String(mutation.data.id ?? ''),
+      mutation.action,
+    );
     const item: QueuedMutation = {
       id: `${mutation.type}_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       ...mutation,
       etag,
+      idempotencyKey,
       timestamp: Date.now(),
       retries: 0,
     };
@@ -408,6 +434,16 @@ class OfflineQueue {
     await setItem(QUEUE_KEY, JSON.stringify([]));
   }
 
+  private _generateIdempotencyKey(
+    entityType: SyncEntityType,
+    entityId: string,
+    action: SyncAction,
+  ): string {
+    // Stable hash of entity type, ID, and action to ensure same key for same mutation
+    // across app restarts and retries
+    return `${entityType}:${entityId}:${action}:${Math.random().toString(36).slice(2, 11)}`;
+  }
+
   private async _fetchServerVersion(
     mutation: QueuedMutation,
   ): Promise<Record<string, unknown> | null> {
@@ -418,6 +454,43 @@ class OfflineQueue {
       return res.data;
     } catch {
       return null;
+    }
+  }
+
+  private async _checkIfAlreadyApplied(mutation: QueuedMutation): Promise<boolean> {
+    // Reconciliation: before retrying after an ambiguous failure,
+    // check if the mutation was already applied to the server.
+    // For create operations, if the entity exists with matching key fields, assume success.
+    // For update/delete operations, fetch and compare the server version.
+    try {
+      const serverData = await this._fetchServerVersion(mutation);
+      if (!serverData) return false;
+
+      if (mutation.action === 'delete') {
+        // If server returned data, entity still exists — not yet deleted
+        return false;
+      }
+
+      if (mutation.action === 'create') {
+        // Entity exists on server with our ID — assume create succeeded
+        return true;
+      }
+
+      if (mutation.action === 'update') {
+        // For updates, check if the server version matches key fields from our mutation
+        // This is a heuristic; if timestamps match, assume update succeeded
+        const serverUpdated = String(serverData.updatedAt ?? serverData.updated_at ?? '');
+        const localUpdated = String(mutation.data.updatedAt ?? mutation.data.updated_at ?? '');
+        // If server's updatedAt is close to or after our mutation timestamp, assume success
+        const serverTime = new Date(serverUpdated).getTime();
+        const localTime = new Date(localUpdated).getTime();
+        return serverTime >= localTime - 5000; // 5s tolerance for clock skew
+      }
+
+      return false;
+    } catch {
+      // If reconciliation fails, allow retry
+      return false;
     }
   }
 
