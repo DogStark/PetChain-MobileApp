@@ -146,6 +146,55 @@ const ACTION_SKIP_DOSE = 'SKIP_DOSE';
 // Cleared on app restart (not persisted).
 const processedNotificationIds = new Set<string>();
 
+// Timezone reconciliation: track the device timezone at the time of medication scheduling.
+// Used to detect changes and reschedule notifications as needed.
+const SCHEDULED_MEDICATIONS_TIMEZONE_KEY = '@scheduled_medications_timezone';
+let lastKnownTimezone: string | null = null;
+
+/**
+ * Gets the current device timezone identifier (e.g., 'America/New_York').
+ * Falls back to 'UTC' if unable to determine.
+ */
+function getDeviceTimezone(): string {
+  try {
+    // Try to get timezone from device Intl API
+    const formatter = new Intl.DateTimeFormat('en-US', { timeZoneName: 'long' });
+    // This is a best-effort approximation; for production use a library like `react-native-timezone`
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+/**
+ * Stores the timezone context for a medication's scheduled notifications.
+ * Called when scheduling medication reminders to establish baseline timezone.
+ */
+async function storeMedicationTimezone(medicationId: string, timezone: string): Promise<void> {
+  try {
+    const storedJson = await getItem(SCHEDULED_MEDICATIONS_TIMEZONE_KEY);
+    const stored = storedJson ? JSON.parse(storedJson) : {};
+    const updated = { ...stored, [medicationId]: timezone };
+    await setItem(SCHEDULED_MEDICATIONS_TIMEZONE_KEY, JSON.stringify(updated));
+  } catch {
+    // Ignore storage errors; timezone tracking is best-effort
+  }
+}
+
+/**
+ * Retrieves the stored timezone for a medication's scheduled notifications.
+ */
+async function getMedicationTimezone(medicationId: string): Promise<string | null> {
+  try {
+    const storedJson = await getItem(SCHEDULED_MEDICATIONS_TIMEZONE_KEY);
+    if (!storedJson) return null;
+    const stored = JSON.parse(storedJson) as Record<string, string>;
+    return stored[medicationId] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 const DEFAULT_PREFS: NotificationPreferences = {
   medicationReminders: true,
   appointmentReminders: true,
@@ -654,7 +703,63 @@ export const scheduleMedicationReminder = async (medication: Medication): Promis
   }
 
   await saveNotificationIds(medication.id, notificationIds);
+
+  // Store the timezone context for this medication's scheduled notifications
+  // Used to detect timezone changes and reschedule as needed
+  const currentTimezone = getDeviceTimezone();
+  await storeMedicationTimezone(medication.id, currentTimezone);
+
   return notificationIds;
+};
+
+/**
+ * Reconciles medication reminder notifications after a timezone change.
+ *
+ * When the device timezone changes (travel, DST boundary, system settings):
+ * 1. Detects timezone mismatch with stored intent
+ * 2. Cancels all pending scheduled notifications for the medication
+ * 3. Reschedules them using the new device timezone (maintaining local time intent)
+ * 4. Updates stored timezone to current device timezone
+ *
+ * Idempotent: running twice in succession produces the same result (no duplicates).
+ *
+ * @param medicationId - ID of the medication to reconcile
+ * @param medication - The medication object (for rescheduling)
+ */
+export const reconcileMedicationNotificationsForTimezone = async (
+  medicationId: string,
+  medication: Medication,
+): Promise<void> => {
+  const storedTimezone = await getMedicationTimezone(medicationId);
+  const currentTimezone = getDeviceTimezone();
+
+  // If timezone hasn't changed, nothing to do
+  if (storedTimezone === currentTimezone) return;
+
+  // Reschedule all notifications for this medication
+  // (scheduleMedicationReminder cancels old ones and creates new ones)
+  await scheduleMedicationReminder(medication);
+};
+
+/**
+ * Reconciles timezone for all medications with pending scheduled notifications.
+ * Called on app foreground to detect and respond to timezone changes (travel, DST, etc).
+ *
+ * @param medications - Array of active medications to check
+ */
+export const reconcileAllMedicationNotificationsForTimezone = async (
+  medications: Medication[],
+): Promise<void> => {
+  const currentTimezone = getDeviceTimezone();
+
+  // Detect if any medication was scheduled in a different timezone
+  for (const med of medications) {
+    const storedTimezone = await getMedicationTimezone(med.id);
+    if (storedTimezone && storedTimezone !== currentTimezone) {
+      // Timezone has changed since last scheduling; reconcile this medication
+      await reconcileMedicationNotificationsForTimezone(med.id, med);
+    }
+  }
 };
 
 // ─── Appointment reminders ────────────────────────────────────────────────────
