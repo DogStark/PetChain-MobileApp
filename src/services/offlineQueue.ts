@@ -68,6 +68,42 @@ export interface DeadLetteredMutation {
 
 export type ConflictResolution = 'keep-server' | 'keep-local';
 
+/** Field-level conflict policies: which fields can auto-merge vs. require manual review */
+export interface ConflictPolicy {
+  /** Fields that can auto-merge (append-only, timestamps, etc.) */
+  autoMergeable: Set<string>;
+  /** Fields that require manual review on conflict */
+  requiresReview: Set<string>;
+}
+
+/** Map entity types to their conflict policies */
+const CONFLICT_POLICIES: Record<SyncEntityType, ConflictPolicy> = {
+  appointment: {
+    autoMergeable: new Set(['notes', 'attachments', 'tags']),
+    requiresReview: new Set(['startTime', 'endTime', 'status', 'vetId']),
+  },
+  medicalRecord: {
+    autoMergeable: new Set(['notes', 'attachments']),
+    requiresReview: new Set(['bloodPressure', 'heartRate', 'temperature', 'weight', 'medications']),
+  },
+  medication: {
+    autoMergeable: new Set([]),
+    requiresReview: new Set(['dosage', 'frequency', 'startDate', 'endDate']),
+  },
+  pet: {
+    autoMergeable: new Set(['notes']),
+    requiresReview: new Set(['name', 'breed', 'birthDate', 'weight']),
+  },
+  streak: {
+    autoMergeable: new Set([]),
+    requiresReview: new Set(['count', 'lastUpdated']),
+  },
+  badge: {
+    autoMergeable: new Set([]),
+    requiresReview: new Set(['earnedAt']),
+  },
+};
+
 export interface OfflineQueueStatus {
   isOnline: boolean;
   pendingCount: number;
@@ -312,17 +348,18 @@ class OfflineQueue {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
 
       if (status === 409) {
-        // Conflict detected — fetch server version and queue for resolution
+        // Conflict detected — fetch server version and analyze for auto-merge possibility
         const serverData = await this._fetchServerVersion(mutation);
         if (serverData) {
-          await this._storeConflict({
-            id: mutation.id,
-            type: mutation.type,
-            action: mutation.action,
-            localData: mutation.data,
-            serverData,
-          });
-          return false; // Don't requeue, moved to conflicts
+          // Analyze conflict: can it auto-merge or does it require manual review?
+          const needsReview = await this._analyzeConflict(mutation, serverData);
+
+          if (needsReview) {
+            // Conflict requires manual review — queue for user resolution
+            await this._storeConflict(needsReview);
+          }
+          // If no review needed (auto-mergeable), treat as success and don't requeue
+          return false; // Don't requeue (either merged or in review)
         } else {
           return true; // Requeue if server fetch fails
         }
@@ -699,6 +736,58 @@ class OfflineQueue {
     const remaining = deadLetters.filter((dl) => dl.id !== mutationId);
     await setItem(DEAD_LETTER_KEY, JSON.stringify(remaining));
     await this.emitStatus();
+  }
+
+  /**
+   * Analyze a conflict and determine if it can be auto-merged or requires manual review.
+   * Returns null if conflict can be auto-merged, or a ConflictItem if manual review is needed.
+   */
+  private async _analyzeConflict(
+    mutation: QueuedMutation,
+    serverData: Record<string, unknown>,
+  ): Promise<ConflictItem | null> {
+    const policy = CONFLICT_POLICIES[mutation.type];
+    if (!policy) {
+      // No policy defined; default to requiring review
+      return {
+        id: mutation.id,
+        type: mutation.type,
+        action: mutation.action,
+        localData: mutation.data,
+        serverData,
+      };
+    }
+
+    // Check which fields have conflicts
+    const conflictingFields = new Set<string>();
+    const allKeys = new Set([...Object.keys(mutation.data), ...Object.keys(serverData)]);
+
+    for (const key of allKeys) {
+      if (key === 'id' || key === 'updatedAt' || key === 'updated_at') continue; // Skip metadata
+      const localVal = mutation.data[key];
+      const serverVal = serverData[key];
+
+      if (JSON.stringify(localVal) !== JSON.stringify(serverVal)) {
+        conflictingFields.add(key);
+      }
+    }
+
+    // Check if any conflicting field requires manual review
+    for (const field of conflictingFields) {
+      if (policy.requiresReview.has(field)) {
+        // At least one field requires review — flag entire conflict for manual resolution
+        return {
+          id: mutation.id,
+          type: mutation.type,
+          action: mutation.action,
+          localData: mutation.data,
+          serverData,
+        };
+      }
+    }
+
+    // All conflicting fields can auto-merge — no manual review needed
+    return null;
   }
 
   // ── Notification helper ───────────────────────────────────────────────────
