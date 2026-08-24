@@ -40,6 +40,8 @@ export interface QueuedMutation {
   etag?: string;
   /** Stable idempotency key generated at enqueue time to prevent duplicate mutations on retry */
   idempotencyKey?: string;
+  /** Aggregate ID (type:entityId) for ordering — ensures mutations on same entity preserve causal order */
+  aggregateId?: string;
 }
 
 export interface ConflictItem {
@@ -86,6 +88,8 @@ class OfflineQueue {
   private conflictListeners: ConflictListener[] = [];
   private isOnline = false;
   private initialized = false;
+  /** Track in-flight mutations per aggregate to enforce causal ordering */
+  private inFlightByAggregate = new Map<string, Promise<void>>();
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -159,6 +163,8 @@ class OfflineQueue {
 
   /**
    * Flush all pending mutations to the server.
+   * Processes mutations in order, ensuring mutations on the same aggregate (entity)
+   * are serialized to preserve causal ordering.
    * Detects 409 conflicts via If-Match / ETag and queues them for resolution.
    */
   async processQueue(): Promise<void> {
@@ -170,61 +176,37 @@ class OfflineQueue {
 
     const stillPending: QueuedMutation[] = [];
 
+    // Process mutations in order, but serialize per aggregate (entity)
     for (const mutation of pending) {
-      try {
-        const headers: Record<string, string> = {};
-        if (mutation.etag) headers['If-Match'] = mutation.etag;
-        if (mutation.idempotencyKey) headers['Idempotency-Key'] = mutation.idempotencyKey;
+      const aggregateId = mutation.aggregateId || `${mutation.type}:${mutation.data.id}`;
 
-        const endpoint = `/${mutation.type}s/${String(mutation.data.id ?? '')}`;
-        const response = await apiClient.put(endpoint, mutation.data, { headers });
-
-        // Capture updated ETag for future mutations on this entity
-        const newEtag = (response.headers as Record<string, string>)?.['etag'];
-        if (newEtag) {
-          // Update stored ETag for subsequent mutations on the same entity
-          const updated = stillPending.map((m) =>
-            m.data.id === mutation.data.id ? { ...m, etag: newEtag } : m,
-          );
-          stillPending.splice(0, stillPending.length, ...updated);
-        }
-      } catch (err) {
-        const status = (err as { response?: { status?: number; data?: unknown } })?.response
-          ?.status;
-
-        if (status === 409) {
-          // Conflict detected — fetch server version and queue for resolution
-          const serverData = await this._fetchServerVersion(mutation);
-          if (serverData) {
-            await this._storeConflict({
-              id: mutation.id,
-              type: mutation.type,
-              action: mutation.action,
-              localData: mutation.data,
-              serverData,
-            });
-          } else {
-            stillPending.push(mutation);
-          }
-        } else if (
-          status === undefined ||
-          (status >= 500 && status < 600) ||
-          status === 408 ||
-          status === 429
-        ) {
-          // Ambiguous or retryable error (timeout, 5xx, or rate limit)
-          // Before retrying, check if the mutation already succeeded on the server
-          // (the client timed out but server processed the request)
-          const alreadyApplied = await this._checkIfAlreadyApplied(mutation);
-          if (!alreadyApplied) {
-            // Safe to retry
-            stillPending.push(mutation);
-          }
-          // If already applied, don't re-enqueue (idempotent success)
-        } else {
-          stillPending.push(mutation);
-        }
+      // Wait for any in-flight mutation on the same aggregate to complete
+      const inFlight = this.inFlightByAggregate.get(aggregateId);
+      if (inFlight) {
+        await inFlight;
       }
+
+      // Process this mutation with a promise chain to enforce ordering
+      const mutationPromise = this._processMutation(mutation).then(
+        (shouldRequeue) => {
+          if (shouldRequeue) {
+            stillPending.push(mutation);
+          }
+        },
+        (err) => {
+          // On unexpected error, requeue for retry
+          stillPending.push(mutation);
+        },
+      );
+
+      // Track this mutation as in-flight for its aggregate
+      this.inFlightByAggregate.set(aggregateId, mutationPromise);
+
+      // Wait for this mutation to complete before moving to next (ensures ordering)
+      await mutationPromise;
+
+      // Clear the in-flight flag for this aggregate
+      this.inFlightByAggregate.delete(aggregateId);
     }
 
     await setItem(QUEUE_KEY, JSON.stringify(stillPending));
@@ -245,6 +227,66 @@ class OfflineQueue {
     }
 
     await this.emitStatus();
+  }
+
+  private async _processMutation(mutation: QueuedMutation): Promise<boolean> {
+    try {
+      const headers: Record<string, string> = {};
+      if (mutation.etag) headers['If-Match'] = mutation.etag;
+      if (mutation.idempotencyKey) headers['Idempotency-Key'] = mutation.idempotencyKey;
+
+      const endpoint = `/${mutation.type}s/${String(mutation.data.id ?? '')}`;
+      const response = await apiClient.put(endpoint, mutation.data, { headers });
+
+      // Capture updated ETag for future mutations on this entity
+      const newEtag = (response.headers as Record<string, string>)?.['etag'];
+      if (newEtag && mutation.data.id) {
+        // Update stored ETag in the persistent queue
+        const queue = await this.getPersistentQueue();
+        const updated = queue.map((m) =>
+          m.data.id === mutation.data.id ? { ...m, etag: newEtag } : m,
+        );
+        await setItem(QUEUE_KEY, JSON.stringify(updated));
+      }
+
+      return false; // Don't requeue on success
+    } catch (err) {
+      const status = (err as { response?: { status?: number; data?: unknown } })?.response
+        ?.status;
+
+      if (status === 409) {
+        // Conflict detected — fetch server version and queue for resolution
+        const serverData = await this._fetchServerVersion(mutation);
+        if (serverData) {
+          await this._storeConflict({
+            id: mutation.id,
+            type: mutation.type,
+            action: mutation.action,
+            localData: mutation.data,
+            serverData,
+          });
+          return false; // Don't requeue, moved to conflicts
+        } else {
+          return true; // Requeue if server fetch fails
+        }
+      } else if (
+        status === undefined ||
+        (status >= 500 && status < 600) ||
+        status === 408 ||
+        status === 429
+      ) {
+        // Ambiguous or retryable error (timeout, 5xx, or rate limit)
+        // Before retrying, check if the mutation already succeeded on the server
+        // (the client timed out but server processed the request)
+        const alreadyApplied = await this._checkIfAlreadyApplied(mutation);
+        if (!alreadyApplied) {
+          return true; // Safe to retry
+        }
+        return false; // Already applied, don't requeue
+      } else {
+        return true; // Requeue for other errors
+      }
+    }
   }
 
   // ── Blockchain anchor queue ───────────────────────────────────────────────
@@ -408,16 +450,20 @@ class OfflineQueue {
     }
     // Generate stable idempotency key at enqueue time (not retry time)
     // This ensures retries reuse the same key for deduplication on the server
+    const entityId = String(mutation.data.id ?? '');
     const idempotencyKey = this._generateIdempotencyKey(
       mutation.type,
-      String(mutation.data.id ?? ''),
+      entityId,
       mutation.action,
     );
+    // Aggregate ID for causal ordering: ensures mutations on same entity are serialized
+    const aggregateId = `${mutation.type}:${entityId}`;
     const item: QueuedMutation = {
       id: `${mutation.type}_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       ...mutation,
       etag,
       idempotencyKey,
+      aggregateId,
       timestamp: Date.now(),
       retries: 0,
     };
