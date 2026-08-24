@@ -54,6 +54,18 @@ export interface ConflictItem {
   serverData: Record<string, unknown>;
 }
 
+export interface DeadLetteredMutation {
+  id: string;
+  type: SyncEntityType;
+  action: SyncAction;
+  entityId: string;
+  lastError: string;
+  attempts: number;
+  deadLetteredAt: string;
+  /** Minimal payload (id + key fields only) to minimize storage */
+  minimalData: Record<string, unknown>;
+}
+
 export type ConflictResolution = 'keep-server' | 'keep-local';
 
 export interface OfflineQueueStatus {
@@ -64,6 +76,8 @@ export interface OfflineQueueStatus {
   failedCount: number;
   /** Conflicts waiting for user resolution */
   pendingConflicts: ConflictItem[];
+  /** Dead-lettered mutations awaiting manual resolution */
+  deadLetteredCount: number;
 }
 
 type StatusListener = (status: OfflineQueueStatus) => void;
@@ -73,6 +87,23 @@ type ConflictListener = (conflict: ConflictItem) => void;
 
 const QUEUE_KEY = '@offline_queue';
 const CONFLICTS_KEY = '@offline_queue:conflicts';
+const DEAD_LETTER_KEY = '@offline_queue:dead-letter';
+
+/** Per-domain queue size caps to prevent unbounded growth */
+const QUEUE_SIZE_CAPS: Record<SyncEntityType, number> = {
+  appointment: 50,
+  medication: 100,
+  medicalRecord: 30,
+  pet: 20,
+  streak: 100,
+  badge: 100,
+};
+
+/** Maximum retry attempts before moving to dead-letter */
+const MAX_RETRY_ATTEMPTS = 5;
+
+/** Exponential backoff intervals (ms) for retries */
+const BACKOFF_INTERVALS_MS = [30_000, 60_000, 120_000, 300_000, 600_000];
 
 // ─── OfflineQueue ─────────────────────────────────────────────────────────────
 
@@ -136,12 +167,27 @@ class OfflineQueue {
    * Queue a create/update/delete mutation.
    * If online, immediately attempts to process the queue.
    * If offline, persists to AsyncStorage for later.
+   * Enforces per-domain queue size caps to prevent unbounded growth.
    */
   async enqueue(
     type: SyncEntityType,
     action: SyncAction,
     data: Record<string, unknown>,
   ): Promise<void> {
+    // Check if queue is at capacity for this domain
+    const queue = await this.getPersistentQueue();
+    const cap = QUEUE_SIZE_CAPS[type];
+    const countByType = queue.filter((m) => m.type === type).length;
+
+    if (countByType >= cap) {
+      // Queue is full — skip enqueuing and notify user
+      await this.notifyUser(
+        '⚠️ Queue full',
+        `Too many pending ${type} changes. Please sync before adding more.`,
+      );
+      return;
+    }
+
     // Persist to our own queue key for resilience
     await this.persistToQueue({ type, action, data });
 
@@ -190,11 +236,14 @@ class OfflineQueue {
       const mutationPromise = this._processMutation(mutation).then(
         (shouldRequeue) => {
           if (shouldRequeue) {
+            // Increment retry count before re-enqueueing
+            mutation.retries = (mutation.retries ?? 0) + 1;
             stillPending.push(mutation);
           }
         },
         (err) => {
           // On unexpected error, requeue for retry
+          mutation.retries = (mutation.retries ?? 0) + 1;
           stillPending.push(mutation);
         },
       );
@@ -230,6 +279,13 @@ class OfflineQueue {
   }
 
   private async _processMutation(mutation: QueuedMutation): Promise<boolean> {
+    // Check if this mutation has exceeded max retries
+    if (mutation.retries >= MAX_RETRY_ATTEMPTS) {
+      // Move to dead-letter and don't requeue
+      await this._moveToDeadLetter(mutation, 'Max retries exceeded');
+      return false;
+    }
+
     try {
       const headers: Record<string, string> = {};
       if (mutation.etag) headers['If-Match'] = mutation.etag;
@@ -253,6 +309,7 @@ class OfflineQueue {
     } catch (err) {
       const status = (err as { response?: { status?: number; data?: unknown } })?.response
         ?.status;
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
 
       if (status === 409) {
         // Conflict detected — fetch server version and queue for resolution
@@ -280,11 +337,16 @@ class OfflineQueue {
         // (the client timed out but server processed the request)
         const alreadyApplied = await this._checkIfAlreadyApplied(mutation);
         if (!alreadyApplied) {
-          return true; // Safe to retry
+          return true; // Safe to retry (retries incremented in processQueue)
         }
         return false; // Already applied, don't requeue
+      } else if (status && [401, 403, 422].includes(status)) {
+        // Non-retryable errors — move to dead-letter immediately
+        await this._moveToDeadLetter(mutation, `Non-retryable error: ${status} ${errorMessage}`);
+        return false;
       } else {
-        return true; // Requeue for other errors
+        // Other retryable errors
+        return true; // Requeue for retry (retries incremented in processQueue)
       }
     }
   }
@@ -359,6 +421,7 @@ class OfflineQueue {
     const syncStatus = await syncService.getStatus();
     const queue = await this.getPersistentQueue();
     const pendingConflicts = await this.getPendingConflicts();
+    const deadLetters = await this._getDeadLettered();
     return {
       isOnline: this.isOnline,
       pendingCount: Math.max(syncStatus.pendingCount, queue.length),
@@ -366,6 +429,7 @@ class OfflineQueue {
       lastSync: syncStatus.lastSync,
       failedCount: syncStatus.failedCount,
       pendingConflicts,
+      deadLetteredCount: deadLetters.length,
     };
   }
 
@@ -566,6 +630,75 @@ class OfflineQueue {
     } catch {
       /* audit trail is best-effort */
     }
+  }
+
+  private async _moveToDeadLetter(mutation: QueuedMutation, reason: string): Promise<void> {
+    const deadLetters = await this._getDeadLettered();
+    // Store minimal data: only id and necessary fields to avoid bloating storage
+    const minimalData: Record<string, unknown> = { id: mutation.data.id };
+    if (mutation.data.type) minimalData.type = mutation.data.type;
+    if (mutation.data.name) minimalData.name = mutation.data.name;
+
+    const deadLetterItem: DeadLetteredMutation = {
+      id: mutation.id,
+      type: mutation.type,
+      action: mutation.action,
+      entityId: String(mutation.data.id ?? ''),
+      lastError: reason,
+      attempts: mutation.retries,
+      deadLetteredAt: new Date().toISOString(),
+      minimalData,
+    };
+
+    deadLetters.push(deadLetterItem);
+    await setItem(DEAD_LETTER_KEY, JSON.stringify(deadLetters));
+  }
+
+  async getDeadLettered(): Promise<DeadLetteredMutation[]> {
+    return this._getDeadLettered();
+  }
+
+  private async _getDeadLettered(): Promise<DeadLetteredMutation[]> {
+    const raw = await getItem(DEAD_LETTER_KEY);
+    return raw ? (JSON.parse(raw) as DeadLetteredMutation[]) : [];
+  }
+
+  async retryDeadLettered(mutationId: string): Promise<void> {
+    const deadLetters = await this._getDeadLettered();
+    const item = deadLetters.find((dl) => dl.id === mutationId);
+    if (!item) return;
+
+    // Re-enqueue the mutation by adding it back to the regular queue
+    const mutation: QueuedMutation = {
+      id: item.id,
+      type: item.type,
+      action: item.action,
+      data: item.minimalData,
+      timestamp: Date.now(),
+      retries: 0, // Reset retry count for manual retry
+      idempotencyKey: this._generateIdempotencyKey(item.type, item.entityId, item.action),
+      aggregateId: `${item.type}:${item.entityId}`,
+    };
+
+    const queue = await this.getPersistentQueue();
+    queue.push(mutation);
+    await setItem(QUEUE_KEY, JSON.stringify(queue));
+
+    // Remove from dead-letter
+    const remaining = deadLetters.filter((dl) => dl.id !== mutationId);
+    await setItem(DEAD_LETTER_KEY, JSON.stringify(remaining));
+
+    // Trigger sync if online
+    if (this.isOnline) {
+      await this.processQueue();
+    }
+  }
+
+  async discardDeadLettered(mutationId: string): Promise<void> {
+    const deadLetters = await this._getDeadLettered();
+    const remaining = deadLetters.filter((dl) => dl.id !== mutationId);
+    await setItem(DEAD_LETTER_KEY, JSON.stringify(remaining));
+    await this.emitStatus();
   }
 
   // ── Notification helper ───────────────────────────────────────────────────
