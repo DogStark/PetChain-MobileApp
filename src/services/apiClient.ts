@@ -316,14 +316,16 @@ function recordFailure(): void {
   }
 }
 
-// --- Single-flight token refresh (Issue #547) ---
+// --- Single-flight token refresh with logout generation guard (Issue #903) ---
 // If multiple 401 responses arrive concurrently, only one refresh call is made.
 // All queued requests resolve / reject together once the refresh settles.
+// Logout generation guard ensures requests queued before logout are not replayed after.
 
 type RefreshSubscriber = (newToken: string) => void;
 type RefreshRejecter = (err: unknown) => void;
 
 let refreshInFlight = false;
+let logoutGeneration = 1; // Incremented on logout; guards against stale token replays
 const refreshSubscribers: RefreshSubscriber[] = [];
 const refreshRejecters: RefreshRejecter[] = [];
 
@@ -359,6 +361,10 @@ async function singleFlightRefresh(): Promise<string> {
   } finally {
     refreshInFlight = false;
   }
+}
+
+export function getLogoutGeneration(): number {
+  return logoutGeneration;
 }
 
 // --- Retry ---
@@ -410,16 +416,36 @@ apiClient.interceptors.request.use(async (requestConfig) => {
 });
 setupInterceptors(apiClient);
 
-// 401 → single-flight token refresh (Issue #547)
+// 401 → single-flight token refresh with logout generation guard (Issue #903)
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
-    const original = error.config as AxiosRequestConfig & { _retried?: boolean };
+    const original = error.config as AxiosRequestConfig & {
+      _retried?: boolean;
+      _generation?: number;
+    };
+
     if (error.response?.status === 401 && !original._retried) {
       original._retried = true;
-      const newToken = await singleFlightRefresh();
-      (original.headers as Record<string, string>).Authorization = `Bearer ${newToken}`;
-      return apiClient.request(original);
+      const requestGeneration = original._generation ?? logoutGeneration;
+
+      try {
+        const newToken = await singleFlightRefresh();
+
+        // Check if logout happened while we were refreshing
+        if (requestGeneration !== logoutGeneration) {
+          // Request is stale — don't replay it after logout
+          return Promise.reject(new Error('Logout occurred during token refresh'));
+        }
+
+        (original.headers as Record<string, string>).Authorization = `Bearer ${newToken}`;
+        // Preserve generation for any retries
+        original._generation = logoutGeneration;
+        return apiClient.request(original);
+      } catch (refreshErr) {
+        // Token refresh failed — logout already called in singleFlightRefresh
+        return Promise.reject(refreshErr);
+      }
     }
     return Promise.reject(error);
   },
@@ -494,11 +520,17 @@ export async function resilientRequest<T>(
 
 export const getCircuitState = () => circuit.state;
 
+/** Increment logout generation to invalidate queued requests (call on logout) */
+export function incrementLogoutGeneration(): void {
+  logoutGeneration++;
+}
+
 /** Exposed for testing only */
 export const _resetRefreshState = () => {
   refreshInFlight = false;
   refreshSubscribers.splice(0);
   refreshRejecters.splice(0);
+  logoutGeneration = 1;
 };
 
 /** Exposed for testing only */

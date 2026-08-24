@@ -2,6 +2,7 @@ import axios, { type AxiosInstance } from 'axios';
 import * as SecureStore from 'expo-secure-store';
 
 import sessionMonitoringService from './sessionMonitoringService';
+import { incrementLogoutGeneration } from './apiClient';
 import type {
   LoginRequest,
   LoginResponse,
@@ -262,6 +263,9 @@ export async function refreshToken(): Promise<string> {
 }
 
 export async function logout(): Promise<void> {
+  // Increment logout generation to invalidate any queued requests
+  // (they should not be replayed with a new token after logout)
+  incrementLogoutGeneration();
   await clearSecureTokens();
 }
 
