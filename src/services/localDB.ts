@@ -4,6 +4,101 @@ import { encrypt, decrypt } from '../utils/encryption';
 
 const db = SQLite.openDatabaseSync('petchain.db');
 
+// ─── Schema Versioning ────────────────────────────────────────────────────────
+
+const SCHEMA_VERSION_KEY = 'schema_version';
+const CURRENT_SCHEMA_VERSION = 4; // Current database schema version
+
+/**
+ * Read the current schema version from the database.
+ * Defaults to 1 if not set (for initial setup).
+ */
+async function getSchemaVersion(): Promise<number> {
+  try {
+    const row = await db.getFirstAsync<{ value: string }>(
+      `SELECT value FROM kv_store WHERE key = ? LIMIT 1`,
+      [SCHEMA_VERSION_KEY],
+    );
+    if (!row) return 1; // Default to version 1 for new databases
+    const decrypted = await decrypt<number>(row.value, `localdb_kv_${SCHEMA_VERSION_KEY}`);
+    return Number(decrypted) || 1;
+  } catch {
+    return 1;
+  }
+}
+
+/**
+ * Set the schema version in the database.
+ */
+async function setSchemaVersion(version: number): Promise<void> {
+  const encryptedVersion = await encrypt(String(version), `localdb_kv_${SCHEMA_VERSION_KEY}`);
+  await db.runAsync(`INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)`, [
+    SCHEMA_VERSION_KEY,
+    encryptedVersion,
+  ]);
+}
+
+/**
+ * Migration definitions: each migration must be idempotent and atomic.
+ * Migrations are applied sequentially in order.
+ */
+interface Migration {
+  version: number;
+  name: string;
+  up: () => Promise<void>;
+}
+
+const MIGRATIONS: Migration[] = [
+  {
+    version: 2,
+    name: 'add_health_metrics_table',
+    up: async () => {
+      // health_metrics table added in migration 2
+      // (already created in init(), this is a no-op for compatibility)
+    },
+  },
+  {
+    version: 3,
+    name: 'add_appointments_table',
+    up: async () => {
+      // appointments table added in migration 3
+      // (already created in init(), this is a no-op for compatibility)
+    },
+  },
+  {
+    version: 4,
+    name: 'add_soap_note_drafts_table',
+    up: async () => {
+      // soap_note_drafts table added in migration 4
+      // (already created in init(), this is a no-op for compatibility)
+    },
+  },
+];
+
+/**
+ * Run pending migrations on the database.
+ * Uses transactions to ensure atomicity: all-or-nothing.
+ */
+async function runMigrations(): Promise<void> {
+  const currentVersion = await getSchemaVersion();
+
+  if (currentVersion >= CURRENT_SCHEMA_VERSION) {
+    return; // Already at latest version
+  }
+
+  // Get migrations to apply
+  const pendingMigrations = MIGRATIONS.filter((m) => m.version > currentVersion);
+
+  for (const migration of pendingMigrations) {
+    // Run each migration within a transaction
+    await db.withTransactionAsync(async () => {
+      await migration.up();
+      // Update version only after successful migration
+      await setSchemaVersion(migration.version);
+    });
+  }
+}
+
 /**
  * Helper to safely decrypt data, falling back to original data if decryption fails.
  * This handles transition from unencrypted to encrypted data.
@@ -82,6 +177,9 @@ async function init(): Promise<void> {
   await db.execAsync(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_soap_drafts_pet_vet ON soap_note_drafts (pet_id, vet_id)`,
   );
+
+  // Run any pending migrations
+  await runMigrations();
 }
 
 // Initialize DB on module import
@@ -365,6 +463,10 @@ export async function deleteAppointmentById(id: string): Promise<void> {
   await db.runAsync(`DELETE FROM appointments WHERE id = ?`, [id]);
 }
 
+// ─── Schema Migration Utilities (exported for testing) ─────────────────────
+
+export { getSchemaVersion, setSchemaVersion, runMigrations };
+
 export default {
   getItem,
   setItem,
@@ -387,4 +489,7 @@ export default {
   getAppointmentsInWindow,
   upsertAppointment,
   deleteAppointmentById,
+  getSchemaVersion,
+  setSchemaVersion,
+  runMigrations,
 };
