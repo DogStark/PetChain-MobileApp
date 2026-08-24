@@ -3,6 +3,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 
 import config from '../config';
+import { clearPersistedTimestamps } from '../services/appLockService';
 import { authenticateWithBiometric, verifyPin } from '../services/authService';
 
 interface LockScreenProps {
@@ -109,6 +110,7 @@ export default function LockScreen({ onUnlock, onWipe, showPinFallback = false }
       const ok = await authenticateWithBiometric();
       if (ok) {
         await clearLockState();
+        await clearPersistedTimestamps();
         onUnlock();
       } else {
         setMode('pin');
@@ -137,6 +139,7 @@ export default function LockScreen({ onUnlock, onWipe, showPinFallback = false }
         const ok = await verifyPin(next);
         if (ok) {
           await clearLockState();
+          await clearPersistedTimestamps();
           onUnlock();
           return;
         }

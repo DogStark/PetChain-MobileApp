@@ -19,6 +19,10 @@ import {
   enableScreenCapturePrevention,
   loadLockTimeout,
   getLockTimeoutMs,
+  persistAppBackground,
+  persistAppForeground,
+  getElapsedSinceBackground,
+  clearPersistedTimestamps,
 } from './src/services/appLockService';
 import { registerBackgroundMedicationTask } from './src/services/backgroundTaskService';
 import errorTracking from './src/services/errorTracking';
@@ -48,7 +52,6 @@ function App() {
   >({ visible: false });
   const [locked, setLocked] = useState(false);
   const [pinFallback, setPinFallback] = useState(false);
-  const backgroundedAt = React.useRef<number | null>(null);
 
   // Enable screen capture prevention on mount
   useEffect(() => {
@@ -59,10 +62,10 @@ function App() {
   useEffect(() => {
     const onChange = async (state: AppStateStatus) => {
       if (state === 'background' || state === 'inactive') {
-        backgroundedAt.current = Date.now();
-      } else if (state === 'active' && backgroundedAt.current !== null) {
-        const elapsed = Date.now() - backgroundedAt.current;
-        backgroundedAt.current = null;
+        await persistAppBackground();
+      } else if (state === 'active') {
+        await persistAppForeground();
+        const elapsed = await getElapsedSinceBackground();
         const timeout = await loadLockTimeout();
         const ms = getLockTimeoutMs(timeout);
         if (ms > 0 && elapsed >= ms) {
