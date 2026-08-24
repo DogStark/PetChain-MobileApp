@@ -289,70 +289,113 @@ export const openApp = async (notification: Notifications.Notification): Promise
   await Linking.openURL(getNotificationUrl(notification.request.content.data));
 };
 
-// ─── Deep Link Builders ───────────────────────────────────────────────────────
+// ─── Deep Link Builders & Validation ──────────────────────────────────────────
 
 /**
- * Extract deep link parameters from notification data
+ * Validates that a value is a non-empty string (for schema validation).
  */
-export const extractDeepLinkParams = (
-  data: Record<string, unknown>,
-): { route: string; params: Record<string, any> } | null => {
-  const type = data.type as NotificationGroup | undefined;
+function isValidString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
 
-  if (type === 'medication' && data.medicationId) {
+/**
+ * Validates a deep-link payload against a versioned schema.
+ * Ensures that only trusted routes and parameter shapes are accepted;
+ * rejects unknown routes, missing required params, and malformed param types.
+ *
+ * Returns the validated route and params, or null if schema validation fails.
+ *
+ * Note: This validates structural schema only. Destination screens must verify
+ * authorization/ownership (e.g., confirm current user owns the petId) separately.
+ */
+function validateDeepLinkPayload(
+  data: Record<string, unknown>,
+): { route: string; params: Record<string, any> } | null {
+  // Validate version field (currently only v1 supported)
+  if (!('version' in data) || data.version !== 1) {
+    return null;
+  }
+
+  const type = data.type as string | undefined;
+
+  // Medication notification: requires type='medication' and medicationId (string)
+  if (type === 'medication') {
+    if (!isValidString(data.medicationId)) {
+      return null;
+    }
     return {
       route: 'Medications',
       params: { medicationId: data.medicationId },
     };
   }
 
-  if (type === 'appointment' && data.appointmentId) {
+  // Appointment notification: requires type='appointment' and appointmentId (string)
+  if (type === 'appointment') {
+    if (!isValidString(data.appointmentId)) {
+      return null;
+    }
     return {
       route: 'Appointments',
       params: { appointmentId: data.appointmentId },
     };
   }
 
-  if (type === 'vaccination' && data.vaccinationId) {
+  // Vaccination notification: requires type='vaccination' and vaccinationId (string)
+  // Optional: petId (string) and dueDate (string)
+  if (type === 'vaccination') {
+    if (!isValidString(data.vaccinationId)) {
+      return null;
+    }
     const params: Record<string, any> = { vaccinationId: data.vaccinationId };
-    if (data.petId) params.petId = data.petId;
-    if (data.dueDate) params.dueDate = data.dueDate;
+    if (isValidString(data.petId)) {
+      params.petId = data.petId;
+    }
+    if (isValidString(data.dueDate)) {
+      params.dueDate = data.dueDate;
+    }
     return {
       route: 'Vaccinations',
       params,
     };
   }
 
-  if (type === 'sos' && data.sosId) {
+  // SOS notification: requires type='sos' and sosId (string)
+  if (type === 'sos') {
+    if (!isValidString(data.sosId)) {
+      return null;
+    }
     return {
       route: 'Emergency',
       params: { sosId: data.sosId },
     };
   }
 
-  // Fallback to petId if available
-  if (data.petId) {
+  // Fallback to petId if available (type='general' or unspecified, but petId present)
+  // Only allow if petId is a valid string; destination screen verifies ownership
+  if (isValidString(data.petId)) {
     return {
       route: 'PetDetail',
       params: { petId: data.petId },
     };
   }
 
-  // Type-based fallback without specific ID
-  if (type === 'medication') {
-    return { route: 'Medications', params: {} };
-  }
-  if (type === 'appointment') {
-    return { route: 'Appointments', params: {} };
-  }
-  if (type === 'vaccination') {
-    return { route: 'Vaccinations', params: {} };
-  }
-  if (type === 'sos') {
-    return { route: 'Emergency', params: {} };
-  }
-
+  // No valid route found; reject the payload
   return null;
+}
+
+/**
+ * Extract deep link parameters from notification data.
+ *
+ * Validates the payload against a versioned schema before returning navigation params.
+ * Ensures only trusted routes and parameter shapes are accepted.
+ * Destination screens remain responsible for verifying user authorization/ownership.
+ *
+ * @returns Validated route and params, or null if schema validation fails.
+ */
+export const extractDeepLinkParams = (
+  data: Record<string, unknown>,
+): { route: string; params: Record<string, any> } | null => {
+  return validateDeepLinkPayload(data);
 };
 
 let medicationServiceModule: typeof import('./medicationService') | null = null;
