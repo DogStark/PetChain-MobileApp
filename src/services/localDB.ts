@@ -7,7 +7,7 @@ const db = SQLite.openDatabaseSync('petchain.db');
 // ─── Schema Versioning ────────────────────────────────────────────────────────
 
 const SCHEMA_VERSION_KEY = 'schema_version';
-const CURRENT_SCHEMA_VERSION = 4; // Current database schema version
+const CURRENT_SCHEMA_VERSION = 5; // Current database schema version (includes encryption migration)
 
 /**
  * Read the current schema version from the database.
@@ -34,6 +34,34 @@ async function setSchemaVersion(version: number): Promise<void> {
   const encryptedVersion = await encrypt(String(version), `localdb_kv_${SCHEMA_VERSION_KEY}`);
   await db.runAsync(`INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)`, [
     SCHEMA_VERSION_KEY,
+    encryptedVersion,
+  ]);
+}
+
+/**
+ * Get the current encryption version.
+ */
+async function getEncryptionVersion(): Promise<number> {
+  try {
+    const row = await db.getFirstAsync<{ value: string }>(
+      `SELECT value FROM kv_store WHERE key = ? LIMIT 1`,
+      [ENCRYPTION_VERSION_KEY],
+    );
+    if (!row) return 1; // Default to version 1
+    const decrypted = await decrypt<number>(row.value, `localdb_kv_${ENCRYPTION_VERSION_KEY}`);
+    return Number(decrypted) || 1;
+  } catch {
+    return 1;
+  }
+}
+
+/**
+ * Set the encryption version in the database.
+ */
+async function setEncryptionVersion(version: number): Promise<void> {
+  const encryptedVersion = await encrypt(String(version), `localdb_kv_${ENCRYPTION_VERSION_KEY}`);
+  await db.runAsync(`INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)`, [
+    ENCRYPTION_VERSION_KEY,
     encryptedVersion,
   ]);
 }
@@ -71,6 +99,55 @@ const MIGRATIONS: Migration[] = [
     up: async () => {
       // soap_note_drafts table added in migration 4
       // (already created in init(), this is a no-op for compatibility)
+    },
+  },
+  {
+    version: 5,
+    name: 'encrypt_sensitive_records',
+    up: async () => {
+      // Migrate existing plaintext sensitive records to encrypted form
+      // This migration encrypts sensitive fields in health_metrics, medications,
+      // appointments, and dose_logs tables
+      const tables = [
+        { name: 'health_metrics', purpose: 'localdb_health_metrics' },
+        { name: 'medications', purpose: 'localdb_medications' },
+        { name: 'appointments', purpose: 'localdb_appointments' },
+        { name: 'dose_logs', purpose: 'localdb_dose_logs' },
+      ];
+
+      for (const table of tables) {
+        const rows = await db.getAllAsync<{ id: string; data: string }>(
+          `SELECT id, data FROM ${table.name}`,
+        );
+
+        for (const row of rows) {
+          try {
+            // Decrypt the full record
+            const record = await safeDecrypt<Record<string, any>>(
+              row.data,
+              table.purpose,
+              true,
+            );
+
+            // Encrypt sensitive fields within the record
+            const withEncryptedFields = await encryptSensitiveFields(record, table.purpose);
+
+            // Re-encrypt the full record with sensitive fields encrypted
+            const reencrypted = await encrypt(withEncryptedFields, table.purpose);
+
+            // Update the row
+            await db.runAsync(`UPDATE ${table.name} SET data = ? WHERE id = ?`, [
+              reencrypted,
+              row.id,
+            ]);
+          } catch {
+            // Skip rows that can't be migrated (corrupted data)
+          }
+        }
+      }
+
+      // Update encryption version
+      await setEncryptionVersion(CURRENT_ENCRYPTION_VERSION);
     },
   },
 ];
@@ -122,6 +199,73 @@ async function safeDecrypt<T = string>(
     }
     return data as unknown as T;
   }
+}
+
+// ─── Field-Level Encryption for Sensitive Data ────────────────────────────────
+
+const ENCRYPTION_VERSION_KEY = 'encryption_version';
+const CURRENT_ENCRYPTION_VERSION = 1;
+
+/**
+ * Sensitive field classification.
+ * These fields are encrypted at the field level for additional security.
+ */
+const SENSITIVE_FIELDS = new Set([
+  // Medical/health fields
+  'dosage',
+  'condition',
+  'diagnosis',
+  'weight',
+  'temperature',
+  'bloodPressure',
+  'notes',
+  'symptoms',
+  // Emergency contact fields
+  'emergencyPhone',
+  'emergencyEmail',
+  'emergencyAddress',
+  // Wallet/payment fields
+  'paymentToken',
+  'accountNumber',
+  'transactionHistory',
+]);
+
+/**
+ * Encrypt sensitive fields in a record for additional protection.
+ * Non-sensitive fields are left as-is.
+ */
+async function encryptSensitiveFields<T extends Record<string, any>>(
+  record: T,
+  purpose: string,
+): Promise<T> {
+  const encrypted = { ...record };
+  for (const [key, value] of Object.entries(encrypted)) {
+    if (SENSITIVE_FIELDS.has(key) && value != null) {
+      encrypted[key] = await encrypt(String(value), `${purpose}::${key}`);
+    }
+  }
+  return encrypted;
+}
+
+/**
+ * Decrypt sensitive fields in a record.
+ * Non-sensitive fields are left as-is.
+ */
+async function decryptSensitiveFields<T extends Record<string, any>>(
+  record: T,
+  purpose: string,
+): Promise<T> {
+  const decrypted = { ...record };
+  for (const [key, value] of Object.entries(decrypted)) {
+    if (SENSITIVE_FIELDS.has(key) && typeof value === 'string') {
+      try {
+        decrypted[key] = await decrypt<string>(value, `${purpose}::${key}`);
+      } catch {
+        // If decryption fails, leave as-is (might be plaintext legacy data)
+      }
+    }
+  }
+  return decrypted;
 }
 
 export async function executeSql(
@@ -180,6 +324,12 @@ async function init(): Promise<void> {
 
   // Run any pending migrations
   await runMigrations();
+
+  // Initialize encryption version if not set
+  const encryptionVer = await getEncryptionVersion();
+  if (encryptionVer === 1) {
+    await setEncryptionVersion(CURRENT_ENCRYPTION_VERSION);
+  }
 }
 
 // Initialize DB on module import
@@ -465,7 +615,15 @@ export async function deleteAppointmentById(id: string): Promise<void> {
 
 // ─── Schema Migration Utilities (exported for testing) ─────────────────────
 
-export { getSchemaVersion, setSchemaVersion, runMigrations };
+export {
+  getSchemaVersion,
+  setSchemaVersion,
+  runMigrations,
+  getEncryptionVersion,
+  setEncryptionVersion,
+  encryptSensitiveFields,
+  decryptSensitiveFields,
+};
 
 export default {
   getItem,
@@ -492,4 +650,8 @@ export default {
   getSchemaVersion,
   setSchemaVersion,
   runMigrations,
+  getEncryptionVersion,
+  setEncryptionVersion,
+  encryptSensitiveFields,
+  decryptSensitiveFields,
 };
