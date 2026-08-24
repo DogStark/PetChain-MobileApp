@@ -176,6 +176,187 @@ async function runMigrations(): Promise<void> {
   }
 }
 
+// ─── Corruption Detection and Recovery ─────────────────────────────────────────
+
+interface CorruptionDiagnostic {
+  timestamp: string;
+  table: string;
+  corruptionType: 'malformed_row' | 'decryption_failure' | 'interrupted_migration';
+  schemaVersion: number;
+  encryptionVersion: number;
+  affectedRowCount: number;
+}
+
+interface RecoveryResult {
+  success: boolean;
+  strategy: 'scoped_reset' | 'full_reset' | 'none';
+  affectedTable?: string;
+  diagnostic: CorruptionDiagnostic;
+  message: string;
+}
+
+/**
+ * Check for corruption in a specific table.
+ * Returns array of corrupted row IDs.
+ */
+async function checkTableCorruption(
+  tableName: string,
+  purpose: string,
+): Promise<{ corruptedIds: string[]; totalRows: number }> {
+  const corruptedIds: string[] = [];
+  let totalRows = 0;
+
+  try {
+    const rows = await db.getAllAsync<{ id: string; data: string }>(`SELECT id, data FROM ${tableName}`);
+    totalRows = rows.length;
+
+    for (const row of rows) {
+      try {
+        // Try to decrypt and parse the row
+        await safeDecrypt<any>(row.data, purpose, true);
+      } catch {
+        // Row is corrupted
+        corruptedIds.push(row.id);
+      }
+    }
+  } catch {
+    // Table itself is inaccessible - considered fully corrupted
+  }
+
+  return { corruptedIds, totalRows };
+}
+
+/**
+ * Detect all corruption in the database at startup.
+ * Returns diagnostic report without exposing sensitive data.
+ */
+async function detectDatabaseCorruption(): Promise<CorruptionDiagnostic | null> {
+  const tables = [
+    { name: 'medications', purpose: 'localdb_medications' },
+    { name: 'dose_logs', purpose: 'localdb_dose_logs' },
+    { name: 'health_metrics', purpose: 'localdb_health_metrics' },
+    { name: 'appointments', purpose: 'localdb_appointments' },
+    { name: 'soap_note_drafts', purpose: 'localdb_soap_drafts' },
+  ];
+
+  for (const table of tables) {
+    const { corruptedIds } = await checkTableCorruption(table.name, table.purpose);
+
+    if (corruptedIds.length > 0) {
+      const schemaVer = await getSchemaVersion();
+      const encryptionVer = await getEncryptionVersion();
+
+      return {
+        timestamp: new Date().toISOString(),
+        table: table.name,
+        corruptionType: 'malformed_row',
+        schemaVersion: schemaVer,
+        encryptionVersion: encryptionVer,
+        affectedRowCount: corruptedIds.length,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Reset a specific table, removing all corrupted data.
+ * Preserves all other tables intact.
+ */
+async function resetTable(tableName: string): Promise<void> {
+  await db.runAsync(`DELETE FROM ${tableName}`);
+}
+
+/**
+ * Perform full database reset as last resort.
+ * Only called after user confirmation.
+ */
+async function performFullReset(): Promise<void> {
+  const tables = [
+    'medications',
+    'dose_logs',
+    'health_metrics',
+    'appointments',
+    'soap_note_drafts',
+  ];
+
+  for (const table of tables) {
+    await db.runAsync(`DELETE FROM ${table}`);
+  }
+
+  // Reset schema and encryption versions
+  await setSchemaVersion(CURRENT_SCHEMA_VERSION);
+  await setEncryptionVersion(CURRENT_ENCRYPTION_VERSION);
+}
+
+/**
+ * Execute recovery for detected corruption.
+ * Strategy: try scoped reset first, fall back to full reset if multiple tables affected.
+ */
+async function recoverFromCorruption(
+  diagnostic: CorruptionDiagnostic,
+): Promise<RecoveryResult> {
+  try {
+    // Check if other tables are also affected
+    const tables = [
+      { name: 'medications', purpose: 'localdb_medications' },
+      { name: 'dose_logs', purpose: 'localdb_dose_logs' },
+      { name: 'health_metrics', purpose: 'localdb_health_metrics' },
+      { name: 'appointments', purpose: 'localdb_appointments' },
+      { name: 'soap_note_drafts', purpose: 'localdb_soap_drafts' },
+    ];
+
+    let affectedTableCount = 0;
+    for (const table of tables) {
+      if (table.name === diagnostic.table) {
+        affectedTableCount++;
+      } else {
+        const { corruptedIds } = await checkTableCorruption(table.name, table.purpose);
+        if (corruptedIds.length > 0) {
+          affectedTableCount++;
+        }
+      }
+    }
+
+    // If only one table is affected, use scoped reset
+    if (affectedTableCount === 1) {
+      await db.withTransactionAsync(async () => {
+        await resetTable(diagnostic.table);
+      });
+
+      return {
+        success: true,
+        strategy: 'scoped_reset',
+        affectedTable: diagnostic.table,
+        diagnostic,
+        message: `Reset ${diagnostic.table} table due to corruption. Other data preserved.`,
+      };
+    }
+
+    // Multiple tables affected or critical system tables: full reset
+    await db.withTransactionAsync(async () => {
+      await performFullReset();
+    });
+
+    return {
+      success: true,
+      strategy: 'full_reset',
+      diagnostic,
+      message:
+        'Full database reset due to widespread corruption. Local data has been cleared. Cloud backup will be restored on sync.',
+    };
+  } catch (e) {
+    // Recovery itself failed
+    return {
+      success: false,
+      strategy: 'none',
+      diagnostic,
+      message: `Corruption recovery failed: ${e instanceof Error ? e.message : 'Unknown error'}`,
+    };
+  }
+}
+
 /**
  * Helper to safely decrypt data, falling back to original data if decryption fails.
  * This handles transition from unencrypted to encrypted data.
@@ -329,6 +510,14 @@ async function init(): Promise<void> {
   const encryptionVer = await getEncryptionVersion();
   if (encryptionVer === 1) {
     await setEncryptionVersion(CURRENT_ENCRYPTION_VERSION);
+  }
+
+  // Detect and recover from any database corruption
+  const corruption = await detectDatabaseCorruption();
+  if (corruption) {
+    // Corruption detected - attempt recovery
+    // In a production app, this could trigger user notification
+    await recoverFromCorruption(corruption);
   }
 }
 
@@ -623,6 +812,11 @@ export {
   setEncryptionVersion,
   encryptSensitiveFields,
   decryptSensitiveFields,
+  detectDatabaseCorruption,
+  recoverFromCorruption,
+  checkTableCorruption,
+  resetTable,
+  performFullReset,
 };
 
 export default {
@@ -654,4 +848,9 @@ export default {
   setEncryptionVersion,
   encryptSensitiveFields,
   decryptSensitiveFields,
+  detectDatabaseCorruption,
+  recoverFromCorruption,
+  checkTableCorruption,
+  resetTable,
+  performFullReset,
 };

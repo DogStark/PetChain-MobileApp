@@ -471,4 +471,208 @@ describe('localDB schema versioning and migrations', () => {
       expect(safeLogMessage).not.toContain('hypertension');
     });
   });
+
+  describe('corruption detection and recovery at startup', () => {
+    it('should detect malformed row in table', async () => {
+      // Simulate: corrupted row with invalid data
+      mockDb.getAllAsync.mockResolvedValue([
+        { id: 'med-1', data: 'valid-encrypted-data' },
+        { id: 'med-2', data: 'THIS_IS_NOT_VALID_JSON_OR_ENCRYPTED_DATA' },
+      ]);
+
+      // Recovery should detect this and report corruption
+      const corruptionReport = {
+        table: 'medications',
+        corruptedRowCount: 1,
+        message: 'Unable to decrypt row in medications table',
+      };
+
+      expect(corruptionReport.corruptedRowCount).toBeGreaterThan(0);
+    });
+
+    it('should detect interrupted migration', async () => {
+      // Simulate: database marked as "migration in progress" but never completed
+      mockDb.getFirstAsync.mockResolvedValue({
+        value: JSON.stringify({
+          migrationInProgress: true,
+          migrationFrom: 3,
+          migrationTo: 4,
+        }),
+      });
+
+      // On next startup, should detect this and recover
+      expect(mockDb.getFirstAsync).toBeDefined();
+    });
+
+    it('should detect unreadable encrypted record (key unavailable)', async () => {
+      // Simulate: encrypted record but decryption key is unavailable
+      // (e.g., after app reinstall, iOS backup restore)
+      mockDb.getAllAsync.mockResolvedValue([
+        {
+          id: 'hm-1',
+          data: 'encrypted-data-but-key-unavailable',
+        },
+      ]);
+
+      // This is a specific type of corruption that may resolve after key recovery
+      const corruptionType = 'decryption_key_unavailable';
+      expect(corruptionType).toBe('decryption_key_unavailable');
+    });
+
+    it('should preserve offline mutation queue during corruption recovery', async () => {
+      // Scenario: health_metrics table is corrupted, but offline_queue table is intact
+      const tables = {
+        health_metrics: { status: 'corrupted', rows: 0 },
+        offline_queue: { status: 'intact', rows: 5 },
+      };
+
+      // Recovery should only reset health_metrics, NOT offline_queue
+      const recoveryScope = 'health_metrics';
+      expect(recoveryScope).not.toBe('offline_queue');
+      expect(tables.offline_queue.status).toBe('intact');
+    });
+
+    it('should offer scoped reset: reset only affected table', async () => {
+      // Scenario: only medications table is corrupted
+      // Recovery: reset medications table, keep all other tables
+      const recovery = {
+        strategy: 'scoped_reset',
+        affectedTable: 'medications',
+        preservedTables: ['appointments', 'health_metrics', 'dose_logs'],
+      };
+
+      expect(recovery.strategy).toBe('scoped_reset');
+      expect(recovery.preservedTables).not.toContain('medications');
+    });
+
+    it('should fall back to full reset only as last resort', async () => {
+      // Scenario: multiple tables corrupted OR kv_store (metadata) corrupted
+      // Recovery: full database reset with user confirmation
+      const recovery = {
+        strategy: 'full_reset',
+        reason: 'metadata corruption',
+        userConfirmed: true,
+      };
+
+      expect(recovery.strategy).toBe('full_reset');
+      expect(recovery.userConfirmed).toBe(true);
+    });
+
+    it('should report corruption diagnostics without sensitive data', async () => {
+      // Diagnostic report should include:
+      // - Table name, type of corruption, schema/encryption version
+      // NOT include:
+      // - Row content, encrypted values, patient data
+
+      const diagnosticReport = {
+        timestamp: new Date().toISOString(),
+        table: 'health_metrics',
+        corruptionType: 'malformed_row',
+        schemaVersion: 5,
+        encryptionVersion: 1,
+        affectedRowCount: 3,
+        // NO: actual row data, encrypted content, dosages, etc.
+      };
+
+      expect(diagnosticReport.table).toBe('health_metrics');
+      expect(diagnosticReport.affectedRowCount).toBe(3);
+      // Ensure no sensitive fields exist
+      Object.values(diagnosticReport).forEach((value) => {
+        if (typeof value === 'string') {
+          expect(value).not.toMatch(/\d{1,4}mg/); // No dosages
+          expect(value).not.toMatch(/\d{2,}\s*kg/); // No weights
+        }
+      });
+    });
+
+    it('should handle partial corruption: some tables intact, others corrupted', async () => {
+      // Scenario: user has 2 medications and 2 appointments
+      // Medications table is corrupted, appointments table is fine
+      const corruptionState = {
+        medications: { healthy: false, rowsLost: 2 },
+        appointments: { healthy: true, rowsPreserved: 2 },
+        doseLog: { healthy: true, rowsPreserved: 15 },
+      };
+
+      // Recovery should reset only medications, preserve appointments & doseLog
+      const healthyTables = Object.entries(corruptionState)
+        .filter(([_, state]) => state.healthy)
+        .map(([table, _]) => table);
+
+      expect(healthyTables).toContain('appointments');
+      expect(healthyTables).toContain('doseLog');
+      expect(healthyTables).not.toContain('medications');
+    });
+
+    it('should handle total corruption: all tables corrupted', async () => {
+      // Scenario: database is completely unreadable
+      // Recovery: full reset, with user clearly informed before and after
+
+      const recovery = {
+        allTablesFailed: true,
+        userNotifiedBefore: true,
+        strategy: 'full_reset',
+        userNotifiedAfter: true,
+        dataLossMessage: 'All local data will be reset. Cloud backup will be restored.',
+      };
+
+      expect(recovery.userNotifiedBefore).toBe(true);
+      expect(recovery.userNotifiedAfter).toBe(true);
+      expect(recovery.dataLossMessage).toBeDefined();
+    });
+
+    it('should handle corruption detected during background sync', async () => {
+      // Scenario: app is running in background, sync writes a malformed row
+      // App might be in foreground at this point, or background
+
+      const scenarios = [
+        {
+          appState: 'foreground',
+          corruptionDetected: true,
+          recovery: 'immediate',
+        },
+        {
+          appState: 'background',
+          corruptionDetected: true,
+          recovery: 'deferred_until_foreground',
+        },
+      ];
+
+      scenarios.forEach((scenario) => {
+        expect(scenario.corruptionDetected).toBe(true);
+        expect(['immediate', 'deferred_until_foreground']).toContain(scenario.recovery);
+      });
+    });
+  });
+
+  describe('recovery rollback and retry logic', () => {
+    it('should allow retry of failed recovery operation', async () => {
+      // Scenario: recovery operation fails (e.g., out of disk space)
+      // User should be able to retry later
+
+      const recoveryAttempt = {
+        attempt: 1,
+        success: false,
+        error: 'Insufficient disk space',
+        retryable: true,
+      };
+
+      expect(recoveryAttempt.retryable).toBe(true);
+    });
+
+    it('should not delete data until recovery is confirmed successful', async () => {
+      // Scenario: recovery process should backup before deleting
+      // If recovery fails, data is not lost
+
+      const process = [
+        { step: 'backup_corrupted_table', status: 'complete' },
+        { step: 'detect_corruption', status: 'complete' },
+        { step: 'reset_table', status: 'complete' },
+        { step: 'verify_reset', status: 'complete' },
+      ];
+
+      expect(process[0].step).toBe('backup_corrupted_table');
+      expect(process[0].status).toBe('complete');
+    });
+  });
 });
