@@ -141,6 +141,11 @@ const ACTION_MARK_AS_TAKEN = 'MARK_AS_TAKEN';
 const ACTION_SNOOZE_30MIN = 'SNOOZE_30MIN';
 const ACTION_SKIP_DOSE = 'SKIP_DOSE';
 
+// Session-scoped set to track notification IDs that have already triggered navigation.
+// Ensures cold-start and listener paths don't both navigate for the same notification.
+// Cleared on app restart (not persisted).
+const processedNotificationIds = new Set<string>();
+
 const DEFAULT_PREFS: NotificationPreferences = {
   medicationReminders: true,
   appointmentReminders: true,
@@ -396,6 +401,31 @@ export const extractDeepLinkParams = (
   data: Record<string, unknown>,
 ): { route: string; params: Record<string, any> } | null => {
   return validateDeepLinkPayload(data);
+};
+
+/**
+ * Checks if a notification has already been processed for navigation in this session.
+ * Returns true if the notification ID has been seen before (dedup skip), false otherwise.
+ *
+ * @param notificationId - Stable ID from the push notification payload
+ * @returns true if already processed (skip navigation), false if new (proceed and mark)
+ */
+export const hasNotificationBeenProcessed = (notificationId: string | undefined): boolean => {
+  if (!notificationId) return false;
+  return processedNotificationIds.has(notificationId);
+};
+
+/**
+ * Marks a notification as processed for navigation in this session.
+ * Called after a notification has triggered navigation to prevent duplicates
+ * from cold-start and listener paths.
+ *
+ * @param notificationId - Stable ID from the push notification payload
+ */
+export const markNotificationAsProcessed = (notificationId: string | undefined): void => {
+  if (notificationId) {
+    processedNotificationIds.add(notificationId);
+  }
 };
 
 let medicationServiceModule: typeof import('./medicationService') | null = null;
