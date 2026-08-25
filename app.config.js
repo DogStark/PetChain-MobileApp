@@ -15,12 +15,27 @@ const APP_NAME_MAP = {
   production: 'PetChain',
 };
 
+// The runtimeVersion is what expo-updates uses (natively, before any JS runs) to decide
+// whether a fetched OTA manifest is even eligible to apply to this binary. Embedding APP_ENV
+// in it means a staging-published update's runtimeVersion ("staging-1.0.0") can never satisfy
+// a production binary's runtimeVersion ("production-1.0.0"), even if a channel/URL were
+// misconfigured — the native layer rejects the manifest outright. See issue #991.
+const RUNTIME_VERSION = `${APP_ENV}-${APP_VERSION}`;
+
 module.exports = {
   expo: {
     name: APP_NAME_MAP[APP_ENV] ?? 'PetChain',
     slug: 'petchain-mobile',
     scheme: 'petchain',
     version: APP_VERSION,
+    runtimeVersion: RUNTIME_VERSION,
+    updates: {
+      // Never let a dev client pull an OTA update — it always runs from the local bundler.
+      enabled: APP_ENV !== 'development',
+      // Don't silently run a stale cached bundle indefinitely if a check fails.
+      fallbackToCacheTimeout: 0,
+      checkAutomatically: 'ON_LOAD',
+    },
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'automatic',
