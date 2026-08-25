@@ -62,6 +62,23 @@ const config = {
   googlePlaces: {
     apiKey: env('GOOGLE_PLACES_API_KEY', ''),
   },
+  /**
+   * Stellar network selection (issue #943).
+   *
+   * These are raw inputs only — nothing should read them directly. Use
+   * `getStellarNetworkProfile()` from `config/stellarNetwork`, which resolves
+   * the network, Horizon URL and passphrase together and rejects an
+   * inconsistent combination.
+   */
+  stellar: {
+    /** 'PUBLIC' | 'TESTNET'. Defaults to PUBLIC in production, TESTNET elsewhere. */
+    network: env('STELLAR_NETWORK', ''),
+    /** Overrides the default Horizon host for the selected network. */
+    horizonUrl: env('STELLAR_HORIZON_URL', ''),
+    /** Deliberate opt-in for a non-production build to use the public network. */
+    allowPublicOutsideProduction:
+      env('STELLAR_ALLOW_PUBLIC_OUTSIDE_PRODUCTION', 'false') === 'true',
+  },
   pinLock: {
     /** Show remaining-attempts counter after this many failures */
     warnAfterAttempts: 3,

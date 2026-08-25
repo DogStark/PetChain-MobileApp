@@ -26,6 +26,7 @@ import {
   registerNotificationActions,
   watchNotificationActions,
 } from './src/services/notificationService';
+import { reconcilePendingStellarTransactions } from './src/services/stellarStartup';
 import updateService from './src/services/updateService';
 import { checkAppVersion } from './src/services/versionCheckService';
 import { initializeWidgetService } from './src/services/widgetService';
@@ -112,6 +113,12 @@ function App() {
     void registerNotificationActions();
     const subscription = watchNotificationActions();
     void registerBackgroundMedicationTask();
+
+    // Issue #947: the app can be terminated between submitting a Stellar
+    // transaction and learning its outcome. Resolve anything left in flight
+    // against Horizon on launch, so a payment is never silently lost — and,
+    // just as importantly, never re-sent because its status was unknown.
+    void reconcilePendingStellarTransactions();
 
     // Initialize widget service and update widgets
     const unsubscribeWidget = initializeWidgetService();

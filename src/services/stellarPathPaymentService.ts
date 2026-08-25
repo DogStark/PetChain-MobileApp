@@ -1,8 +1,8 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 
-import config from '../config';
 import apiClient from './apiClient';
 import { getStoredSecret } from './stellarAccountService';
+import { getStellarNetworkProfile } from '../config/stellarNetwork';
 import type { Payment, Subscription, SubscriptionPlan } from '../models/Payment';
 
 interface ApiResponse<T> {
@@ -120,10 +120,11 @@ export async function signTransactionXdr(xdr: string, secret?: string | null): P
     throw new Error('No Stellar secret key is stored on this device');
   }
   const keypair = StellarSdk.Keypair.fromSecret(resolvedSecret);
-  const tx = new StellarSdk.Transaction(
-    xdr,
-    config.env === 'production' ? StellarSdk.Networks.PUBLIC : StellarSdk.Networks.TESTNET,
-  );
+  // Issue #943: the passphrase comes from the one validated profile, so the
+  // network a transaction is *signed for* can no longer differ from the network
+  // it is submitted to.
+  const { networkPassphrase } = getStellarNetworkProfile();
+  const tx = new StellarSdk.Transaction(xdr, networkPassphrase);
   tx.sign(keypair);
   return tx.toXDR();
 }

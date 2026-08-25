@@ -25,7 +25,7 @@
  *
  * Removed / escaped:
  *  - HTML/XML tags  (`<` and `>`)
- *  - SQL meta-characters  (`'`, `"`, `;`, `--`, `/*`, `*/`)
+ *  - SQL meta-characters  (`'`, `"`, `;`, `--`, and block-comment delimiters)
  *  - NoSQL / template injection markers  (`{`, `}`, `$`)
  *  - Null bytes  (`\0`)
  *  - Redundant whitespace (leading/trailing trimmed; internal runs collapsed
