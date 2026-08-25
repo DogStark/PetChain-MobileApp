@@ -115,6 +115,34 @@ module.exports = {
           },
         },
       ],
+      // ─── Backup exclusion plugins ────────────────────────────────────────
+      //
+      // Android (API 23+):
+      //   Sets android:allowBackup="false" in AndroidManifest.xml and
+      //   references backup_rules.xml (API 23–30) and
+      //   data_extraction_rules.xml (API 31+) to exclude databases/petchain.db,
+      //   SharedPreferences (AsyncStorage), and the file-system documents
+      //   directory from all Android Auto Backup transports (Google Drive
+      //   cloud backup and device-to-device transfer).
+      //
+      // iOS:
+      //   Injects BackupExclusion.swift into the Xcode target and patches
+      //   AppDelegate to call excludeSensitiveDirectoriesFromBackup() at
+      //   launch.  This sets NSURLIsExcludedFromBackupKey=true on:
+      //     • Library/Application Support/  (expo-sqlite petchain.db)
+      //     • Library/Preferences/          (AsyncStorage / RNCAsyncStorage)
+      //     • Documents/                    (expo-file-system documentDirectory)
+      //
+      // expo-secure-store (Keychain/Keystore) is NOT backed up by any OS
+      // transport regardless of these settings — no action needed there.
+      //
+      // Source files:
+      //   plugins/withAndroidBackupExclusion.js
+      //   plugins/withIosBackupExclusion.js
+      //   android-config/backup_rules.xml
+      //   android-config/data_extraction_rules.xml
+      './plugins/withAndroidBackupExclusion.js',
+      './plugins/withIosBackupExclusion.js',
     ],
     extra: {
       APP_ENV,
