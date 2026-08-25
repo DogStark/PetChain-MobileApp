@@ -72,13 +72,13 @@ describe('qrCodeService', () => {
   describe('validateQRCode', () => {
     it('should validate correct QR', async () => {
       const qrCode = await generatePetQRCode(mockPet);
-      const result = validateQRCode(qrCode);
+      const result = await validateQRCode(qrCode);
 
       expect(result.valid).toBe(true);
     });
 
-    it('should reject tampered QR', () => {
-      const result = validateQRCode('tampered');
+    it('should reject tampered QR', async () => {
+      const result = await validateQRCode('tampered');
       expect(result.valid).toBe(false);
     });
   });
