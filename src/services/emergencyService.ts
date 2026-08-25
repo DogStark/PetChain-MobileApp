@@ -1,4 +1,5 @@
 import Geolocation from '@react-native-community/geolocation';
+import NetInfo from '@react-native-community/netinfo';
 import { Linking, Platform } from 'react-native';
 
 import apiClient from './apiClient';
@@ -36,7 +37,8 @@ export interface Location {
 }
 
 export interface SOSPayload {
-  location: Location;
+  /** Absent when the device could not determine a position — never faked. */
+  location?: Location;
   timestamp: number;
   message?: string;
   sessionId?: string;
@@ -51,6 +53,58 @@ interface LiveSOSSession {
   expiresAt: string;
 }
 
+// ─── SOS dispatch planning (Issue #942) ───────────────────────────────────────
+
+/** A channel the SOS can go out on, in escalating order of reliability. */
+export type SOSChannel = 'live-session' | 'sms' | 'call';
+
+/** A contact that has been explicitly selected to receive an SOS. */
+export interface SOSRecipient {
+  id: string;
+  name: string;
+  phoneNumber: string;
+  type: EmergencyContact['type'];
+}
+
+/**
+ * The exact, reviewable plan for an SOS dispatch.
+ *
+ * `prepareSOS` builds this so the UI can show the user precisely who will be
+ * contacted and what they will receive *before* anything is sent. Nothing in
+ * this object is a guess: `messagePreview` is the literal SMS body and
+ * `recipients` is the literal recipient list.
+ */
+export interface SOSPlan {
+  /** Contacts that will receive the message, in dispatch order. */
+  recipients: SOSRecipient[];
+  /** Verbatim SMS body — show this to the user, do not paraphrase it. */
+  messagePreview: string;
+  /** Resolved coordinates, or `null` when the device could not determine them. */
+  location: Location | null;
+  /** Whether the device has a usable network connection right now. */
+  online: boolean;
+  /** Channels that will actually be used given current connectivity. */
+  channels: SOSChannel[];
+  /** False when there is no one to send to — the UI must block dispatch. */
+  canDispatch: boolean;
+  /** Human-readable reasons the plan is degraded, for display in the preview. */
+  warnings: string[];
+}
+
+export interface TriggerSOSOptions {
+  /**
+   * IDs of contacts the user explicitly confirmed in the preview.
+   *
+   * When omitted, only **favourite** contacts are used. The bundled
+   * `DEFAULT_CONTACTS` (public poison-control hotlines) are deliberately never
+   * auto-selected: texting a national hotline the owner's home coordinates is
+   * both useless to them and a disclosure the user never agreed to.
+   */
+  confirmedRecipientIds?: string[];
+  /** Override connectivity detection. Tests use this to simulate airplane mode. */
+  forceOffline?: boolean;
+}
+
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
 const CONTACTS_KEY = '@emergency_contacts';
@@ -58,7 +112,15 @@ const FAVORITES_KEY = '@emergency_favorites';
 
 // ─── Default contacts ─────────────────────────────────────────────────────────
 
-const DEFAULT_CONTACTS: EmergencyContact[] = [
+/**
+ * Seed contacts written on first launch.
+ *
+ * Frozen because `getEmergencyContacts` used to hand this exact array to
+ * callers, and `addContact` pushed straight into it — permanently corrupting
+ * the defaults for the rest of the process. Freezing makes any regression of
+ * that kind fail loudly instead of silently.
+ */
+const DEFAULT_CONTACTS: readonly EmergencyContact[] = Object.freeze([
   {
     id: 'default-1',
     name: 'Pet Poison Helpline',
@@ -75,7 +137,10 @@ const DEFAULT_CONTACTS: EmergencyContact[] = [
     available24h: true,
     notes: 'Fee may apply',
   },
-];
+]);
+
+/** Ids of the bundled hotlines, captured before anything can mutate them. */
+const DEFAULT_CONTACT_IDS: ReadonlySet<string> = new Set(DEFAULT_CONTACTS.map((c) => c.id));
 
 // ─── EmergencyService ─────────────────────────────────────────────────────────
 
@@ -95,7 +160,8 @@ class EmergencyService {
     const stored = await getItem(CONTACTS_KEY);
     if (stored) return JSON.parse(stored);
     await setItem(CONTACTS_KEY, JSON.stringify(DEFAULT_CONTACTS));
-    return DEFAULT_CONTACTS;
+    // Copy: callers (notably `addContact`) mutate the array they receive.
+    return DEFAULT_CONTACTS.map((contact) => ({ ...contact }));
   }
 
   async addContact(contact: Omit<EmergencyContact, 'id'>): Promise<EmergencyContact> {
@@ -208,8 +274,17 @@ class EmergencyService {
 
   /**
    * Fallback to last known location if GPS fails or times out.
+   *
+   * Resolves `{ latitude: 0, longitude: 0 }` when nothing is available. That
+   * sentinel is retained only for map-centering callers that predate
+   * `getLocationOrNull`; never use it on the SOS path — see the note there.
    */
   private async getLastKnownLocation(): Promise<Location> {
+    const location = await this.getLastKnownLocationOrNull();
+    return location ?? { latitude: 0, longitude: 0 };
+  }
+
+  private async getLastKnownLocationOrNull(): Promise<Location | null> {
     return new Promise((resolve) => {
       Geolocation.getCurrentPosition(
         (position) => {
@@ -218,13 +293,65 @@ class EmergencyService {
             longitude: position.coords.longitude,
           });
         },
-        () => {
-          // Absolute fallback if everything fails
-          resolve({ latitude: 0, longitude: 0 });
-        },
+        () => resolve(null),
         { enableHighAccuracy: false, timeout: 2000, maximumAge: Infinity },
       );
     });
+  }
+
+  /**
+   * Resolve the device location, or `null` if it genuinely cannot be
+   * determined (permission denied, GPS off, airplane mode with no fix).
+   *
+   * The SOS path must use this rather than {@link getCurrentLocation}: the
+   * legacy `{ 0, 0 }` fallback is a real coordinate off the coast of Africa,
+   * and a responder cannot tell it apart from a true position. Sending
+   * "Null Island" during an emergency is worse than sending no location.
+   */
+  async getLocationOrNull(): Promise<Location | null> {
+    const hasPermission = await this.requestLocationPermission();
+    if (!hasPermission) return null;
+
+    return new Promise((resolve) => {
+      let settled = false;
+
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        void this.getLastKnownLocationOrNull().then(resolve);
+      }, 5000);
+
+      Geolocation.getCurrentPosition(
+        (position) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resolve({
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          });
+        },
+        () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          void this.getLastKnownLocationOrNull().then(resolve);
+        },
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 10000 },
+      );
+    });
+  }
+
+  /** Whether the device currently has a usable network connection. */
+  async isOnline(): Promise<boolean> {
+    try {
+      const state = await NetInfo.fetch();
+      return state.isConnected === true;
+    } catch {
+      // Treat an unreadable network state as offline: the offline path is
+      // strictly safer (no network disclosure, no silent failure).
+      return false;
+    }
   }
 
   // ── Nearby clinics ───────────────────────────────────────────────────────────
@@ -344,15 +471,133 @@ class EmergencyService {
   // ── SOS ──────────────────────────────────────────────────────────────────────
 
   /**
-   * One-tap SOS: gets current location (with fail-safe fallback),
-   * dispatches alerts to all emergency contacts, and returns the SOS payload.
+   * Resolve the contacts an SOS may be sent to.
+   *
+   * Only contacts the user curated are eligible. The bundled `DEFAULT_CONTACTS`
+   * are public poison-control hotlines seeded for convenience; they are
+   * reachable by tapping "call" but are never valid targets for an automated
+   * message containing the owner's location.
    */
-  async triggerSOS(message?: string): Promise<SOSPayload> {
-    const location = await this.getCurrentLocation();
-    const contacts = await this.getEmergencyContacts();
-    const session = await this.startLiveLocationSession(location, contacts, message);
-    const payload: SOSPayload = {
+  private async resolveRecipients(confirmedIds?: string[]): Promise<SOSRecipient[]> {
+    const [contacts, favorites] = await Promise.all([
+      this.getEmergencyContacts(),
+      this.getFavoriteContacts(),
+    ]);
+
+    const toRecipient = (contact: EmergencyContact): SOSRecipient => ({
+      id: contact.id,
+      name: contact.name,
+      phoneNumber: contact.phoneNumber,
+      type: contact.type,
+    });
+
+    if (confirmedIds && confirmedIds.length > 0) {
+      // Explicit user confirmation: honour exactly what was ticked, but resolve
+      // against known contacts so an unknown id cannot inject a phone number.
+      const byId = new Map(contacts.map((c) => [c.id, c]));
+      return confirmedIds
+        .map((id) => byId.get(id))
+        .filter((c): c is EmergencyContact => c != null)
+        .map(toRecipient);
+    }
+
+    // No explicit confirmation: the user's own favourites only.
+    return favorites.filter((c) => !this.isPublicHotline(c)).map(toRecipient);
+  }
+
+  /** Public hotlines must never be auto-messaged with a precise location. */
+  private isPublicHotline(contact: EmergencyContact): boolean {
+    return contact.type === 'poison-control' || DEFAULT_CONTACT_IDS.has(contact.id);
+  }
+
+  private buildMessage(
+    message: string | undefined,
+    shareUrl: string | null,
+    location: Location | null,
+  ): string {
+    const body = message || 'Pet emergency - need immediate help';
+    const lines = [`SOS EMERGENCY: ${body}`];
+
+    if (shareUrl) {
+      lines.push(`Live location: ${shareUrl}`);
+    } else if (location) {
+      lines.push(
+        `Last known location: https://www.google.com/maps/search/?api=1&query=${location.latitude},${location.longitude}`,
+      );
+    } else {
+      // State it explicitly rather than omitting the line: a responder needs to
+      // know the location is unknown, not merely missing from the message.
+      lines.push('Location unavailable on this device.');
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Build the reviewable plan for an SOS without sending anything.
+   *
+   * The UI must present this — recipients, message body, warnings — and obtain
+   * confirmation before calling {@link triggerSOS}.
+   */
+  async prepareSOS(message?: string, options: TriggerSOSOptions = {}): Promise<SOSPlan> {
+    const online = options.forceOffline === true ? false : await this.isOnline();
+    const [location, recipients] = await Promise.all([
+      this.getLocationOrNull(),
+      this.resolveRecipients(options.confirmedRecipientIds),
+    ]);
+
+    const warnings: string[] = [];
+    if (!online) {
+      warnings.push('No network connection - live location sharing is unavailable.');
+    }
+    if (!location) {
+      warnings.push('Location could not be determined - no coordinates will be shared.');
+    }
+    if (recipients.length === 0) {
+      warnings.push('No emergency contacts selected - add or select a contact to send an SOS.');
+    }
+
+    const channels: SOSChannel[] = [];
+    if (online) channels.push('live-session');
+    if (recipients.length > 0) channels.push('sms', 'call');
+
+    return {
+      recipients,
+      messagePreview: this.buildMessage(message, null, location),
       location,
+      online,
+      channels,
+      canDispatch: recipients.length > 0,
+      warnings,
+    };
+  }
+
+  /**
+   * One-tap SOS.
+   *
+   * Sends only to contacts the user selected (see {@link prepareSOS}), degrades
+   * to call/SMS when offline, and never fabricates coordinates.
+   */
+  async triggerSOS(message?: string, options: TriggerSOSOptions = {}): Promise<SOSPayload> {
+    const plan = await this.prepareSOS(message, options);
+
+    // Only attempt the networked live-location session when actually online.
+    // Offline, this previously burned the full request timeout before failing.
+    const session = plan.online
+      ? await this.startLiveLocationSession(
+          plan.location,
+          plan.recipients.map((r) => ({
+            id: r.id,
+            name: r.name,
+            phoneNumber: r.phoneNumber,
+            type: r.type,
+          })),
+          message,
+        )
+      : null;
+
+    const payload: SOSPayload = {
+      location: plan.location ?? undefined,
       timestamp: Date.now(),
       message: message || 'Pet emergency - need immediate help',
       sessionId: session?.id,
@@ -360,37 +605,21 @@ class EmergencyService {
       shareUrl: session?.shareUrl,
     };
 
-    // Dispatch alerts to all emergency contacts
-    await this.sendSOSAlerts(payload);
+    const fullMessage = this.buildMessage(message, session?.shareUrl ?? null, plan.location);
 
-    // Auto-call first 24h emergency contact as a primary action
-    const primaryContact = contacts.find((c) => c.available24h) || contacts[0];
-    if (primaryContact) {
-      this.callContact(primaryContact.phoneNumber);
+    // SMS only the confirmed recipients. `Linking` surfaces one composer at a
+    // time, so all addressees ride on a single message.
+    if (plan.recipients.length > 0) {
+      this.sendSMS(plan.recipients.map((r) => r.phoneNumber).join(','), fullMessage);
+
+      // Auto-call the primary responder. Never a poison-control hotline.
+      const primary =
+        plan.recipients.find((r) => r.type === 'emergency' || r.type === 'vet') ??
+        plan.recipients[0];
+      if (primary) this.callContact(primary.phoneNumber);
     }
 
     return payload;
-  }
-
-  /**
-   * Dispatches alerts via the most reliable available channels (SMS, Local Push).
-   */
-  private async sendSOSAlerts(payload: SOSPayload): Promise<void> {
-    const contacts = await this.getEmergencyContacts();
-    const mapsLink =
-      payload.shareUrl ||
-      `https://www.google.com/maps/search/?api=1&query=${payload.location.latitude},${payload.location.longitude}`;
-    const fullMessage = `🚨 SOS EMERGENCY: ${payload.message}\nLast known location: ${mapsLink}`;
-
-    // 1. Iterate through contacts and prepare to send alerts
-    for (const contact of contacts) {
-      void contact; // contacts iterated; SMS sent to first contact below
-    }
-
-    // 2. Open SMS for the first contact (as it's a foreground action)
-    if (contacts.length > 0) {
-      this.sendSMS(contacts[0].phoneNumber, fullMessage);
-    }
   }
 
   // ── Call / Navigate ──────────────────────────────────────────────────────────
@@ -411,16 +640,16 @@ class EmergencyService {
   }
 
   async startLiveLocationSession(
-    location: Location,
-    contacts: EmergencyContact[],
+    location: Location | null,
+    contacts: Array<Pick<EmergencyContact, 'name' | 'phoneNumber'>>,
     message?: string,
     timeoutMinutes = 60,
   ): Promise<LiveSOSSession | null> {
     try {
       const response = await apiClient.post('/emergency/sessions', {
         message: message || 'Pet emergency - need immediate help',
-        latitude: location.latitude,
-        longitude: location.longitude,
+        // Omitted entirely when unknown, so the backend never records 0,0.
+        ...(location ? { latitude: location.latitude, longitude: location.longitude } : {}),
         timeoutMinutes,
         contacts: contacts.map((contact) => ({
           name: contact.name,
