@@ -263,6 +263,17 @@ export async function refreshToken(): Promise<string> {
 
 export async function logout(): Promise<void> {
   await clearSecureTokens();
+
+  // Wipe the normalized GraphQL cache so a subsequent account can never read a
+  // prior account's pets or medical records from cache-and-network. (#978)
+  // Dynamic import keeps the Apollo/graphql-ws module graph out of auth unit
+  // tests and non-Expo environments.
+  try {
+    const { resetApolloStore } = await import('./apolloClient');
+    await resetApolloStore();
+  } catch (err) {
+    logError(err as Error, { service: 'authService', action: 'reset_apollo_store' });
+  }
 }
 
 export async function verifyEmail(_token: string): Promise<void> {

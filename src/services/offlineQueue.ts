@@ -1,4 +1,4 @@
-import apiClient from './apiClient';
+import apiClient, { IDEMPOTENCY_HEADER, generateIdempotencyKey } from './apiClient';
 import { executeSql, getItem, setItem } from './localDB';
 import { sendAlertNotification } from './notificationService';
 import syncService, { type SyncAction, type SyncEntityType, type SyncStatus } from './syncService';
@@ -38,6 +38,12 @@ export interface QueuedMutation {
   retries: number;
   /** ETag recorded when this mutation was created */
   etag?: string;
+  /**
+   * Idempotency key minted when this mutation was first queued. Preserved
+   * verbatim across every offline replay so the backend collapses retries of
+   * the same logical operation instead of duplicating it. (#976)
+   */
+  idempotencyKey?: string;
 }
 
 export interface ConflictItem {
@@ -172,6 +178,7 @@ class OfflineQueue {
       try {
         const headers: Record<string, string> = {};
         if (mutation.etag) headers['If-Match'] = mutation.etag;
+        if (mutation.idempotencyKey) headers[IDEMPOTENCY_HEADER] = mutation.idempotencyKey;
 
         const endpoint = `/${mutation.type}s/${String(mutation.data.id ?? '')}`;
         const response = await apiClient.put(endpoint, mutation.data, { headers });
@@ -348,6 +355,8 @@ class OfflineQueue {
         await apiClient.put(
           `/${conflict.type}s/${String(conflict.localData.id ?? conflictId)}`,
           dataWithoutEtag,
+          // Fresh operation (user chose keep-local after a conflict) → let the
+          // request interceptor mint a new idempotency key. (#976)
         );
       } catch {
         // Non-fatal — will be retried via queue
@@ -392,6 +401,8 @@ class OfflineQueue {
       id: `${mutation.type}_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       ...mutation,
       etag,
+      // Mint once, here, so every later replay of this exact mutation reuses it. (#976)
+      idempotencyKey: mutation.idempotencyKey ?? generateIdempotencyKey(),
       timestamp: Date.now(),
       retries: 0,
     };

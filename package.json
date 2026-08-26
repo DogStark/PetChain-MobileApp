@@ -50,6 +50,7 @@
     "openapi:generate": "tsx scripts/generate-openapi.ts",
     "openapi:check": "tsx scripts/generate-openapi.ts --check",
     "openapi:validate": "tsx scripts/validate-openapi-schema.ts",
+    "openapi:validate-client": "tsx scripts/validate-openapi-client.ts --strict",
     "migrate": "ts-node backend/src/db/migrate.ts",
     "seed": "ts-node backend/seeds/index.ts",
     "seed:dev": "ts-node backend/seeds/index.ts --owners 5 --vets 3 --pets 2 --records 3 --appointments 2 --medications 1",

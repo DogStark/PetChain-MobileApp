@@ -252,6 +252,61 @@ export async function pinnedRequest<T>(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Idempotency keys for mutations (#976)
+//
+// Retries (network retry, 5xx retry, 401-refresh replay, and offline-queue
+// replay) can otherwise create duplicate records, payments, appointments, and
+// support requests. Every mutating request carries a stable `Idempotency-Key`
+// so the backend can collapse repeats of the *same* logical operation.
+//
+// The key is generated once per logical request and pinned onto the request
+// config, so all in-process retries of that config reuse it. Offline replay
+// preserves the key by persisting it alongside the queued mutation (see
+// offlineQueue.ts) and passing it back in via headers.
+// ---------------------------------------------------------------------------
+
+export const IDEMPOTENCY_HEADER = 'Idempotency-Key';
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/** RFC-4122 v4 identifier. Uses crypto when available, falls back to Math.random. */
+export function generateIdempotencyKey(): string {
+  const g = globalThis as { crypto?: { randomUUID?: () => string } };
+  if (typeof g.crypto?.randomUUID === 'function') return g.crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+/** Read the idempotency key already present on a header bag, if any. */
+export function readIdempotencyKey(
+  headers: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!headers) return undefined;
+  const hit = Object.entries(headers).find(
+    ([k]) => k.toLowerCase() === IDEMPOTENCY_HEADER.toLowerCase(),
+  );
+  return typeof hit?.[1] === 'string' ? (hit[1] as string) : undefined;
+}
+
+/**
+ * Ensure a mutating request config carries an `Idempotency-Key`. Mutates and
+ * returns the same config. Non-mutating methods (GET/HEAD/OPTIONS) are left
+ * untouched. An explicit key already on the config is always preserved.
+ */
+export function withIdempotencyKey<T extends AxiosRequestConfig>(cfg: T): T {
+  const method = (cfg.method ?? 'get').toUpperCase();
+  if (!MUTATING_METHODS.has(method)) return cfg;
+  if (!cfg.headers) cfg.headers = {} as T['headers'];
+  const headers = cfg.headers as unknown as Record<string, unknown>;
+  if (!readIdempotencyKey(headers)) {
+    headers[IDEMPOTENCY_HEADER] = generateIdempotencyKey();
+  }
+  return cfg;
+}
+
 // --- Circuit Breaker ---
 type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 const FAILURE_THRESHOLD = 5;
@@ -371,6 +426,10 @@ const apiClient: AxiosInstance = axios.create({
 });
 
 apiClient.interceptors.request.use(async (requestConfig) => {
+  // Stamp an idempotency key on every mutation before it (or any retry) leaves
+  // the device. (#976)
+  withIdempotencyKey(requestConfig);
+
   const token = await getToken();
   if (token) {
     requestConfig.headers = requestConfig.headers ?? ({} as typeof requestConfig.headers);
