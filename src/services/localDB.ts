@@ -365,6 +365,17 @@ export async function deleteAppointmentById(id: string): Promise<void> {
   await db.runAsync(`DELETE FROM appointments WHERE id = ?`, [id]);
 }
 
+export async function clearAllData(): Promise<void> {
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(`DELETE FROM kv_store`);
+    await db.runAsync(`DELETE FROM medications`);
+    await db.runAsync(`DELETE FROM dose_logs`);
+    await db.runAsync(`DELETE FROM health_metrics`);
+    await db.runAsync(`DELETE FROM appointments`);
+    await db.runAsync(`DELETE FROM soap_note_drafts`);
+  });
+}
+
 export default {
   getItem,
   setItem,
@@ -387,4 +398,5 @@ export default {
   getAppointmentsInWindow,
   upsertAppointment,
   deleteAppointmentById,
+  clearAllData,
 };

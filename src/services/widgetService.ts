@@ -412,6 +412,32 @@ export async function forceWidgetUpdate(): Promise<void> {
   await refreshWidgetData();
 }
 
+/**
+ * Clear all widget data from cache and update native widget with empty state
+ */
+export async function clearWidgetData(): Promise<void> {
+  try {
+    const emptyData: WidgetData = {
+      medications: [],
+      appointments: [],
+      healthScores: [],
+      lastUpdated: new Date().toISOString(),
+      timestamp: Date.now(),
+    };
+    
+    await setItem(WIDGET_DATA_KEY, JSON.stringify(emptyData));
+    
+    if (Platform.OS === 'ios' && PetChainWidgetModule.updateWidget) {
+      await PetChainWidgetModule.updateWidget(emptyData);
+    } else if (Platform.OS === 'android' && PetChainWidgetModule.updateWidget) {
+      await PetChainWidgetModule.updateWidget(emptyData);
+    }
+    console.log('[WidgetService] Widget data cleared successfully');
+  } catch (error) {
+    console.error('[WidgetService] Error clearing widget data:', error);
+  }
+}
+
 // ─── Native Module Stubs ──────────────────────────────────────────────────
 
 /**
@@ -439,4 +465,5 @@ export default {
   handleWidgetDeepLink,
   forceWidgetUpdate,
   isWidgetAvailable,
+  clearWidgetData,
 };

@@ -26,6 +26,10 @@ import {
 } from '../utils/encryption/keychain';
 import { logError } from '../utils/errorLogger';
 import { sanitizeString } from '../utils/sanitize';
+import { clearAllData } from './localDB';
+import offlineQueue from './offlineQueue';
+import syncEngine from './syncEngine';
+import widgetService from './widgetService';
 
 // ─── Custom error ─────────────────────────────────────────────────────────────
 
@@ -262,6 +266,12 @@ export async function refreshToken(): Promise<string> {
 }
 
 export async function logout(): Promise<void> {
+  await Promise.allSettled([
+    syncEngine.clearAll(),
+    offlineQueue.clearAll(),
+    widgetService.clearWidgetData(),
+    clearAllData(),
+  ]);
   await clearSecureTokens();
 }
 
