@@ -1,0 +1,138 @@
+name: Native Build — iOS & Android
+
+# Issue #988 — JavaScript-only CI does not catch CocoaPods, Gradle, manifest or
+# native-module failures. This workflow compiles signing-free debug artifacts on
+# both platforms so those breakages surface on every PR.
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: native-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── Android debug APK (no signing) ──────────────────────────────────────
+  android:
+    name: Android — Debug Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Prebuild native Android project
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Assemble debug APK
+        run: |
+          cd android
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Upload Android debug artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload Gradle logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-gradle-logs
+          path: |
+            android/build/reports/
+            ~/.gradle/daemon/*/daemon-*.out.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ─── iOS simulator build (no code signing) ───────────────────────────────
+  ios:
+    name: iOS — Debug Build (Simulator)
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Prebuild native iOS project
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: ${{ runner.os }}-pods-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: ${{ runner.os }}-pods-
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Build for iOS Simulator (no signing)
+        run: |
+          cd ios
+          SCHEME="$(xcodebuild -list -json | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).project.schemes[0]))')"
+          echo "Building scheme: $SCHEME"
+          xcodebuild \
+            -workspace *.xcworkspace \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build \
+            | tee ../ios-build.log
+
+      - name: Upload iOS build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: ios-build.log
+          retention-days: 7
+          if-no-files-found: ignore
