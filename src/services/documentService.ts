@@ -93,8 +93,8 @@ interface EncryptResult {
 async function encryptContent(plainBase64: string): Promise<EncryptResult> {
   const keyVersion = await getCurrentKeyVersion();
   const key = await getKey(keyVersion);
-  const iv = CryptoJS.lib.WordArray.random(12).toString(CryptoJS.enc.Hex);
-  const encrypted = CryptoJS.AES.encrypt(plainBase64, key, {
+  const iv = CryptoJS.lib.WordArray.random(16).toString(CryptoJS.enc.Hex);
+  const encrypted = CryptoJS.AES.encrypt(plainBase64, CryptoJS.enc.Hex.parse(key), {
     iv: CryptoJS.enc.Hex.parse(iv),
   });
   const encryptedContent = encrypted.ciphertext.toString(CryptoJS.enc.Base64);
@@ -115,7 +115,7 @@ async function decryptContent(
   if (expectedTag !== tag) throw new Error('Document authentication failed: tag mismatch');
   const decrypted = CryptoJS.AES.decrypt(
     { ciphertext: CryptoJS.enc.Base64.parse(encryptedContent) } as CryptoJS.lib.CipherParams,
-    key,
+    CryptoJS.enc.Hex.parse(key),
     { iv: CryptoJS.enc.Hex.parse(iv) },
   ).toString(CryptoJS.enc.Utf8);
   if (!decrypted) throw new Error('Document decryption failed');
@@ -260,10 +260,72 @@ export async function downloadDocument(documentId: string): Promise<string> {
   return decryptContent(doc.encryptedContent, doc.iv, doc.tag, doc.keyVersion);
 }
 
-/** Decrypt and save a document to the local cache directory, returning the local URI. */
+// ─── Secure temp-file helpers (issue #966) ───────────────────────────────────
+//
+// All temporary files written for preview or sharing must be:
+//   1. Placed in the app's private cache directory (not accessible to other apps
+//      and excluded from iCloud / Google Drive backups via cacheDirectory).
+//   2. Named with a random UUID component so the name cannot be guessed and
+//      cannot be used as a side-channel to infer document content.
+//   3. Cleaned up explicitly when no longer needed (no OS backup, no lingering
+//      state in external storage).
+//
+// Platform notes:
+//   - iOS:  FileSystem.cacheDirectory maps to NSCachesDirectory which is
+//     excluded from iCloud backup and sandboxed per-app.
+//   - Android: FileSystem.cacheDirectory maps to getCacheDir() which is
+//     private to the app.  Files here are NOT included in Android Auto Backup.
+//
+// The `secureTempUri` and `cleanupTempFile` helpers encapsulate this policy
+// so all callers get the same behaviour automatically.
+
+/**
+ * Generates a secure temporary file URI under the app's private cache
+ * directory.  The filename is `<randomUUID>_<sanitisedName>` to prevent
+ * guessing and avoid collisions.
+ *
+ * @param originalName  Human-readable filename (extension preserved for MIME sniffing).
+ */
+function secureTempUri(originalName: string): string {
+  // Use crypto-js to generate a random UUID-like token (8 hex bytes)
+  const token = CryptoJS.lib.WordArray.random(16).toString(CryptoJS.enc.Hex);
+  // Strip directory separators from the original name to prevent path traversal
+  const safeName = originalName.replace(/[/\\]/g, '_');
+  return `${FileSystem.cacheDirectory}${token}_${safeName}`;
+}
+
+/**
+ * Deletes a previously written temporary file.
+ * Silently ignores errors (e.g. file already gone) so callers can call this
+ * unconditionally in finally blocks.
+ */
+export async function cleanupTempFile(localUri: string): Promise<void> {
+  try {
+    await FileSystem.deleteAsync(localUri, { idempotent: true });
+  } catch (err) {
+    logError(err instanceof Error ? err : new Error(String(err)), {
+      service: 'documentService',
+      action: 'cleanupTempFile',
+    });
+  }
+}
+
+/**
+ * Decrypt and save a document to a *secure* temporary location, returning the
+ * local URI.
+ *
+ * Security properties (issue #966):
+ *  - File is written to `cacheDirectory` (private, no OS backup on either platform).
+ *  - Filename includes a 16-byte random token so it cannot be guessed by other
+ *    processes.
+ *  - The caller MUST call `cleanupTempFile(uri)` once the file is no longer
+ *    needed (e.g. after sharing or preview is dismissed).
+ *
+ * @returns The local `file://` URI of the decrypted file.
+ */
 export async function saveDocumentLocally(documentId: string, fileName: string): Promise<string> {
   const plainBase64 = await downloadDocument(documentId);
-  const localUri = `${FileSystem.cacheDirectory}${fileName}`;
+  const localUri = secureTempUri(fileName);
   await FileSystem.writeAsStringAsync(localUri, plainBase64, {
     encoding: FileSystem.EncodingType.Base64,
   });
