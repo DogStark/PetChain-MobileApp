@@ -21,6 +21,12 @@ import {
 } from 'react-native';
 
 import multisigService, { type PendingTransactionResponse } from '../services/multisigService';
+import {
+  evaluateCoSignEligibility,
+  markCoSignConsumed,
+  releaseCoSignClaim,
+  CO_SIGN_REJECT_MESSAGE,
+} from '../utils/coSignReplayGuard';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -65,13 +71,20 @@ const PendingCoSignScreen: React.FC<Props> = ({
 
   const userSigner = transaction.signers.find((s) => s.publicKey === currentUserPublicKey);
   const alreadySigned = userSigner?.hasSigned ?? false;
-  const canSign = !!userSigner && !alreadySigned && transaction.status === 'pending';
+  const eligibility = evaluateCoSignEligibility(transaction, currentUserPublicKey);
+  const canSign = eligibility.canSign;
 
   const isExpired = new Date() > new Date(transaction.expiresAt);
   const isExpiringSoon =
     !isExpired && new Date(transaction.expiresAt).getTime() - Date.now() < 24 * 60 * 60 * 1000;
 
   const handleSign = async () => {
+    // Replay guard: re-check the request is still signable before doing anything.
+    const gate = evaluateCoSignEligibility(transaction, currentUserPublicKey);
+    if (!gate.canSign) {
+      Alert.alert('Cannot Sign', CO_SIGN_REJECT_MESSAGE[gate.reason ?? 'not-pending']);
+      return;
+    }
     if (!privateKey.trim()) {
       Alert.alert(
         'Private Key Required',
@@ -96,6 +109,12 @@ const PendingCoSignScreen: React.FC<Props> = ({
           text: 'Sign',
           style: 'destructive',
           onPress: async () => {
+            // Atomically claim this request+nonce. If another tap / re-entered
+            // screen already claimed it, bail out instead of double-submitting.
+            if (!markCoSignConsumed(transaction)) {
+              Alert.alert('Cannot Sign', CO_SIGN_REJECT_MESSAGE['nonce-consumed']);
+              return;
+            }
             setSigning(true);
             try {
               // In production: use the keypair from secure storage, not user input
@@ -110,6 +129,8 @@ const PendingCoSignScreen: React.FC<Props> = ({
                 [{ text: 'OK', onPress: onSigned }],
               );
             } catch (error: any) {
+              // Submission failed — release the claim so a retry is possible.
+              releaseCoSignClaim(transaction);
               Alert.alert('Signing Failed', error?.message ?? 'Failed to sign transaction.');
             } finally {
               setSigning(false);
