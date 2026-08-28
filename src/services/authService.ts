@@ -24,6 +24,8 @@ import {
   getSecureTokens,
   isBiometricAuthenticationEnabled as isBiometricStorageEnabled,
   storeSecureTokens,
+  setCurrentAccountId,
+  getCurrentAccountId,
 } from '../utils/encryption/keychain';
 import { logError } from '../utils/errorLogger';
 import { sanitizeString } from '../utils/sanitize';
@@ -160,10 +162,23 @@ export async function login(email: string, password: string): Promise<AuthSessio
     const payload: LoginRequest = { email: sanitizedEmail, password: sanitizedPassword };
     const { data } = await authClient.post<LoginResponse>(API_ENDPOINTS.AUTH_LOGIN, payload);
 
-    await storeSecureTokens({
-      token: data.token,
-      refreshToken: data.refreshToken,
-    });
+    const userId = data.user.id;
+    const previousAccountId = getCurrentAccountId();
+
+    // Atomically clear credentials from previous account if switching
+    if (previousAccountId && previousAccountId !== userId) {
+      await clearSecureTokens(previousAccountId);
+    }
+
+    // Set current account and store tokens bound to this account
+    setCurrentAccountId(userId);
+    await storeSecureTokens(
+      {
+        token: data.token,
+        refreshToken: data.refreshToken,
+      },
+      userId,
+    );
 
     return {
       user: data.user,
@@ -211,10 +226,23 @@ export async function register(payload: RegisterRequest): Promise<AuthSession> {
   try {
     const { data } = await authClient.post<RegisterResponse>(API_ENDPOINTS.AUTH_REGISTER, payload);
 
-    await storeSecureTokens({
-      token: data.token,
-      refreshToken: data.refreshToken,
-    });
+    const userId = data.user.id;
+    const previousAccountId = getCurrentAccountId();
+
+    // Atomically clear credentials from previous account if switching
+    if (previousAccountId && previousAccountId !== userId) {
+      await clearSecureTokens(previousAccountId);
+    }
+
+    // Set current account and store tokens bound to this account
+    setCurrentAccountId(userId);
+    await storeSecureTokens(
+      {
+        token: data.token,
+        refreshToken: data.refreshToken,
+      },
+      userId,
+    );
 
     return {
       user: data.user,
@@ -235,9 +263,10 @@ export async function register(payload: RegisterRequest): Promise<AuthSession> {
 
 export async function refreshToken(): Promise<string> {
   try {
-    const storedRefresh = await getSecureRefreshToken();
+    const accountId = getCurrentAccountId();
+    const storedRefresh = await getSecureRefreshToken(accountId || undefined);
     if (!storedRefresh) {
-      await clearSecureTokens();
+      await clearSecureTokens(accountId || undefined);
       const error = new AuthError('No refresh token available', 'NO_REFRESH_TOKEN');
       logError(error, { service: 'authService', action: 'refresh_missing_token' });
       throw error;
@@ -247,14 +276,18 @@ export async function refreshToken(): Promise<string> {
       refreshToken: storedRefresh,
     });
 
-    await storeSecureTokens({
-      token: data.token,
-      refreshToken: data.refreshToken ?? storedRefresh,
-    });
+    await storeSecureTokens(
+      {
+        token: data.token,
+        refreshToken: data.refreshToken ?? storedRefresh,
+      },
+      accountId || undefined,
+    );
 
     return data.token;
   } catch (err: unknown) {
-    await clearSecureTokens();
+    const accountId = getCurrentAccountId();
+    await clearSecureTokens(accountId || undefined);
 
     logError(err as Error, { service: 'authService', action: 'refresh_token' });
 
@@ -310,11 +343,13 @@ export async function promptForBiometricSetup(): Promise<boolean> {
 }
 
 export async function getStoredToken(): Promise<string | null> {
-  return getSecureToken();
+  const accountId = getCurrentAccountId();
+  return getSecureToken(accountId || undefined);
 }
 
 export async function getStoredTokens(): Promise<StoredSession | null> {
-  return getSecureTokens();
+  const accountId = getCurrentAccountId();
+  return getSecureTokens(accountId || undefined);
 }
 
 export async function authenticateWithBiometric(): Promise<boolean> {
@@ -326,14 +361,16 @@ export async function authenticateWithBiometric(): Promise<boolean> {
 }
 
 export async function getToken(): Promise<string | null> {
-  const token = await getSecureToken();
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
   if (!token) return null;
   if (_isTokenExpired(token)) return refreshToken();
   return token;
 }
 
 export async function getSession(): Promise<StoredSession | null> {
-  const tokens = await getSecureTokens();
+  const accountId = getCurrentAccountId();
+  const tokens = await getSecureTokens(accountId || undefined);
   if (!tokens) return null;
   if (_isTokenExpired(tokens.token)) {
     const token = await refreshToken();
@@ -523,6 +560,9 @@ export function getInMemorySecret(): string | null {
   return inMemorySecret;
 }
 
+// Re-export account binding functions for app-level initialization
+export { setCurrentAccountId, getCurrentAccountId };
+
 // ─── OAuth 2.0 / PKCE ────────────────────────────────────────────────────────
 
 export interface OAuthSession extends AuthSession {
@@ -562,7 +602,20 @@ export async function loginWithOAuth(
       data: { user: AuthSession['user']; token: string; refreshToken: string; expiresIn: number };
     }>(`/auth/oauth/${provider}`, { code, state, name });
 
-    await storeSecureTokens({ token: data.data.token, refreshToken: data.data.refreshToken });
+    const userId = data.data.user.id;
+    const previousAccountId = getCurrentAccountId();
+
+    // Atomically clear credentials from previous account if switching
+    if (previousAccountId && previousAccountId !== userId) {
+      await clearSecureTokens(previousAccountId);
+    }
+
+    // Set current account and store tokens bound to this account
+    setCurrentAccountId(userId);
+    await storeSecureTokens(
+      { token: data.data.token, refreshToken: data.data.refreshToken },
+      userId,
+    );
 
     return {
       user: data.data.user,
@@ -582,7 +635,8 @@ export async function loginWithOAuth(
 
 /** Refresh an OAuth access token using the stored refresh token. */
 export async function refreshOAuthToken(): Promise<string> {
-  const storedRefresh = await getSecureRefreshToken();
+  const accountId = getCurrentAccountId();
+  const storedRefresh = await getSecureRefreshToken(accountId || undefined);
   if (!storedRefresh) throw new AuthError('No refresh token', 'NO_REFRESH_TOKEN');
 
   try {
@@ -591,10 +645,13 @@ export async function refreshOAuthToken(): Promise<string> {
       data: { token: string; refreshToken: string; expiresIn: number };
     }>('/auth/oauth/refresh', { refreshToken: storedRefresh });
 
-    await storeSecureTokens({ token: data.data.token, refreshToken: data.data.refreshToken });
+    await storeSecureTokens(
+      { token: data.data.token, refreshToken: data.data.refreshToken },
+      accountId || undefined,
+    );
     return data.data.token;
   } catch (err) {
-    await clearSecureTokens();
+    await clearSecureTokens(accountId || undefined);
     logError(err as Error, { service: 'authService', action: 'oauth_refresh' });
     throw new AuthError('Token refresh failed', 'REFRESH_FAILED');
   }
@@ -602,10 +659,11 @@ export async function refreshOAuthToken(): Promise<string> {
 
 /** Revoke the current refresh token (logout). */
 export async function revokeOAuthToken(): Promise<void> {
-  const storedRefresh = await getSecureRefreshToken();
+  const accountId = getCurrentAccountId();
+  const storedRefresh = await getSecureRefreshToken(accountId || undefined);
   if (!storedRefresh) return;
   try {
-    const token = await getSecureToken();
+    const token = await getSecureToken(accountId || undefined);
     await authClient.post(
       '/auth/oauth/revoke',
       { refreshToken: storedRefresh },
@@ -614,7 +672,8 @@ export async function revokeOAuthToken(): Promise<void> {
   } catch {
     // Best-effort — always clear local tokens
   } finally {
-    await clearSecureTokens();
+    await clearSecureTokens(accountId || undefined);
+    setCurrentAccountId(null);
   }
 }
 
@@ -622,7 +681,8 @@ export async function revokeOAuthToken(): Promise<void> {
 export async function getLinkedProviders(): Promise<
   { provider: OAuthProvider; linkedAt: string }[]
 > {
-  const token = await getSecureToken();
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
   const { data } = await authClient.get<{
     success: boolean;
     data: { linked: { provider: OAuthProvider; linkedAt: string }[] };
@@ -636,7 +696,8 @@ export async function linkOAuthProvider(
   code: string,
   state: string,
 ): Promise<void> {
-  const token = await getSecureToken();
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
   await authClient.post(
     '/auth/oauth/link',
     { provider, code, state },
@@ -646,7 +707,8 @@ export async function linkOAuthProvider(
 
 /** Unlink an OAuth provider from the current account. */
 export async function unlinkOAuthProvider(provider: OAuthProvider): Promise<void> {
-  const token = await getSecureToken();
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
   await authClient.delete(`/auth/oauth/unlink/${provider}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
