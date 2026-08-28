@@ -54,7 +54,11 @@ const TrustlineScreen = React.lazy(() => import('../screens/TrustlineScreen'));
 const VaccinationScreen = React.lazy(() => import('../screens/VaccinationScreen'));
 const VetMapScreen = React.lazy(() => import('../screens/VetMapScreen'));
 import analyticsService from '../services/analyticsService';
-import { extractDeepLinkParams } from '../services/notificationService';
+import {
+  extractDeepLinkParams,
+  hasNotificationBeenProcessed,
+  markNotificationAsProcessed,
+} from '../services/notificationService';
 import performance from '../utils/performance';
 
 const RootStack = createNativeStackNavigator<RootStackParamList>();
@@ -463,16 +467,19 @@ export const navigationRef = React.createRef<
 export const handleNotificationDeepLink = (data: Record<string, unknown>): void => {
   if (!navigationRef.current) return;
 
+  // Extract stable notification ID for deduplication
+  const notificationId = data.notificationId as string | undefined;
+
+  // Check if this notification has already been processed by cold-start or listener path
+  if (hasNotificationBeenProcessed(notificationId)) {
+    return; // Already processed in this session, skip to avoid duplicate navigation
+  }
+
   const deepLink = extractDeepLinkParams(data);
   if (!deepLink) return;
 
-  // Import here to avoid circular dependency
-  const navigationQueueService = require('../services/navigationQueueService').default;
-
-  // Check if navigation should be queued (lock verification pending)
-  if (navigationQueueService.isNavigationQueued()) {
-    return; // Already queued, don't navigate
-  }
+  // Mark this notification as processed before navigating
+  markNotificationAsProcessed(notificationId);
 
   // Get the current state to know if we're in the Main tab
   const nav = navigationRef.current;
