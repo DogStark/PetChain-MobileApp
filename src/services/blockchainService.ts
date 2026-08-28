@@ -529,9 +529,188 @@ export const submitStellarTransaction = async (
   }
 };
 
+// ==============================
+// DESTINATION & MEMO VALIDATION (Issue #948)
+// ==============================
+
+export interface StellarDestinationValidation {
+  /** Original input, untrimmed */
+  address: string;
+  /** `ed25519` for classic `G...` keys, `muxed` for `M...` addresses */
+  type: 'ed25519' | 'muxed';
+  /** Trimmed, canonical form safe to hand to the SDK */
+  normalized: string;
+}
+
+type AccountDataLoader = (
+  publicKey: string,
+) => Promise<{ data_attr?: Record<string, string> | null }>;
+
+/**
+ * Validate a Stellar destination address with the SDK's StrKey checks.
+ * Accepts classic ed25519 keys (`G...`) and multiplexed accounts (`M...`).
+ * Throws BlockchainServiceError('INVALID_DESTINATION') for anything else so a
+ * mistyped address can never reach transaction building.
+ */
+export const validateStellarDestination = (address: string): StellarDestinationValidation => {
+  const normalized = (address ?? '').trim();
+
+  if (!normalized) {
+    throw new BlockchainServiceError('Destination address is required', 'INVALID_DESTINATION');
+  }
+  if (StellarSdk.StrKey.isValidEd25519PublicKey(normalized)) {
+    return { address, type: 'ed25519', normalized };
+  }
+  if (StellarSdk.StrKey.isValidMed25519PublicKey(normalized)) {
+    return { address, type: 'muxed', normalized };
+  }
+  throw new BlockchainServiceError(
+    'Destination is not a valid Stellar address (expected a G... or M... key)',
+    'INVALID_DESTINATION',
+  );
+};
+
+/**
+ * SEP-0029: an account signals that inbound payments MUST carry a memo by
+ * publishing a `config.memo_required` data entry (exchanges and custodians do
+ * this to route deposits). Returns true when the destination has opted in.
+ *
+ * The account loader is injectable for testing; it defaults to the live
+ * Horizon-backed lookup which is already circuit-breaker protected.
+ */
+export const destinationRequiresMemo = async (
+  destinationPublicKey: string,
+  loadAccount: AccountDataLoader = getStellarAccountDetails as unknown as AccountDataLoader,
+): Promise<boolean> => {
+  const validated = validateStellarDestination(destinationPublicKey);
+
+  // A muxed address already carries its routing id — no separate memo is needed.
+  if (validated.type === 'muxed') {
+    return false;
+  }
+
+  try {
+    const account = await loadAccount(validated.normalized);
+    const data = account?.data_attr ?? {};
+    return Object.prototype.hasOwnProperty.call(data, 'config.memo_required');
+  } catch (error) {
+    // An unfunded / unknown account cannot have opted in.
+    if (error instanceof BlockchainServiceError && error.code === 'ACCOUNT_NOT_FOUND') {
+      return false;
+    }
+    throw error;
+  }
+};
+
+/**
+ * Guard invoked before building a payment: rejects invalid destinations and
+ * blocks sends to memo-required accounts when no memo was supplied.
+ */
+export const assertDestinationAndMemo = async (
+  destinationPublicKey: string,
+  memo?: string,
+  loadAccount?: AccountDataLoader,
+): Promise<void> => {
+  validateStellarDestination(destinationPublicKey);
+
+  const memoText = (memo ?? '').trim();
+  if (!memoText && (await destinationRequiresMemo(destinationPublicKey, loadAccount))) {
+    throw new BlockchainServiceError(
+      'Destination account requires a memo (SEP-0029). Add the exchange/deposit memo before sending.',
+      'MEMO_REQUIRED',
+    );
+  }
+};
+
+// ==============================
+// STALE SEQUENCE PROTECTION (Issue #949)
+// ==============================
+
+const BAD_SEQUENCE_CODES = new Set(['tx_bad_seq', 'txBadSeq']);
+
+/**
+ * Detect Horizon's "bad sequence number" rejection. This happens when a second
+ * device, or a payment already sitting in the offline queue, consumed the
+ * source account's sequence number between the moment a transaction was built
+ * and the moment it was submitted.
+ */
+export const isBadSequenceError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+
+  if (error instanceof BlockchainServiceError) {
+    return /tx_bad_seq|txBadSeq/i.test(error.message);
+  }
+
+  const e = error as {
+    code?: string;
+    response?: { data?: { extras?: { result_codes?: { transaction?: string } } } };
+  };
+  if (e.code && BAD_SEQUENCE_CODES.has(e.code)) return true;
+
+  const txCode = e.response?.data?.extras?.result_codes?.transaction;
+  return !!txCode && BAD_SEQUENCE_CODES.has(txCode);
+};
+
+/**
+ * Build → sign → submit a transaction, refreshing the source account's sequence
+ * number immediately before signing and rebuilding once if Horizon still
+ * reports `tx_bad_seq`.
+ *
+ * This is idempotent: a transaction rejected with `tx_bad_seq` is provably not
+ * included in the ledger, so re-applying the same operation with a fresh
+ * sequence cannot double-spend.
+ */
+export const signAndSubmitWithFreshSequence = async (
+  sourceSecretKey: string,
+  buildOperations: (builder: StellarSdk.TransactionBuilder) => void,
+  options?: { memo?: string; maxRebuilds?: number },
+): Promise<StellarSdk.Horizon.HorizonApi.SubmitTransactionResponse> => {
+  const server = getStellarServer();
+  const sourceKeypair = StellarSdk.Keypair.fromSecret(sourceSecretKey);
+  const networkPassphrase =
+    STELLAR_NETWORK === 'PUBLIC' ? StellarSdk.Networks.PUBLIC : StellarSdk.Networks.TESTNET;
+  const maxRebuilds = options?.maxRebuilds ?? 1;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= maxRebuilds; attempt += 1) {
+    // Refresh the sequence number right before signing so a concurrent device
+    // or a queued payment cannot invalidate the prepared transaction.
+    const sourceAccount = await server.loadAccount(sourceKeypair.publicKey());
+
+    const builder = new StellarSdk.TransactionBuilder(sourceAccount, {
+      fee: StellarSdk.BASE_FEE,
+      networkPassphrase,
+    });
+    buildOperations(builder);
+    builder.setTimeout(30);
+    if (options?.memo) {
+      builder.addMemo(StellarSdk.Memo.text(options.memo));
+    }
+
+    const transaction = builder.build();
+    transaction.sign(sourceKeypair);
+
+    try {
+      return await submitStellarTransaction(transaction);
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxRebuilds && isBadSequenceError(error)) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  // Unreachable: the loop either returns or throws, but satisfies the type checker.
+  throw lastError ?? new BlockchainServiceError('Transaction submission failed', 'TRANSACTION_FAILED');
+};
+
 /**
  * Build and submit a payment transaction.
- * Wraps transaction building and submission in circuit breaker protection.
+ *
+ * - Issue #948: rejects invalid destinations and missing SEP-0029 memos.
+ * - Issue #949: refreshes the account sequence right before signing and
+ *   rebuilds once on `tx_bad_seq`.
  */
 export const sendPayment = async (
   sourceSecretKey: string,
@@ -540,35 +719,23 @@ export const sendPayment = async (
   memo?: string,
 ): Promise<StellarSdk.Horizon.HorizonApi.SubmitTransactionResponse> => {
   try {
-    // Build transaction (no circuit breaker needed)
-    const server = getStellarServer();
-    const sourceKeypair = StellarSdk.Keypair.fromSecret(sourceSecretKey);
-    const sourceAccount = await server.loadAccount(sourceKeypair.publicKey());
+    await assertDestinationAndMemo(destinationPublicKey, memo);
 
-    const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
-      fee: StellarSdk.BASE_FEE,
-      networkPassphrase:
-        STELLAR_NETWORK === 'PUBLIC' ? StellarSdk.Networks.PUBLIC : StellarSdk.Networks.TESTNET,
-    })
-      .addOperation(
-        StellarSdk.Operation.payment({
-          destination: destinationPublicKey,
-          asset: StellarSdk.Asset.native(),
-          amount: amount,
-        }),
-      )
-      .setTimeout(30);
-
-    if (memo) {
-      transaction.addMemo(StellarSdk.Memo.text(memo));
-    }
-
-    const builtTransaction = transaction.build();
-    builtTransaction.sign(sourceKeypair);
-
-    // Submit with circuit breaker and retries
-    return await submitStellarTransaction(builtTransaction);
+    return await signAndSubmitWithFreshSequence(
+      sourceSecretKey,
+      (builder) => {
+        builder.addOperation(
+          StellarSdk.Operation.payment({
+            destination: destinationPublicKey,
+            asset: StellarSdk.Asset.native(),
+            amount,
+          }),
+        );
+      },
+      { memo },
+    );
   } catch (error) {
+    if (error instanceof BlockchainServiceError) throw error;
     handleBlockchainError(error);
     throw error;
   }
