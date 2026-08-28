@@ -1,4 +1,4 @@
-import apiClient from './apiClient';
+import apiClient, { IDEMPOTENCY_HEADER, generateIdempotencyKey } from './apiClient';
 import { executeSql, getItem, setItem } from './localDB';
 import { sendAlertNotification } from './notificationService';
 import syncService, { type SyncAction, type SyncEntityType, type SyncStatus } from './syncService';
@@ -38,10 +38,12 @@ export interface QueuedMutation {
   retries: number;
   /** ETag recorded when this mutation was created */
   etag?: string;
-  /** Stable idempotency key generated at enqueue time to prevent duplicate mutations on retry */
+  /**
+   * Idempotency key minted when this mutation was first queued. Preserved
+   * verbatim across every offline replay so the backend collapses retries of
+   * the same logical operation instead of duplicating it. (#976)
+   */
   idempotencyKey?: string;
-  /** Aggregate ID (type:entityId) for ordering — ensures mutations on same entity preserve causal order */
-  aggregateId?: string;
 }
 
 export interface ConflictItem {
@@ -260,20 +262,39 @@ class OfflineQueue {
 
     // Process mutations in order, but serialize per aggregate (entity)
     for (const mutation of pending) {
-      const aggregateId = mutation.aggregateId || `${mutation.type}:${mutation.data.id}`;
+      try {
+        const headers: Record<string, string> = {};
+        if (mutation.etag) headers['If-Match'] = mutation.etag;
+        if (mutation.idempotencyKey) headers[IDEMPOTENCY_HEADER] = mutation.idempotencyKey;
 
-      // Wait for any in-flight mutation on the same aggregate to complete
-      const inFlight = this.inFlightByAggregate.get(aggregateId);
-      if (inFlight) {
-        await inFlight;
-      }
+        const endpoint = `/${mutation.type}s/${String(mutation.data.id ?? '')}`;
+        const response = await apiClient.put(endpoint, mutation.data, { headers });
 
-      // Process this mutation with a promise chain to enforce ordering
-      const mutationPromise = this._processMutation(mutation).then(
-        (shouldRequeue) => {
-          if (shouldRequeue) {
-            // Increment retry count before re-enqueueing
-            mutation.retries = (mutation.retries ?? 0) + 1;
+        // Capture updated ETag for future mutations on this entity
+        const newEtag = (response.headers as Record<string, string>)?.['etag'];
+        if (newEtag) {
+          // Update stored ETag for subsequent mutations on the same entity
+          const updated = stillPending.map((m) =>
+            m.data.id === mutation.data.id ? { ...m, etag: newEtag } : m,
+          );
+          stillPending.splice(0, stillPending.length, ...updated);
+        }
+      } catch (err) {
+        const status = (err as { response?: { status?: number; data?: unknown } })?.response
+          ?.status;
+
+        if (status === 409) {
+          // Conflict detected — fetch server version and queue for resolution
+          const serverData = await this._fetchServerVersion(mutation);
+          if (serverData) {
+            await this._storeConflict({
+              id: mutation.id,
+              type: mutation.type,
+              action: mutation.action,
+              localData: mutation.data,
+              serverData,
+            });
+          } else {
             stillPending.push(mutation);
           }
         },
@@ -509,6 +530,8 @@ class OfflineQueue {
         await apiClient.put(
           `/${conflict.type}s/${String(conflict.localData.id ?? conflictId)}`,
           dataWithoutEtag,
+          // Fresh operation (user chose keep-local after a conflict) → let the
+          // request interceptor mint a new idempotency key. (#976)
         );
       } catch {
         // Non-fatal — will be retried via queue
@@ -563,8 +586,8 @@ class OfflineQueue {
       id: `${mutation.type}_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       ...mutation,
       etag,
-      idempotencyKey,
-      aggregateId,
+      // Mint once, here, so every later replay of this exact mutation reuses it. (#976)
+      idempotencyKey: mutation.idempotencyKey ?? generateIdempotencyKey(),
       timestamp: Date.now(),
       retries: 0,
     };
