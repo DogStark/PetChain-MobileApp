@@ -115,16 +115,45 @@ module.exports = {
           },
         },
       ],
+      // ─── Backup exclusion plugins ────────────────────────────────────────
+      //
+      // Android (API 23+):
+      //   Sets android:allowBackup="false" in AndroidManifest.xml and
+      //   references backup_rules.xml (API 23–30) and
+      //   data_extraction_rules.xml (API 31+) to exclude databases/petchain.db,
+      //   SharedPreferences (AsyncStorage), and the file-system documents
+      //   directory from all Android Auto Backup transports (Google Drive
+      //   cloud backup and device-to-device transfer).
+      //
+      // iOS:
+      //   Injects BackupExclusion.swift into the Xcode target and patches
+      //   AppDelegate to call excludeSensitiveDirectoriesFromBackup() at
+      //   launch.  This sets NSURLIsExcludedFromBackupKey=true on:
+      //     • Library/Application Support/  (expo-sqlite petchain.db)
+      //     • Library/Preferences/          (AsyncStorage / RNCAsyncStorage)
+      //     • Documents/                    (expo-file-system documentDirectory)
+      //
+      // expo-secure-store (Keychain/Keystore) is NOT backed up by any OS
+      // transport regardless of these settings — no action needed there.
+      //
+      // Source files:
+      //   plugins/withAndroidBackupExclusion.js
+      //   plugins/withIosBackupExclusion.js
+      //   android-config/backup_rules.xml
+      //   android-config/data_extraction_rules.xml
+      './plugins/withAndroidBackupExclusion.js',
+      './plugins/withIosBackupExclusion.js',
     ],
     extra: {
       APP_ENV,
+      // API_BASE_URL resolution: explicit env > profile-specific > no fallback to localhost for prod
       API_BASE_URL:
-        process.env.API_BASE_URL ??
+        process.env.API_BASE_URL ||
         (APP_ENV === 'production'
-          ? (process.env.PROD_API_URL ?? 'https://api.petchain.app/api')
+          ? process.env.PROD_API_URL // Production: require explicit PROD_API_URL, no fallback
           : APP_ENV === 'staging'
             ? (process.env.STAGING_API_URL ?? 'https://staging.petchain.app/api')
-            : 'http://localhost:3000/api'),
+            : (process.env.API_BASE_URL ?? 'http://localhost:3000/api')), // Dev: localhost default
       STAGING_API_URL: process.env.STAGING_API_URL ?? 'https://staging.petchain.app/api',
       PROD_API_URL: process.env.PROD_API_URL ?? 'https://api.petchain.app/api',
       API_TIMEOUT: process.env.API_TIMEOUT ?? '10000',
