@@ -458,12 +458,21 @@ export const navigationRef = React.createRef<
 /**
  * Handle notification deep linking
  * Navigates to the appropriate screen based on notification data
+ * Queues navigation if app-lock verification is still pending
  */
 export const handleNotificationDeepLink = (data: Record<string, unknown>): void => {
   if (!navigationRef.current) return;
 
   const deepLink = extractDeepLinkParams(data);
   if (!deepLink) return;
+
+  // Import here to avoid circular dependency
+  const navigationQueueService = require('../services/navigationQueueService').default;
+
+  // Check if navigation should be queued (lock verification pending)
+  if (navigationQueueService.isNavigationQueued()) {
+    return; // Already queued, don't navigate
+  }
 
   // Get the current state to know if we're in the Main tab
   const nav = navigationRef.current;
@@ -509,10 +518,17 @@ export default function AppNavigator() {
   );
 
   // Listen for notification responses (taps) with deep linking
+  // Queue the navigation instead of navigating immediately to respect app-lock
   React.useEffect(() => {
     const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
       const data = response.notification.request.content.data;
-      handleNotificationDeepLink(data);
+      // Import here to avoid circular dependency
+      const navigationQueueService = require('../services/navigationQueueService').default;
+      navigationQueueService.queueNotification(data);
+      // Only handle the deep link if navigation isn't queued (app already unlocked)
+      if (!navigationQueueService.isNavigationQueued()) {
+        handleNotificationDeepLink(data);
+      }
     });
 
     return () => subscription.remove();
