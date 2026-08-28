@@ -443,6 +443,16 @@ const DosageCalculatorScreen: React.FC = () => {
             <Text style={styles.requestApprovalBtnText}>📋 Request Vet Approval</Text>
           </TouchableOpacity>
         )}
+
+        {/* Mandatory veterinarian disclaimer (issue #956) */}
+        <View
+          style={styles.vetDisclaimerBox}
+          accessible
+          accessibilityRole="text"
+          accessibilityLabel={result.vetDisclaimer}
+        >
+          <Text style={styles.vetDisclaimerText}>{result.vetDisclaimer}</Text>
+        </View>
       </View>
     );
   };
@@ -755,6 +765,20 @@ const styles = StyleSheet.create({
   },
   requestApprovalBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
   saveBtnDisabled: { backgroundColor: '#90CAF9', opacity: 0.6 },
+  // Mandatory vet disclaimer (issue #956)
+  vetDisclaimerBox: {
+    backgroundColor: '#FFF8E1',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: '#FFC107',
+  },
+  vetDisclaimerText: {
+    fontSize: 12,
+    color: '#5D4037',
+    lineHeight: 18,
+  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',

@@ -9,12 +9,30 @@
  *     quality level, then verified before the upload starts
  *   - Files outside `photoService.PHOTO_LIMITS` are rejected on-device
  *
- * The screen uses the existing react-native-image-picker to select images
- * and photoService to handle strip/compress/upload/delete operations.
+ * ### #964 — Cancellable upload with resumable progress
+ *
+ * The upload button switches to a progress bar + "Cancel" button while an
+ * upload is in progress.  The caller holds an `UploadHandle` returned by
+ * `photoService.uploadPhoto`; tapping "Cancel" calls `handle.abort()` which
+ * cancels the in-flight XHR.  The upload promise rejects with an
+ * `UploadCancelledError` which is caught and shown as a dismissible message
+ * rather than an error alert.
+ *
+ * A SHA-256 checksum is sent with every upload so that the server can
+ * de-duplicate retries without storing duplicate photos.
+ *
+ * The metered-network policy is opt-in: a "Use Mobile Data" toggle is shown
+ * in the quality row.  By default, uploads are blocked on metered connections.
+ *
+ * Platform notes:
+ *  - Progress events work on both iOS and Android via the XHR-based upload
+ *    in photoService.
+ *  - The cancel button is always visible while uploading on both platforms.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   ActivityIndicator,
   Alert,
   FlatList,
@@ -22,6 +40,7 @@ import {
   Modal,
   Pressable,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
   View,
@@ -29,7 +48,12 @@ import {
 import { launchImageLibrary } from 'react-native-image-picker';
 
 import { OptimizedImage } from '../components/OptimizedImage';
-import photoService, { type PetPhoto, type PhotoQuality } from '../services/photoService';
+import photoService, {
+  UploadCancelledError,
+  type PetPhoto,
+  type PhotoQuality,
+  type UploadHandle,
+} from '../services/photoService';
 import { logError } from '../utils/errorLogger';
 
 const PAGE_SIZE = 20;
@@ -54,11 +78,19 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const pageRef = useRef(0);
+
+  // ── Upload state ───────────────────────────────────────────────────────────
   const [uploading, setUploading] = useState(false);
+  /** 0–1 fraction; null means indeterminate (processing phase) */
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const uploadHandleRef = useRef<UploadHandle | null>(null);
+
   const [selectedPhoto, setSelectedPhoto] = useState<PetPhoto | null>(null);
   const [quality, setQuality] = useState<PhotoQuality>('medium');
+  /** When false, uploads are blocked on metered (mobile-data) connections */
+  const [allowMetered, setAllowMetered] = useState(false);
 
-  // ---- Load photos (paginated) ---------------------------------------------
+  // ── Load photos (paginated) ────────────────────────────────────────────────
   const loadPhotos = useCallback(
     async (reset = false) => {
       if (!reset && (!hasMore || loadingMore)) return;
@@ -101,7 +133,12 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
     if (hasMore && !loadingMore) void loadPhotos();
   }, [hasMore, loadingMore, loadPhotos]);
 
-  // ---- Upload a new photo --------------------------------------------------
+  // ── Cancel an in-flight upload ─────────────────────────────────────────────
+  const handleCancelUpload = useCallback(() => {
+    uploadHandleRef.current?.abort();
+  }, []);
+
+  // ── Upload a new photo ─────────────────────────────────────────────────────
   const handleUpload = useCallback(() => {
     launchImageLibrary({ mediaType: 'photo', quality: 1 }, async (response) => {
       if (response.didCancel || response.errorMessage || !response.assets?.[0]) return;
@@ -110,32 +147,49 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
       if (!asset.uri) return;
 
       setUploading(true);
+      setUploadProgress(null); // indeterminate while processing
+
+      const handle = photoService.uploadPhoto({
+        petId,
+        localUri: asset.uri,
+        quality,
+        allowMetered,
+        onProgress: (fraction) => {
+          setUploadProgress(fraction);
+        },
+      });
+
+      uploadHandleRef.current = handle;
+
       try {
-        await photoService.uploadPhoto({
-          petId,
-          localUri: asset.uri,
-          quality,
-          // Let the service enforce PHOTO_LIMITS before decoding a huge file.
-          sourceBytes: asset.fileSize,
-        });
+        await handle.promise;
         await loadPhotos(true);
+        // Announce success to screen readers
+        AccessibilityInfo.announceForAccessibility('Photo uploaded successfully.');
       } catch (err) {
-        logError(err instanceof Error ? err : new Error(String(err)), {
-          screen: 'PetPhotosScreen',
-          action: 'uploadPhoto',
-          petId,
-        });
-        Alert.alert(
-          'Upload Failed',
-          err instanceof Error ? err.message : 'Could not upload the photo. Please try again.',
-        );
+        if (err instanceof UploadCancelledError) {
+          // User deliberately cancelled — show a non-intrusive message
+          AccessibilityInfo.announceForAccessibility('Upload cancelled.');
+        } else {
+          logError(err instanceof Error ? err : new Error(String(err)), {
+            screen: 'PetPhotosScreen',
+            action: 'uploadPhoto',
+            petId,
+          });
+          Alert.alert(
+            'Upload Failed',
+            err instanceof Error ? err.message : 'Could not upload the photo. Please try again.',
+          );
+        }
       } finally {
         setUploading(false);
+        setUploadProgress(null);
+        uploadHandleRef.current = null;
       }
     });
-  }, [petId, quality, loadPhotos]);
+  }, [petId, quality, allowMetered, loadPhotos]);
 
-  // ---- Delete a photo ------------------------------------------------------
+  // ── Delete a photo ─────────────────────────────────────────────────────────
   const handleDelete = useCallback(
     (photo: PetPhoto) => {
       Alert.alert('Delete Photo', 'Remove this photo permanently?', [
@@ -164,6 +218,70 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
   );
 
   // ─────────────────────────────────────────────────────────────────────────
+  // RENDER HELPERS
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const renderUploadArea = () => {
+    if (uploading) {
+      return (
+        <View
+          style={styles.uploadProgressContainer}
+          accessible
+          accessibilityLabel={
+            uploadProgress !== null
+              ? `Uploading photo, ${Math.round(uploadProgress * 100)} percent complete`
+              : 'Processing photo, please wait'
+          }
+          accessibilityRole="progressbar"
+          accessibilityValue={
+            uploadProgress !== null
+              ? { min: 0, max: 100, now: Math.round(uploadProgress * 100) }
+              : undefined
+          }
+        >
+          <View style={styles.uploadProgressRow}>
+            {uploadProgress !== null ? (
+              <View style={styles.progressBarTrack}>
+                <View
+                  style={[
+                    styles.progressBarFill,
+                    { width: `${Math.round(uploadProgress * 100)}%` },
+                  ]}
+                />
+              </View>
+            ) : (
+              <ActivityIndicator color="#4A90E2" size="small" />
+            )}
+            <Text style={styles.uploadProgressText}>
+              {uploadProgress !== null ? `${Math.round(uploadProgress * 100)}%` : 'Processing…'}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={styles.cancelUploadBtn}
+            onPress={handleCancelUpload}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel upload"
+          >
+            <Text style={styles.cancelUploadText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    return (
+      <TouchableOpacity
+        style={styles.uploadBtn}
+        onPress={handleUpload}
+        disabled={uploading}
+        accessibilityRole="button"
+        accessibilityLabel="Add photo"
+      >
+        <Text style={styles.uploadBtnText}>+ Add Photo</Text>
+      </TouchableOpacity>
+    );
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
   // RENDER
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -174,11 +292,13 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
         <TouchableOpacity onPress={onBack} style={styles.backButton} accessibilityRole="button">
           <Text style={styles.backText}>‹ Back</Text>
         </TouchableOpacity>
-        <Text style={styles.title}>{petName}'s Photos</Text>
+        <Text style={styles.title} accessibilityRole="header">
+          {petName}'s Photos
+        </Text>
         <View style={styles.headerRight} />
       </View>
 
-      {/* Quality picker */}
+      {/* Quality picker + metered-network toggle */}
       <View style={styles.qualityRow}>
         <Text style={styles.qualityLabel}>Quality:</Text>
         {(['high', 'medium', 'low'] as PhotoQuality[]).map((q) => (
@@ -186,30 +306,33 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
             key={q}
             style={[styles.qualityBtn, quality === q && styles.qualityBtnActive]}
             onPress={() => setQuality(q)}
-            accessibilityRole="button"
+            accessibilityRole="radio"
+            accessibilityState={{ selected: quality === q }}
+            accessibilityLabel={`${q} quality`}
           >
             <Text style={[styles.qualityBtnText, quality === q && styles.qualityBtnTextActive]}>
               {q.charAt(0).toUpperCase() + q.slice(1)}
             </Text>
           </TouchableOpacity>
         ))}
+        {/* Metered-network opt-in */}
+        <View style={styles.meteredRow}>
+          <Text style={styles.meteredLabel}>Mobile data</Text>
+          <Switch
+            value={allowMetered}
+            onValueChange={setAllowMetered}
+            accessibilityLabel="Allow uploads over mobile data"
+            accessibilityRole="switch"
+          />
+        </View>
       </View>
 
-      {/* Upload button */}
-      <TouchableOpacity
-        style={[styles.uploadBtn, uploading && styles.uploadBtnDisabled]}
-        onPress={handleUpload}
-        disabled={uploading}
-        accessibilityRole="button"
-      >
-        {uploading ? (
-          <ActivityIndicator color="#fff" size="small" />
-        ) : (
-          <Text style={styles.uploadBtnText}>+ Add Photo</Text>
-        )}
-      </TouchableOpacity>
+      {/* Upload area */}
+      <View style={styles.uploadArea}>{renderUploadArea()}</View>
 
-      {uploading && <Text style={styles.uploadingHint}>Stripping EXIF data and compressing…</Text>}
+      {uploading && uploadProgress === null && (
+        <Text style={styles.uploadingHint}>Stripping EXIF data and compressing…</Text>
+      )}
 
       {/* Photo grid */}
       {loading ? (
@@ -256,7 +379,12 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
         onRequestClose={() => setSelectedPhoto(null)}
       >
         <View style={styles.modalOverlay}>
-          <Pressable style={styles.modalClose} onPress={() => setSelectedPhoto(null)}>
+          <Pressable
+            style={styles.modalClose}
+            onPress={() => setSelectedPhoto(null)}
+            accessibilityRole="button"
+            accessibilityLabel="Close photo"
+          >
             <Text style={styles.modalCloseText}>✕</Text>
           </Pressable>
 
@@ -266,6 +394,7 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
                 source={{ uri: selectedPhoto.url }}
                 style={styles.fullImage}
                 resizeMode="contain"
+                accessibilityLabel={selectedPhoto.caption ?? 'Full-size pet photo'}
               />
               {selectedPhoto.caption && <Text style={styles.caption}>{selectedPhoto.caption}</Text>}
               <Text style={styles.photoMeta}>
@@ -276,6 +405,7 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
                 style={styles.deleteBtn}
                 onPress={() => handleDelete(selectedPhoto)}
                 accessibilityRole="button"
+                accessibilityLabel="Delete this photo"
               >
                 <Text style={styles.deleteBtnText}>Delete Photo</Text>
               </TouchableOpacity>
@@ -312,7 +442,7 @@ const styles = StyleSheet.create({
   title: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#1a1a1a' },
   headerRight: { minWidth: 60 },
 
-  // Quality picker
+  // Quality picker + metered toggle
   qualityRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -320,6 +450,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     backgroundColor: '#fff',
     gap: 8,
+    flexWrap: 'wrap',
   },
   qualityLabel: { fontSize: 14, color: '#666', marginRight: 4 },
   qualityBtn: {
@@ -333,18 +464,55 @@ const styles = StyleSheet.create({
   qualityBtnActive: { borderColor: '#4A90E2', backgroundColor: '#EAF2FF' },
   qualityBtnText: { fontSize: 13, color: '#555' },
   qualityBtnTextActive: { color: '#4A90E2', fontWeight: '600' },
+  meteredRow: { flexDirection: 'row', alignItems: 'center', marginLeft: 'auto', gap: 6 },
+  meteredLabel: { fontSize: 12, color: '#888' },
 
-  // Upload
+  // Upload area
+  uploadArea: { marginHorizontal: 16, marginVertical: 12 },
   uploadBtn: {
-    marginHorizontal: 16,
-    marginVertical: 12,
     paddingVertical: 12,
     borderRadius: 10,
     backgroundColor: '#4A90E2',
     alignItems: 'center',
   },
-  uploadBtnDisabled: { backgroundColor: '#a0c0e8' },
   uploadBtnText: { fontSize: 15, fontWeight: '600', color: '#fff' },
+
+  // Upload-in-progress UI
+  uploadProgressContainer: {
+    borderRadius: 10,
+    backgroundColor: '#EAF2FF',
+    padding: 12,
+    gap: 8,
+  },
+  uploadProgressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  progressBarTrack: {
+    flex: 1,
+    height: 8,
+    backgroundColor: '#c8dff8',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: 8,
+    backgroundColor: '#4A90E2',
+    borderRadius: 4,
+  },
+  uploadProgressText: { fontSize: 13, fontWeight: '600', color: '#4A90E2', minWidth: 40 },
+  cancelUploadBtn: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#4A90E2',
+    backgroundColor: '#fff',
+  },
+  cancelUploadText: { fontSize: 13, fontWeight: '600', color: '#4A90E2' },
+
   uploadingHint: { textAlign: 'center', fontSize: 12, color: '#888', marginBottom: 8 },
 
   // Grid
