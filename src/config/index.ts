@@ -1,11 +1,17 @@
 import Constants from 'expo-constants';
+import {
+  validateRuntimeConfig,
+  shouldFailHardOnConfigError,
+  logConfigWarnings,
+  type RuntimeConfig as SchemaConfig,
+} from './schema';
 
-type Environment = 'development' | 'staging' | 'production';
+export type Environment = 'development' | 'staging' | 'production';
 
 const extra = Constants.expoConfig?.extra ?? {};
 
 // Resolve env — prefer expo extra (set via app.config.js), fall back to process.env
-function env(key: string, fallback = ''): string {
+export function env(key: string, fallback = ''): string {
   return (extra[key] as string | undefined) ?? (process.env[key] as string | undefined) ?? fallback;
 }
 
@@ -17,6 +23,40 @@ const API_URLS: Record<Environment, string> = {
   production: env('PROD_API_URL', 'https://api.petchain.app/api'),
 };
 
+const API_TIMEOUT_MS = Number(env('API_TIMEOUT', '10000'));
+const CACHE_SIZE_MB = Number(env('MAX_CACHE_SIZE', '50'));
+const PAGINATION_LIMIT = Number(env('PAGINATION_LIMIT', '20'));
+const MONITORING_SAMPLE_RATE = Number(env('MONITORING_SAMPLE_RATE', '1.0'));
+const SESSION_TIMEOUT_MS = Number(env('SESSION_TIMEOUT_MS', String(30 * 60 * 1000)));
+const CRASH_FREE_THRESHOLD = Number(env('CRASH_FREE_THRESHOLD', '99.5'));
+
+// Validate runtime config before app starts
+const validationResult = validateRuntimeConfig(
+  {
+    apiBaseUrl: API_URLS[APP_ENV],
+    apiTimeoutMs: API_TIMEOUT_MS,
+    cacheSizeMb: CACHE_SIZE_MB,
+    paginationLimit: PAGINATION_LIMIT,
+    monitoringSampleRate: MONITORING_SAMPLE_RATE,
+    sessionTimeoutMs: SESSION_TIMEOUT_MS,
+    crashFreeThreshold: CRASH_FREE_THRESHOLD,
+  },
+  APP_ENV,
+);
+
+if (!validationResult.isValid) {
+  const failHard = shouldFailHardOnConfigError(APP_ENV);
+  const message = `[Config] Validation failed:\n${validationResult.error}`;
+
+  if (failHard) {
+    throw new Error(message);
+  } else {
+    console.error(message);
+  }
+}
+
+logConfigWarnings(validationResult.warnings);
+
 const config = {
   env: APP_ENV,
   isDev: APP_ENV === 'development',
@@ -25,7 +65,7 @@ const config = {
 
   api: {
     baseUrl: API_URLS[APP_ENV],
-    timeoutMs: Number(env('API_TIMEOUT', '10000')),
+    timeoutMs: API_TIMEOUT_MS,
     maxRetries: 3,
     version: '2.0',
   },
@@ -36,12 +76,12 @@ const config = {
   },
 
   cache: {
-    maxSizeMb: Number(env('MAX_CACHE_SIZE', '50')),
+    maxSizeMb: CACHE_SIZE_MB,
     ttlMs: 2 * 60 * 1000,
   },
 
   pagination: {
-    defaultLimit: Number(env('PAGINATION_LIMIT', '20')),
+    defaultLimit: PAGINATION_LIMIT,
     maxLimit: 100,
   },
 
@@ -49,11 +89,11 @@ const config = {
     /** Enable session monitoring (disabled in development by default) */
     enabled: env('MONITORING_ENABLED', APP_ENV === 'development' ? 'false' : 'true') === 'true',
     /** Sentry-compatible sample rate: 1.0 = 100% of sessions tracked */
-    sampleRate: Number(env('MONITORING_SAMPLE_RATE', '1.0')),
+    sampleRate: MONITORING_SAMPLE_RATE,
     /** Session idle timeout in ms — sessions inactive longer than this are auto-ended */
-    sessionTimeoutMs: Number(env('SESSION_TIMEOUT_MS', String(30 * 60 * 1000))),
+    sessionTimeoutMs: SESSION_TIMEOUT_MS,
     /** Crash-free rate threshold — alert fires when rate drops below this */
-    crashFreeThreshold: Number(env('CRASH_FREE_THRESHOLD', '99.5')),
+    crashFreeThreshold: CRASH_FREE_THRESHOLD,
   },
   sentry: {
     dsn: env('SENTRY_DSN', ''),
@@ -61,6 +101,23 @@ const config = {
   },
   googlePlaces: {
     apiKey: env('GOOGLE_PLACES_API_KEY', ''),
+  },
+  /**
+   * Stellar network selection (issue #943).
+   *
+   * These are raw inputs only — nothing should read them directly. Use
+   * `getStellarNetworkProfile()` from `config/stellarNetwork`, which resolves
+   * the network, Horizon URL and passphrase together and rejects an
+   * inconsistent combination.
+   */
+  stellar: {
+    /** 'PUBLIC' | 'TESTNET'. Defaults to PUBLIC in production, TESTNET elsewhere. */
+    network: env('STELLAR_NETWORK', ''),
+    /** Overrides the default Horizon host for the selected network. */
+    horizonUrl: env('STELLAR_HORIZON_URL', ''),
+    /** Deliberate opt-in for a non-production build to use the public network. */
+    allowPublicOutsideProduction:
+      env('STELLAR_ALLOW_PUBLIC_OUTSIDE_PRODUCTION', 'false') === 'true',
   },
   pinLock: {
     /** Show remaining-attempts counter after this many failures */

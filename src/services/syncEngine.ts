@@ -210,6 +210,7 @@ export class SyncEngine {
     this.emit({ type: 'started', total, completed, failed });
 
     for (const record of batch) {
+      if (!this.isRunning) break;
       try {
         await this.pushRecord(record);
         await this.clearRecord(record.id);
@@ -367,6 +368,16 @@ export class SyncEngine {
 
   private emit(event: SyncProgressEvent): void {
     this.listeners.forEach((listener) => listener(event));
+  }
+
+  async clearAll(): Promise<void> {
+    this.isRunning = false;
+    await this._resetBackoff();
+    try {
+      await executeSql(`DELETE FROM dirty_records`);
+    } catch {
+      // Ignored if table doesn't exist yet
+    }
   }
 }
 

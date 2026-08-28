@@ -1,4 +1,9 @@
 import api from './api';
+import {
+  NoteConcurrencyError,
+  assertUpdatable,
+  type SoapBody,
+} from './clinicalNoteConcurrency';
 import { deleteSoapDraft, getSoapDraft, upsertSoapDraft, type SoapNoteDraft } from './localDB';
 
 export type { SoapNoteDraft };
@@ -53,6 +58,67 @@ export interface ClinicalNoteRecord {
 export async function createNote(payload: CreateNotePayload): Promise<ClinicalNoteRecord> {
   const response = await api.post<{ data: ClinicalNoteRecord }>('/notes', payload);
   return response.data.data;
+}
+
+type ServerNote = ClinicalNoteRecord & { version?: number };
+
+export interface UpdateNotePayload extends CreateNotePayload {
+  /** Version the editor started from. */
+  baseVersion: number;
+  /** The note body as it was when editing began — used to compute per-field conflicts. */
+  previousBody?: SoapBody;
+}
+
+/**
+ * PATCH /api/notes/:id — optimistic-concurrency update (issue #967).
+ *
+ * If the server has advanced past `baseVersion` it responds 409; we then raise a
+ * {@link NoteConcurrencyError} (with per-field conflicts when the server echoes
+ * the current note) so the UI can show a conflict-review step instead of
+ * silently overwriting another clinician's edit.
+ */
+export async function updateNote(
+  id: string,
+  payload: UpdateNotePayload,
+): Promise<ClinicalNoteRecord> {
+  try {
+    const response = await api.patch<{ data: ClinicalNoteRecord }>(`/notes/${id}`, payload, {
+      headers: { 'If-Match': String(payload.baseVersion) },
+    });
+    return response.data.data;
+  } catch (err) {
+    const status = (err as { response?: { status?: number } })?.response?.status;
+    if (status !== 409) throw err;
+
+    const server = (err as { response?: { data?: { data?: ServerNote } } })?.response?.data?.data;
+    const mine: SoapBody = {
+      subjective: payload.subjective,
+      objective: payload.objective,
+      assessment: payload.assessment,
+      plan: payload.plan,
+    };
+    const serverVersion = server?.version ?? payload.baseVersion + 1;
+
+    if (server) {
+      // Throws NoteConcurrencyError carrying per-field conflicts for the review UI.
+      assertUpdatable(
+        payload.baseVersion,
+        {
+          id,
+          version: serverVersion,
+          updatedAt: server.updated_at,
+          updatedBy: server.vetId,
+          subjective: server.subjective,
+          objective: server.objective,
+          assessment: server.assessment,
+          plan: server.plan,
+        },
+        mine,
+        payload.previousBody ?? mine,
+      );
+    }
+    throw new NoteConcurrencyError(payload.baseVersion, serverVersion, []);
+  }
 }
 
 // ─── Local draft helpers ──────────────────────────────────────────────────────

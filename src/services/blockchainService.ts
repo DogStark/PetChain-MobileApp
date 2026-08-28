@@ -3,6 +3,12 @@ import axios, { type AxiosResponse } from 'axios';
 import CryptoJS from 'crypto-js';
 
 import type { MedicalRecord } from './medicalRecordService';
+import {
+  submitTransactionOnce,
+  type SubmissionBackend,
+  type SubmitResult,
+} from './stellarTransactionRegistry';
+import { getStellarNetworkProfile } from '../config/stellarNetwork';
 import { CircuitBreaker, retryWithBackoff } from '../utils/circuitBreaker';
 
 // ==============================
@@ -55,12 +61,18 @@ export type MedicalRecordWithChainData = MedicalRecord & {
 const API_BASE_URL = 'https://api.petchain.app/api';
 const CACHE_TTL_MS = 2 * 60 * 1000;
 
-// Stellar Network Configuration
-const STELLAR_NETWORK: string = 'TESTNET'; // Change to 'PUBLIC' for production
-const HORIZON_URL =
-  STELLAR_NETWORK === 'PUBLIC'
-    ? 'https://horizon.stellar.org'
-    : 'https://horizon-testnet.stellar.org';
+// Stellar network configuration (issue #943).
+//
+// Previously `STELLAR_NETWORK` was a hard-coded literal here while
+// `stellarPathPaymentService` picked its signing passphrase from `config.env`.
+// The two could disagree, so a production build signed for the public network
+// and submitted to testnet. Both now read the same validated profile, which
+// resolves network, Horizon URL and passphrase together and refuses an
+// inconsistent combination.
+const networkProfile = getStellarNetworkProfile();
+const STELLAR_NETWORK = networkProfile.network;
+const HORIZON_URL = networkProfile.horizonUrl;
+const NETWORK_PASSPHRASE = networkProfile.networkPassphrase;
 
 // Initialize Stellar Server
 let stellarServer: StellarSdk.Horizon.Server | null = null;
@@ -75,9 +87,6 @@ const horizonCircuitBreaker = new CircuitBreaker({
 const getStellarServer = (): StellarSdk.Horizon.Server => {
   if (!stellarServer) {
     stellarServer = new StellarSdk.Horizon.Server(HORIZON_URL);
-    // Configure network passphrase
-    const _networkPassphrase =
-      STELLAR_NETWORK === 'PUBLIC' ? StellarSdk.Networks.PUBLIC : StellarSdk.Networks.TESTNET;
   }
   return stellarServer;
 };
@@ -369,8 +378,7 @@ export const getStellarNetworkInfo = async (): Promise<{
         return {
           network: STELLAR_NETWORK,
           horizonUrl: HORIZON_URL,
-          passphrase:
-            STELLAR_NETWORK === 'PUBLIC' ? StellarSdk.Networks.PUBLIC : StellarSdk.Networks.TESTNET,
+          passphrase: NETWORK_PASSPHRASE,
           currentLedger: latestLedger.sequence,
           latestLedger: latestLedger.sequence,
         };
@@ -441,12 +449,13 @@ export const getStellarAccountDetails = async (
  * Fund a testnet account using Friendbot (testnet only).
  */
 export const fundTestnetAccount = async (publicKey: string): Promise<boolean> => {
-  if (STELLAR_NETWORK !== 'TESTNET') {
+  const { friendbotUrl } = networkProfile;
+  if (friendbotUrl === null) {
     throw new BlockchainServiceError('Friendbot only available on testnet', 'INVALID_NETWORK');
   }
 
   try {
-    await axios.get(`https://friendbot.stellar.org?addr=${encodeURIComponent(publicKey)}`);
+    await axios.get(`${friendbotUrl}?addr=${encodeURIComponent(publicKey)}`);
     return true;
   } catch {
     throw new BlockchainServiceError('Failed to fund testnet account', 'FUNDING_FAILED');
@@ -529,26 +538,148 @@ export const submitStellarTransaction = async (
   }
 };
 
+// ==============================
+// DESTINATION & MEMO VALIDATION (Issue #948)
+// ==============================
+
+export interface StellarDestinationValidation {
+  /** Original input, untrimmed */
+  address: string;
+  /** `ed25519` for classic `G...` keys, `muxed` for `M...` addresses */
+  type: 'ed25519' | 'muxed';
+  /** Trimmed, canonical form safe to hand to the SDK */
+  normalized: string;
+}
+
+type AccountDataLoader = (
+  publicKey: string,
+) => Promise<{ data_attr?: Record<string, string> | null }>;
+
+/**
+ * Idempotency-protected wrapper around {@link submitStellarTransaction}
+ * (issues #946 and #947).
+ *
+ * `submitStellarTransaction` is the raw network primitive: circuit breaker,
+ * exponential backoff, typed errors. What it cannot do is tell whether *this*
+ * envelope has already been sent — so rapid taps, or a rebuild after an
+ * ambiguous timeout, can pay twice.
+ *
+ * This wrapper adds that. Submission is keyed by the envelope's deterministic
+ * hash, so concurrent callers share one request, a confirmed transaction is
+ * never re-sent, and an ambiguous failure is reconciled against Horizon rather
+ * than assumed to have failed. The record is persisted before the network call,
+ * so an app termination mid-flight is recoverable on next launch.
+ *
+ * @param transaction A **signed** transaction.
+ * @param operationKey Business identifier (e.g. a payment id) recorded with it.
+ */
+export const submitStellarTransactionOnce = async (
+  transaction: StellarSdk.Transaction,
+  operationKey?: string,
+): Promise<SubmitResult> => {
+  const backend: SubmissionBackend = {
+    async submit(tx) {
+      // Reuses the existing retry + circuit-breaker + error mapping.
+      const response = await submitStellarTransaction(tx);
+      return {
+        hash: response.hash,
+        ledger: (response as { ledger?: number }).ledger,
+        successful: (response as { successful?: boolean }).successful ?? true,
+      };
+    },
+    async lookup(hash) {
+      try {
+        const server = getStellarServer();
+        const tx = (await server.transactions().transaction(hash).call()) as unknown as {
+          successful?: boolean;
+          ledger_attr?: number;
+          ledger?: number;
+        };
+        return { successful: tx.successful ?? true, ledger: tx.ledger_attr ?? tx.ledger };
+      } catch (error) {
+        const status = (error as { response?: { status?: number } }).response?.status;
+        if (status === 404) return null;
+        throw error;
+      }
+    },
+  };
+
+  return submitTransactionOnce(transaction, { operationKey, backend });
+};
+
 /**
  * Build and submit a payment transaction.
  * Wraps transaction building and submission in circuit breaker protection.
  */
-export const sendPayment = async (
-  sourceSecretKey: string,
+export const validateStellarDestination = (address: string): StellarDestinationValidation => {
+  const normalized = (address ?? '').trim();
+
+  if (!normalized) {
+    throw new BlockchainServiceError('Destination address is required', 'INVALID_DESTINATION');
+  }
+  if (StellarSdk.StrKey.isValidEd25519PublicKey(normalized)) {
+    return { address, type: 'ed25519', normalized };
+  }
+  if (StellarSdk.StrKey.isValidMed25519PublicKey(normalized)) {
+    return { address, type: 'muxed', normalized };
+  }
+  throw new BlockchainServiceError(
+    'Destination is not a valid Stellar address (expected a G... or M... key)',
+    'INVALID_DESTINATION',
+  );
+};
+
+/**
+ * SEP-0029: an account signals that inbound payments MUST carry a memo by
+ * publishing a `config.memo_required` data entry (exchanges and custodians do
+ * this to route deposits). Returns true when the destination has opted in.
+ *
+ * The account loader is injectable for testing; it defaults to the live
+ * Horizon-backed lookup which is already circuit-breaker protected.
+ */
+export const destinationRequiresMemo = async (
   destinationPublicKey: string,
-  amount: string,
+  loadAccount: AccountDataLoader = getStellarAccountDetails as unknown as AccountDataLoader,
+): Promise<boolean> => {
+  const validated = validateStellarDestination(destinationPublicKey);
+
+  // A muxed address already carries its routing id — no separate memo is needed.
+  if (validated.type === 'muxed') {
+    return false;
+  }
+
+  try {
+    const account = await loadAccount(validated.normalized);
+    const data = account?.data_attr ?? {};
+    return Object.prototype.hasOwnProperty.call(data, 'config.memo_required');
+  } catch (error) {
+    // An unfunded / unknown account cannot have opted in.
+    if (error instanceof BlockchainServiceError && error.code === 'ACCOUNT_NOT_FOUND') {
+      return false;
+    }
+    throw error;
+  }
+};
+
+/**
+ * Guard invoked before building a payment: rejects invalid destinations and
+ * blocks sends to memo-required accounts when no memo was supplied.
+ */
+export const assertDestinationAndMemo = async (
+  destinationPublicKey: string,
   memo?: string,
-): Promise<StellarSdk.Horizon.HorizonApi.SubmitTransactionResponse> => {
+  /** Business key recorded with the submission, for idempotency tracking. */
+  operationKey?: string,
+): Promise<SubmitResult> => {
   try {
     // Build transaction (no circuit breaker needed)
     const server = getStellarServer();
     const sourceKeypair = StellarSdk.Keypair.fromSecret(sourceSecretKey);
     const sourceAccount = await server.loadAccount(sourceKeypair.publicKey());
 
-    const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
+    const builder = new StellarSdk.TransactionBuilder(sourceAccount, {
       fee: StellarSdk.BASE_FEE,
-      networkPassphrase:
-        STELLAR_NETWORK === 'PUBLIC' ? StellarSdk.Networks.PUBLIC : StellarSdk.Networks.TESTNET,
+      networkPassphrase: NETWORK_PASSPHRASE,
     })
       .addOperation(
         StellarSdk.Operation.payment({
@@ -559,16 +690,29 @@ export const sendPayment = async (
       )
       .setTimeout(30);
 
-    if (memo) {
-      transaction.addMemo(StellarSdk.Memo.text(memo));
+    const transaction = builder.build();
+    transaction.sign(sourceKeypair);
+
+    try {
+      return await submitStellarTransaction(transaction);
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxRebuilds && isBadSequenceError(error)) {
+        continue;
+      }
+      throw error;
     }
+  }
 
-    const builtTransaction = transaction.build();
-    builtTransaction.sign(sourceKeypair);
+  // Unreachable: the loop either returns or throws, but satisfies the type checker.
+  throw lastError ?? new BlockchainServiceError('Transaction submission failed', 'TRANSACTION_FAILED');
+};
 
-    // Submit with circuit breaker and retries
-    return await submitStellarTransaction(builtTransaction);
+    // Issue #946: submit at most once. Rapid taps share one request, and an
+    // ambiguous timeout is reconciled against Horizon rather than rebuilt.
+    return await submitStellarTransactionOnce(builtTransaction, operationKey);
   } catch (error) {
+    if (error instanceof BlockchainServiceError) throw error;
     handleBlockchainError(error);
     throw error;
   }
@@ -581,7 +725,9 @@ export const storeDataOnStellar = async (
   sourceSecretKey: string,
   dataName: string,
   dataValue: string,
-): Promise<StellarSdk.Horizon.HorizonApi.SubmitTransactionResponse> => {
+  /** Business key recorded with the submission, for idempotency tracking. */
+  operationKey?: string,
+): Promise<SubmitResult> => {
   try {
     const server = getStellarServer();
     const sourceKeypair = StellarSdk.Keypair.fromSecret(sourceSecretKey);
@@ -589,8 +735,7 @@ export const storeDataOnStellar = async (
 
     const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
       fee: StellarSdk.BASE_FEE,
-      networkPassphrase:
-        STELLAR_NETWORK === 'PUBLIC' ? StellarSdk.Networks.PUBLIC : StellarSdk.Networks.TESTNET,
+      networkPassphrase: NETWORK_PASSPHRASE,
     })
       .addOperation(
         StellarSdk.Operation.manageData({
@@ -603,7 +748,9 @@ export const storeDataOnStellar = async (
 
     transaction.sign(sourceKeypair);
 
-    return await submitStellarTransaction(transaction);
+    // Issue #946: manage-data writes are also value-bearing operations that
+    // must not be applied twice by a retry.
+    return await submitStellarTransactionOnce(transaction, operationKey);
   } catch (error) {
     handleBlockchainError(error);
     throw error;

@@ -32,6 +32,7 @@ import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -41,7 +42,9 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  type AppStateStatus,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 
 import { authenticateWithBiometric } from '../services/authService';
 import {
@@ -131,6 +134,43 @@ const KeyRotationScreen: React.FC<Props> = ({
         /* non-fatal */
       });
   }, []);
+
+  const appStateRef = useRef<AppStateStatus>('active');
+
+  // Clear sensitive state atomically
+  const clearSensitiveState = useCallback(() => {
+    setNewPublicKey('');
+    setReason('');
+    setNewMnemonic(null);
+    setSteps(makeSteps());
+    setPendingRequests([]);
+  }, []);
+
+  // Track app state for background clearing
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, [phase]);
+
+  const handleAppStateChange = (state: AppStateStatus) => {
+    appStateRef.current = state;
+    // Clear sensitive state if backgrounded
+    if (state === 'background' || state === 'inactive') {
+      if (phase === 'rotating' || phase === 'biometric' || phase === 'form') {
+        clearSensitiveState();
+        setPhase('form');
+      }
+    }
+  };
+
+  // Cleanup on component unmount or screen focus loss
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        clearSensitiveState();
+      };
+    }, [clearSensitiveState]),
+  );
 
   const isValidStellarKey = (key: string) => /^G[A-Z2-7]{55}$/.test(key.trim());
 
@@ -233,6 +273,8 @@ const KeyRotationScreen: React.FC<Props> = ({
     setPhase('biometric');
     const ok = await authenticateWithBiometric();
     if (!ok) {
+      // Clear sensitive state on auth failure
+      clearSensitiveState();
       Alert.alert(
         'Authentication Failed',
         'Biometric re-authentication is required to rotate your key.',
@@ -295,7 +337,14 @@ const KeyRotationScreen: React.FC<Props> = ({
             Your new key has been submitted for co-owner approval. The old key has been cleared from
             this device.
           </Text>
-          <TouchableOpacity style={styles.submitBtn} onPress={onRotationComplete}>
+          <TouchableOpacity
+            style={styles.submitBtn}
+            onPress={() => {
+              // Clear secrets on successful completion
+              clearSensitiveState();
+              onRotationComplete();
+            }}
+          >
             <Text style={styles.submitBtnText}>Done</Text>
           </TouchableOpacity>
         </View>
@@ -345,7 +394,13 @@ const KeyRotationScreen: React.FC<Props> = ({
                 </Text>
               </View>
             ))}
-            <TouchableOpacity style={styles.modalBtn} onPress={() => setPhase('form')}>
+            <TouchableOpacity
+              style={styles.modalBtn}
+              onPress={() => {
+                clearSensitiveState();
+                setPhase('form');
+              }}
+            >
               <Text style={styles.modalBtnText}>Go Back</Text>
             </TouchableOpacity>
           </View>

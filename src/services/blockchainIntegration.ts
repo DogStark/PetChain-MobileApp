@@ -12,6 +12,7 @@
 import { EventEmitter } from 'events';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import CryptoJS from 'crypto-js';
 
 import blockchainEventService, {
   type BlockchainEvent,
@@ -454,6 +455,105 @@ export class BlockchainIntegrationService extends EventEmitter {
       });
     }
   }
+}
+
+// ─── Canonical serialization for on-chain medical commitments (#955) ──────────
+//
+// Cross-client hashing (mobile app, backend, Soroban contract tests) only agrees
+// if every party builds the *exact same* pre-image bytes. These helpers pin a
+// deterministic, versioned, domain-separated encoding. Bump
+// MEDICAL_COMMITMENT_VERSION whenever the field set or encoding changes; the
+// golden vectors in blockchainIntegration.canonical.test.ts are shared with the
+// contract suite and must be updated in lockstep.
+
+/** Domain-separation tag mixed into every commitment pre-image. */
+export const MEDICAL_COMMITMENT_DOMAIN = 'petchain.medical.commitment';
+
+/** Schema version of the commitment pre-image. */
+export const MEDICAL_COMMITMENT_VERSION = 1;
+
+export interface MedicalCommitment {
+  recordId: string;
+  petId: string;
+  /** Lowercase hex SHA-256 (64 chars, no `0x`) of the record payload. */
+  payloadHash: string;
+  /** Millisecond Unix timestamp the record was issued. */
+  issuedAt: number;
+  /** Stellar public key (or stable identifier) of the issuing party. */
+  issuer: string;
+}
+
+/** Recursively sort object keys so serialization is insertion-order independent. */
+function sortDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortDeep);
+  if (value && typeof value === 'object') {
+    return Object.keys(value as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, unknown>>((acc, key) => {
+        acc[key] = sortDeep((value as Record<string, unknown>)[key]);
+        return acc;
+      }, {});
+  }
+  return value;
+}
+
+/**
+ * Deterministically encode a medical commitment. Every client that follows this
+ * spec produces byte-identical output: strings are NFC-normalised, object keys
+ * are emitted in sorted order, and the payload is wrapped with a domain tag and
+ * version. The returned string is the exact pre-image to hash before submitting
+ * to or verifying against the chain.
+ */
+export function canonicalizeMedicalCommitment(commitment: MedicalCommitment): string {
+  const norm = (v: string): string => v.normalize('NFC');
+  const payloadHash = norm(commitment.payloadHash).toLowerCase();
+
+  if (!/^[0-9a-f]{64}$/.test(payloadHash)) {
+    throw new Error('canonicalizeMedicalCommitment: payloadHash must be 32-byte lowercase hex');
+  }
+  if (!Number.isInteger(commitment.issuedAt) || commitment.issuedAt < 0) {
+    throw new Error('canonicalizeMedicalCommitment: issuedAt must be a non-negative integer');
+  }
+  if (!commitment.recordId || !commitment.petId || !commitment.issuer) {
+    throw new Error('canonicalizeMedicalCommitment: recordId, petId and issuer are required');
+  }
+
+  return JSON.stringify(
+    sortDeep({
+      domain: MEDICAL_COMMITMENT_DOMAIN,
+      version: MEDICAL_COMMITMENT_VERSION,
+      fields: {
+        issuedAt: commitment.issuedAt,
+        issuer: norm(commitment.issuer),
+        payloadHash,
+        petId: norm(commitment.petId),
+        recordId: norm(commitment.recordId),
+      },
+    }),
+  );
+}
+
+/**
+ * SHA-256 (lowercase hex) of the canonical commitment pre-image. This digest is
+ * what gets anchored on-chain and re-derived by other clients for verification.
+ */
+export function hashMedicalCommitment(commitment: MedicalCommitment): string {
+  return CryptoJS.SHA256(canonicalizeMedicalCommitment(commitment))
+    .toString(CryptoJS.enc.Hex)
+    .toLowerCase();
+}
+
+/**
+ * Verify a claimed digest against a commitment using the canonical encoding.
+ * Comparison is case-insensitive and constant-ish (length-checked first).
+ */
+export function verifyMedicalCommitment(
+  commitment: MedicalCommitment,
+  claimedDigest: string,
+): boolean {
+  const expected = hashMedicalCommitment(commitment);
+  const actual = claimedDigest.trim().toLowerCase();
+  return expected.length === actual.length && expected === actual;
 }
 
 // ─── Singleton Instance ───────────────────────────────────────────────────────

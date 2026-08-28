@@ -4,7 +4,10 @@
  * Displays a pet's photo gallery and lets the owner upload new photos or
  * delete existing ones.  All photos are processed on-device before upload:
  *   - EXIF metadata (including GPS) is stripped via expo-image-manipulator
- *   - Images are compressed to the selected quality level
+ *   - Orientation is baked into the pixels, so the upright image survives
+ *   - Images are downscaled (never upscaled) and compressed to the selected
+ *     quality level, then verified before the upload starts
+ *   - Files outside `photoService.PHOTO_LIMITS` are rejected on-device
  *
  * ### #964 — Cancellable upload with resumable progress
  *

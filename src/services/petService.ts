@@ -7,6 +7,7 @@ import { scanQRCode, type QRScanResult } from './qrCodeService';
 import type { Species } from '../models/Pet';
 import { logError } from '../utils/errorLogger';
 import { pickImage, compressImage, generateThumbnail, uploadToStorage } from '../utils/imageUtils';
+import { sanitizeObject } from '../utils/sanitize';
 
 // ─────────────────────────────────────────────
 // TYPES
@@ -202,6 +203,46 @@ function toPetServiceError(error: unknown, context: Record<string, unknown>): Pe
 // API METHODS
 // ─────────────────────────────────────────────
 
+/**
+ * Optional filters accepted by {@link getPets}.
+ */
+export interface PetQueryFilters {
+  species?: Species;
+  breed?: string;
+  ownerId?: string;
+}
+
+/**
+ * Fetch pets, optionally narrowed by species / breed / owner.
+ * Falls back to the local cache (filtered client-side) when offline.
+ */
+export async function getPets(filters: PetQueryFilters = {}): Promise<Pet[]> {
+  const params: Record<string, string> = {};
+  if (filters.species) params.species = filters.species;
+  if (filters.breed?.trim()) params.breed = filters.breed.trim();
+  if (filters.ownerId?.trim()) params.ownerId = filters.ownerId.trim();
+
+  try {
+    const response = await apiClient.get<ApiResponse<Pet[]> | Pet[]>('/pets', { params });
+    const pets = unwrapApiData(response.data);
+    await cachePets(pets);
+    return pets;
+  } catch (error) {
+    const cached = await getCachedPets();
+    if (cached.length > 0) return matchesFilters(cached, filters);
+    throw toPetServiceError(error, { action: 'get_pets' });
+  }
+}
+
+function matchesFilters(pets: Pet[], filters: PetQueryFilters): Pet[] {
+  return pets.filter(
+    pet =>
+      (!filters.species || pet.species === filters.species) &&
+      (!filters.breed || pet.breed?.toLowerCase() === filters.breed.trim().toLowerCase()) &&
+      (!filters.ownerId || pet.ownerId === filters.ownerId.trim()),
+  );
+}
+
 export async function getAllPets(): Promise<Pet[]> {
   try {
     const response = await apiClient.get<ApiResponse<Pet[]> | Pet[]>('/pets');
@@ -274,8 +315,10 @@ export async function getPetByQRCode(qrCode: string): Promise<Pet> {
 
 export async function createPet(data: CreatePetInput): Promise<Pet> {
   try {
+    // Sanitize all string fields before sending to the API
+    const sanitized = sanitizeObject(data);
     // If online, this will go through, otherwise it throws and we catch
-    const response = await apiClient.post('/pets', data);
+    const response = await apiClient.post('/pets', sanitized);
     const pet = unwrapApiData(response.data);
     await setItem(`${PET_CACHE_PREFIX}${pet.id}`, JSON.stringify(pet));
     return pet;
@@ -313,7 +356,9 @@ export async function updatePet(petId: string, data: UpdatePetInput): Promise<Pe
   }
 
   try {
-    const response = await apiClient.put(`/pets/${encodeURIComponent(id)}`, data);
+    // Sanitize all string fields before sending to the API
+    const sanitized = sanitizeObject(data);
+    const response = await apiClient.put(`/pets/${encodeURIComponent(id)}`, sanitized);
     const pet = unwrapApiData(response.data);
     await setItem(`${PET_CACHE_PREFIX}${pet.id}`, JSON.stringify(pet));
     return pet;
@@ -394,6 +439,7 @@ export async function uploadPetPhoto(
 
 // Default export for screens that import petService as default
 const petService = {
+  getPets,
   getAllPets,
   getPetById,
   getPetByQRCode,

@@ -1,9 +1,16 @@
-import * as SecureStore from 'expo-secure-store';
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 
 import config from '../config';
+import { clearPersistedTimestamps } from '../services/appLockService';
 import { authenticateWithBiometric, verifyPin } from '../services/authService';
+import {
+  loadAttempts,
+  saveAttempts,
+  loadCooldownUntil,
+  saveCooldownUntil,
+  clearLockState,
+} from '../services/pinLockStateService';
 
 interface LockScreenProps {
   onUnlock: () => void;
@@ -11,54 +18,8 @@ interface LockScreenProps {
   showPinFallback?: boolean;
 }
 
-const ATTEMPTS_KEY = 'lock_attempts_v1';
-const COOLDOWN_UNTIL_KEY = 'lock_cooldown_until_v1';
-
 const { warnAfterAttempts, cooldownAfterAttempts, cooldownSeconds, wipeAfterAttempts } =
   config.pinLock;
-
-async function loadAttempts(): Promise<number> {
-  try {
-    const v = await SecureStore.getItemAsync(ATTEMPTS_KEY);
-    return v ? parseInt(v, 10) : 0;
-  } catch {
-    return 0;
-  }
-}
-
-async function saveAttempts(n: number): Promise<void> {
-  try {
-    await SecureStore.setItemAsync(ATTEMPTS_KEY, String(n));
-  } catch {
-    // ignore
-  }
-}
-
-async function loadCooldownUntil(): Promise<number> {
-  try {
-    const v = await SecureStore.getItemAsync(COOLDOWN_UNTIL_KEY);
-    return v ? parseInt(v, 10) : 0;
-  } catch {
-    return 0;
-  }
-}
-
-async function saveCooldownUntil(ts: number): Promise<void> {
-  try {
-    await SecureStore.setItemAsync(COOLDOWN_UNTIL_KEY, String(ts));
-  } catch {
-    // ignore
-  }
-}
-
-async function clearLockState(): Promise<void> {
-  try {
-    await SecureStore.deleteItemAsync(ATTEMPTS_KEY);
-    await SecureStore.deleteItemAsync(COOLDOWN_UNTIL_KEY);
-  } catch {
-    // ignore
-  }
-}
 
 export default function LockScreen({ onUnlock, onWipe, showPinFallback = false }: LockScreenProps) {
   const [pin, setPin] = useState('');
@@ -109,6 +70,7 @@ export default function LockScreen({ onUnlock, onWipe, showPinFallback = false }
       const ok = await authenticateWithBiometric();
       if (ok) {
         await clearLockState();
+        await clearPersistedTimestamps();
         onUnlock();
       } else {
         setMode('pin');
@@ -137,6 +99,7 @@ export default function LockScreen({ onUnlock, onWipe, showPinFallback = false }
         const ok = await verifyPin(next);
         if (ok) {
           await clearLockState();
+          await clearPersistedTimestamps();
           onUnlock();
           return;
         }

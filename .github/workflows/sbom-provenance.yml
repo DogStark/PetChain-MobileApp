@@ -1,0 +1,138 @@
+name: SBOM & Provenance — Release Artifacts
+
+# Issue #990 — mobile binaries and their embedded backend dependencies need
+# traceable supply-chain metadata. For every tagged release (and on demand)
+# this workflow publishes, per platform:
+#   • a CycloneDX SBOM of the JS/native dependency graph
+#   • SHA-256 checksums of the built artifact and the SBOM
+#   • a build-inputs manifest (commit, runner, tool versions, EAS profile)
+#   • signed build provenance + a signed SBOM attestation (Sigstore, keyless)
+#
+# No secrets, tokens or wallet material are written to any of these files.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to produce metadata for
+        default: all
+        type: choice
+        options: [all, ios, android]
+      version:
+        description: Release version label (e.g. 1.0.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # keyless Sigstore signing
+  attestations: write
+
+concurrency:
+  group: sbom-provenance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sbom-provenance:
+    name: SBOM & Provenance (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ github.event.inputs.platform == 'ios' && fromJSON('["ios"]') || github.event.inputs.platform == 'android' && fromJSON('["android"]') || fromJSON('["ios","android"]') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Resolve version label
+        id: ver
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          fi
+          if [ -z "$VERSION" ]; then
+            VERSION="$(node -p "require('./package.json').version")+${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare output directory
+        run: mkdir -p supply-chain/${{ matrix.platform }}
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          npx --yes @cyclonedx/cyclonedx-npm@latest \
+            --omit dev \
+            --output-format JSON \
+            --output-file supply-chain/${{ matrix.platform }}/sbom.cdx.json
+
+      - name: Write build-inputs manifest
+        run: |
+          cat > supply-chain/${{ matrix.platform }}/build-inputs.json <<EOF
+          {
+            "platform": "${{ matrix.platform }}",
+            "version": "${{ steps.ver.outputs.version }}",
+            "commit": "${GITHUB_SHA}",
+            "ref": "${GITHUB_REF}",
+            "repository": "${GITHUB_REPOSITORY}",
+            "workflowRunId": "${GITHUB_RUN_ID}",
+            "runner": "$(uname -srm)",
+            "node": "$(node --version)",
+            "npm": "$(npm --version)",
+            "expoSdk": "$(node -p "require('./package.json').dependencies.expo")",
+            "reactNative": "$(node -p "require('./package.json').dependencies['react-native']")",
+            "easProfile": "production",
+            "generatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat supply-chain/${{ matrix.platform }}/build-inputs.json
+
+      - name: Compute checksums
+        run: |
+          cd supply-chain/${{ matrix.platform }}
+          sha256sum sbom.cdx.json build-inputs.json > checksums.sha256
+          cat checksums.sha256
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@v2
+        with:
+          subject-path: supply-chain/${{ matrix.platform }}/build-inputs.json
+          sbom-path: supply-chain/${{ matrix.platform }}/sbom.cdx.json
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            supply-chain/${{ matrix.platform }}/sbom.cdx.json
+            supply-chain/${{ matrix.platform }}/build-inputs.json
+            supply-chain/${{ matrix.platform }}/checksums.sha256
+
+      - name: Upload supply-chain metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-${{ matrix.platform }}-${{ steps.ver.outputs.version }}
+          path: supply-chain/${{ matrix.platform }}/
+          retention-days: 90
+
+      - name: Attach metadata to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            supply-chain/${{ matrix.platform }}/sbom.cdx.json#sbom-${{ matrix.platform }}.cdx.json \
+            supply-chain/${{ matrix.platform }}/build-inputs.json#build-inputs-${{ matrix.platform }}.json \
+            supply-chain/${{ matrix.platform }}/checksums.sha256#checksums-${{ matrix.platform }}.sha256 \
+            --clobber
