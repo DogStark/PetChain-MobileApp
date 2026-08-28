@@ -27,7 +27,7 @@
  *  - HTML/XML tags  (`<` and `>`)
  *  - SQL meta-characters  (`'`, `"`, `;`, `--`, and block-comment delimiters)
  *  - NoSQL / template injection markers  (`{`, `}`, `$`)
- *  - Null bytes  (`\0`)
+ *  - Null bytes  (NUL char)
  *  - Redundant whitespace (leading/trailing trimmed; internal runs collapsed
  *    to a single space)
  *

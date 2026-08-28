@@ -2,6 +2,7 @@ import axios, { type AxiosInstance } from 'axios';
 import * as SecureStore from 'expo-secure-store';
 
 import sessionMonitoringService from './sessionMonitoringService';
+import { incrementLogoutGeneration } from './apiClient';
 import type {
   LoginRequest,
   LoginResponse,
@@ -23,6 +24,8 @@ import {
   getSecureTokens,
   isBiometricAuthenticationEnabled as isBiometricStorageEnabled,
   storeSecureTokens,
+  setCurrentAccountId,
+  getCurrentAccountId,
 } from '../utils/encryption/keychain';
 import { logError } from '../utils/errorLogger';
 import { sanitizeString } from '../utils/sanitize';
@@ -335,7 +338,8 @@ export async function refreshToken(): Promise<string> {
 
 async function performTokenRefresh(generation: number): Promise<string> {
   try {
-    const storedRefresh = await getSecureRefreshToken();
+    const accountId = getCurrentAccountId();
+    const storedRefresh = await getSecureRefreshToken(accountId || undefined);
     if (!storedRefresh) {
       await clearTokensIfCurrent(generation);
       const error = new AuthError('No refresh token available', 'NO_REFRESH_TOKEN');
@@ -444,11 +448,13 @@ export async function promptForBiometricSetup(): Promise<boolean> {
 }
 
 export async function getStoredToken(): Promise<string | null> {
-  return getSecureToken();
+  const accountId = getCurrentAccountId();
+  return getSecureToken(accountId || undefined);
 }
 
 export async function getStoredTokens(): Promise<StoredSession | null> {
-  return getSecureTokens();
+  const accountId = getCurrentAccountId();
+  return getSecureTokens(accountId || undefined);
 }
 
 export async function authenticateWithBiometric(): Promise<boolean> {
@@ -460,14 +466,16 @@ export async function authenticateWithBiometric(): Promise<boolean> {
 }
 
 export async function getToken(): Promise<string | null> {
-  const token = await getSecureToken();
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
   if (!token) return null;
   if (_isTokenExpired(token)) return refreshToken();
   return token;
 }
 
 export async function getSession(): Promise<StoredSession | null> {
-  const tokens = await getSecureTokens();
+  const accountId = getCurrentAccountId();
+  const tokens = await getSecureTokens(accountId || undefined);
   if (!tokens) return null;
   if (_isTokenExpired(tokens.token)) {
     const token = await refreshToken();
@@ -657,6 +665,9 @@ export function getInMemorySecret(): string | null {
   return inMemorySecret;
 }
 
+// Re-export account binding functions for app-level initialization
+export { setCurrentAccountId, getCurrentAccountId };
+
 // ─── OAuth 2.0 / PKCE ────────────────────────────────────────────────────────
 
 export interface OAuthSession extends AuthSession {
@@ -757,10 +768,11 @@ export async function refreshOAuthToken(): Promise<string> {
 
 /** Revoke the current refresh token (logout). */
 export async function revokeOAuthToken(): Promise<void> {
-  const storedRefresh = await getSecureRefreshToken();
+  const accountId = getCurrentAccountId();
+  const storedRefresh = await getSecureRefreshToken(accountId || undefined);
   if (!storedRefresh) return;
   try {
-    const token = await getSecureToken();
+    const token = await getSecureToken(accountId || undefined);
     await authClient.post(
       '/auth/oauth/revoke',
       { refreshToken: storedRefresh },
@@ -778,7 +790,8 @@ export async function revokeOAuthToken(): Promise<void> {
 export async function getLinkedProviders(): Promise<
   { provider: OAuthProvider; linkedAt: string }[]
 > {
-  const token = await getSecureToken();
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
   const { data } = await authClient.get<{
     success: boolean;
     data: { linked: { provider: OAuthProvider; linkedAt: string }[] };
@@ -792,7 +805,8 @@ export async function linkOAuthProvider(
   code: string,
   state: string,
 ): Promise<void> {
-  const token = await getSecureToken();
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
   await authClient.post(
     '/auth/oauth/link',
     { provider, code, state },
@@ -802,7 +816,8 @@ export async function linkOAuthProvider(
 
 /** Unlink an OAuth provider from the current account. */
 export async function unlinkOAuthProvider(provider: OAuthProvider): Promise<void> {
-  const token = await getSecureToken();
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
   await authClient.delete(`/auth/oauth/unlink/${provider}`, {
     headers: { Authorization: `Bearer ${token}` },
   });

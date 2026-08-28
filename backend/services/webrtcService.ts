@@ -23,6 +23,14 @@ import type http from 'http';
 import { Server as SocketIOServer, type Socket } from 'socket.io';
 
 import { UserRole } from '../models/UserRole';
+import { isOriginAllowed, verifySignalingToken } from './webrtcAuth';
+
+/**
+ * When true (default), every `join_room` must present a valid short-lived
+ * signaling token (issue #970). Set SIGNALING_REQUIRE_TOKEN=false only for a
+ * staged rollout while clients are updated.
+ */
+const REQUIRE_SIGNALING_TOKEN = process.env.SIGNALING_REQUIRE_TOKEN !== 'false';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIGURATION
@@ -252,11 +260,27 @@ export function createSignalingServer(httpServer: http.Server): SocketIOServer {
   const signalingNs = io.of('/');
 
   signalingNs.on('connection', (socket: Socket) => {
+    // Reject connections from origins that are not on the allow-list.
+    const handshakeOrigin =
+      (socket.handshake.headers.origin as string | undefined) ?? socket.handshake.headers.referer;
+    if (!isOriginAllowed(handshakeOrigin ?? null)) {
+      socket.emit('error', { code: 'ORIGIN_NOT_ALLOWED', message: 'Origin is not permitted' });
+      socket.disconnect(true);
+      return;
+    }
+
     // ---- join_room -------------------------------------------------------
     socket.on(
       'join_room',
-      (data: { consultationId: string; roomToken: string; userId: string; role: string }) => {
-        const { consultationId, roomToken, userId, role } = data;
+      (data: {
+        consultationId: string;
+        roomToken: string;
+        userId: string;
+        role: string;
+        signalingToken?: string;
+        sessionId?: string;
+      }) => {
+        const { consultationId, roomToken, userId, role, signalingToken, sessionId } = data;
         const c = consultations.get(consultationId);
 
         if (!c) {
@@ -268,6 +292,25 @@ export function createSignalingServer(httpServer: http.Server): SocketIOServer {
         if (c.roomToken !== roomToken) {
           socket.emit('error', { code: 'FORBIDDEN', message: 'Invalid room token' });
           return;
+        }
+
+        // Short-lived scoped signaling token: guards against guessed/replayed
+        // join messages reaching a private consultation (issue #970).
+        if (REQUIRE_SIGNALING_TOKEN || signalingToken) {
+          const verdict = verifySignalingToken(signalingToken ?? '', {
+            consultationId,
+            userId,
+            sessionId: sessionId ?? socket.id,
+            origin: handshakeOrigin ?? null,
+          });
+          if (!verdict.ok) {
+            socket.emit('error', { code: verdict.code, message: verdict.message });
+            return;
+          }
+          if (verdict.claims.role !== role) {
+            socket.emit('error', { code: 'SCOPE_MISMATCH', message: 'Role does not match token' });
+            return;
+          }
         }
 
         participants.set(socket.id, {

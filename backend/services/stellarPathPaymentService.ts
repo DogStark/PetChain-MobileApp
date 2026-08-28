@@ -7,6 +7,7 @@ import config from '../config';
 import paymentService from './paymentService';
 import type { Payment, SubscriptionPlan, Subscription } from '../models/Payment';
 import { SUBSCRIPTION_PLANS } from '../models/Payment';
+import { compareDecimal, decimalRatio, multiplyDecimalByRatio } from '../utils/decimal';
 
 export interface StellarAssetInput {
   code: string;
@@ -180,14 +181,6 @@ function pathRecordToDescriptor(record: PathLikeRecord): Array<{
   }));
 }
 
-function asNumber(value: string): number {
-  return Number.parseFloat(value) || 0;
-}
-
-function formatXlm(value: string | number): string {
-  return Number(value).toFixed(7).replace(/0+$/, '').replace(/\.$/, '') || '0';
-}
-
 function resolveReceivingAccount(): string {
   const receivingPublicKey = process.env.STELLAR_RECEIVING_PUBLIC_KEY || '';
   const receivingSecret = process.env.STELLAR_RECEIVING_SECRET || '';
@@ -311,7 +304,7 @@ export class StellarPathPaymentService {
 
     return page.records
       .slice()
-      .sort((a, b) => asNumber(a.source_amount) - asNumber(b.source_amount))[0];
+      .sort((a, b) => compareDecimal(a.source_amount, b.source_amount, 7))[0];
   }
 
   async executePathPayment(input: {
@@ -321,12 +314,13 @@ export class StellarPathPaymentService {
   }): Promise<string> {
     const sourceAccount = await this.server.loadAccount(input.sourceAccount);
     const baseFee = await this.server.fetchBaseFee();
-    const pathFeeStroops = Number(process.env.STELLAR_PATH_FEE_STROOPS || '100');
-    const medianFee = Math.max(baseFee, pathFeeStroops);
+    const pathFeeStroops = BigInt(process.env.STELLAR_PATH_FEE_STROOPS || '100');
+    const baseFeeStroops = BigInt(Math.trunc(baseFee));
+    const medianFee = baseFeeStroops > pathFeeStroops ? baseFeeStroops : pathFeeStroops;
     const builder = new StellarSdk.TransactionBuilder(
       sourceAccount as unknown as StellarSdk.Account,
       {
-        fee: String(medianFee),
+        fee: medianFee.toString(),
         networkPassphrase: NETWORK_PASSPHRASE,
       },
     );
@@ -400,9 +394,7 @@ export class StellarPathPaymentService {
         destinationAsset: { code: 'XLM', type: 'native' },
         destinationAmount,
         sourceAmount,
-        exchangeRate: formatXlm(
-          asNumber(sourceAmount) / Math.max(asNumber(destinationAmount), 0.0000001),
-        ),
+        exchangeRate: decimalRatio(sourceAmount, destinationAmount, 7),
         estimatedNetworkFee: fee,
         mode: 'path',
         path,
@@ -464,9 +456,7 @@ export class StellarPathPaymentService {
       destinationAsset: { code: 'XLM', type: 'native' },
       destinationAmount: input.destinationAmount,
       sourceAmount,
-      exchangeRate: formatXlm(
-        asNumber(sourceAmount) / Math.max(asNumber(input.destinationAmount), 0.0000001),
-      ),
+      exchangeRate: decimalRatio(sourceAmount, input.destinationAmount, 7),
       estimatedNetworkFee: this.estimateFee(),
       mode: 'direct-xlm',
       path: best ? pathRecordToDescriptor(best) : [],
@@ -490,17 +480,16 @@ export class StellarPathPaymentService {
       plan === 'premium_annual'
         ? SUBSCRIPTION_PLANS[plan].priceAnnual
         : SUBSCRIPTION_PLANS[plan].priceMonthly;
-    return amount.toFixed(2);
+    return amount;
   }
 
   private estimateFee(): string {
-    const pathFeeStroops = Number(process.env.STELLAR_PATH_FEE_STROOPS || '100');
-    return (pathFeeStroops / 10_000_000).toFixed(7);
+    const pathFeeStroops = BigInt(process.env.STELLAR_PATH_FEE_STROOPS || '100');
+    return unitsToDecimal(pathFeeStroops, 7).padEnd(9, '0');
   }
 
   private getMinimumDestinationAmount(destinationAmount: string): string {
-    const amount = asNumber(destinationAmount);
-    return Math.max(0, amount * 0.995).toFixed(7);
+    return multiplyDecimalByRatio(destinationAmount, 995n, 1000n, 7);
   }
 }
 

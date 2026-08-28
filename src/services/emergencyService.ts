@@ -5,7 +5,17 @@ import { Linking, Platform } from 'react-native';
 import apiClient from './apiClient';
 import config from '../config';
 import { getItem, setItem, removeItem as _removeItem } from './localDB';
-import { requestAndroidPermission } from './permissionService';
+import { requestForegroundLocationPermission } from './permissionService';
+
+// ─── Permission rationale (exported for UI layer / tests) ─────────────────────
+
+export const LOCATION_PERMISSION_RATIONALE = {
+  title: 'Location Access for Emergency',
+  message:
+    'PetChain uses your location only while the app is open to find nearby vet clinics and send your position during an SOS. Your location is never stored or shared without your action.',
+  buttonPositive: 'Allow While Using App',
+  buttonNegative: 'Not Now',
+} as const;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -217,57 +227,61 @@ class EmergencyService {
 
   // ── Location ─────────────────────────────────────────────────────────────────
 
+  /**
+   * Requests foreground-only location permission with a purpose explanation.
+   * Uses coarse location (least privilege). Never requests background access.
+   *
+   * iOS: triggers the system prompt automatically on first Geolocation call.
+   * Android: requests ACCESS_COARSE_LOCATION with rationale; opens Settings on
+   *          NEVER_ASK_AGAIN so the user can recover without reinstalling.
+   *
+   * @returns true if granted, false if denied.
+   */
   async requestLocationPermission(): Promise<boolean> {
-    if (Platform.OS === 'android') {
-      return requestAndroidPermission('android.permission.ACCESS_FINE_LOCATION', {
-        title: 'Location Permission',
-        message: 'PetChain needs your location to find nearby vet clinics.',
-        buttonPositive: 'Allow',
-        buttonNegative: 'Deny',
-      });
-    }
-    return true; // iOS prompts automatically via Geolocation.getCurrentPosition
+    return requestForegroundLocationPermission(LOCATION_PERMISSION_RATIONALE);
   }
 
   /**
-   * Gets current location with a 5-second timeout and fallback to last known location.
+   * Gets current location using coarse accuracy (least privilege).
+   * Falls back to last-known position on timeout or GPS error.
+   * Throws LocationPermissionDeniedError when permission is not granted so
+   * callers can show a rationale UI instead of silently failing.
+   *
+   * @param timeoutMs - how long to wait for a fresh fix (default 5 s)
    */
-  async getCurrentLocation(): Promise<Location> {
+  async getCurrentLocation(timeoutMs = 5000): Promise<Location> {
     const hasPermission = await this.requestLocationPermission();
-    if (!hasPermission) throw new Error('Location permission denied');
+    if (!hasPermission) throw new LocationPermissionDeniedError();
 
     return new Promise((resolve) => {
       let resolved = false;
 
-      // 5-second timeout for fresh GPS lock
-      const timeout = setTimeout(async () => {
+      const settle = (loc: Location) => {
         if (!resolved) {
           resolved = true;
-          const lastLocation = await this.getLastKnownLocation();
-          resolve(lastLocation);
+          resolve(loc);
         }
-      }, 5000);
+      };
+
+      const timer = setTimeout(async () => {
+        settle(await this.getLastKnownLocation());
+      }, timeoutMs);
 
       Geolocation.getCurrentPosition(
         (position) => {
-          if (!resolved) {
-            resolved = true;
-            clearTimeout(timeout);
-            resolve({
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude,
-            });
-          }
+          clearTimeout(timer);
+          settle({
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          });
         },
         async () => {
-          if (!resolved) {
-            resolved = true;
-            clearTimeout(timeout);
-            const lastLocation = await this.getLastKnownLocation();
-            resolve(lastLocation);
-          }
+          clearTimeout(timer);
+          settle(await this.getLastKnownLocation());
         },
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 10000 },
+        // Coarse accuracy — sufficient for finding nearby clinics; avoids
+        // draining battery with a high-accuracy GPS lock.
+        { enableHighAccuracy: false, timeout: timeoutMs, maximumAge: 60_000 },
       );
     });
   }

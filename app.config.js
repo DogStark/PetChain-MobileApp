@@ -15,12 +15,27 @@ const APP_NAME_MAP = {
   production: 'PetChain',
 };
 
+// The runtimeVersion is what expo-updates uses (natively, before any JS runs) to decide
+// whether a fetched OTA manifest is even eligible to apply to this binary. Embedding APP_ENV
+// in it means a staging-published update's runtimeVersion ("staging-1.0.0") can never satisfy
+// a production binary's runtimeVersion ("production-1.0.0"), even if a channel/URL were
+// misconfigured — the native layer rejects the manifest outright. See issue #991.
+const RUNTIME_VERSION = `${APP_ENV}-${APP_VERSION}`;
+
 module.exports = {
   expo: {
     name: APP_NAME_MAP[APP_ENV] ?? 'PetChain',
     slug: 'petchain-mobile',
     scheme: 'petchain',
     version: APP_VERSION,
+    runtimeVersion: RUNTIME_VERSION,
+    updates: {
+      // Never let a dev client pull an OTA update — it always runs from the local bundler.
+      enabled: APP_ENV !== 'development',
+      // Don't silently run a stale cached bundle indefinitely if a check fails.
+      fallbackToCacheTimeout: 0,
+      checkAutomatically: 'ON_LOAD',
+    },
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'automatic',
@@ -115,16 +130,45 @@ module.exports = {
           },
         },
       ],
+      // ─── Backup exclusion plugins ────────────────────────────────────────
+      //
+      // Android (API 23+):
+      //   Sets android:allowBackup="false" in AndroidManifest.xml and
+      //   references backup_rules.xml (API 23–30) and
+      //   data_extraction_rules.xml (API 31+) to exclude databases/petchain.db,
+      //   SharedPreferences (AsyncStorage), and the file-system documents
+      //   directory from all Android Auto Backup transports (Google Drive
+      //   cloud backup and device-to-device transfer).
+      //
+      // iOS:
+      //   Injects BackupExclusion.swift into the Xcode target and patches
+      //   AppDelegate to call excludeSensitiveDirectoriesFromBackup() at
+      //   launch.  This sets NSURLIsExcludedFromBackupKey=true on:
+      //     • Library/Application Support/  (expo-sqlite petchain.db)
+      //     • Library/Preferences/          (AsyncStorage / RNCAsyncStorage)
+      //     • Documents/                    (expo-file-system documentDirectory)
+      //
+      // expo-secure-store (Keychain/Keystore) is NOT backed up by any OS
+      // transport regardless of these settings — no action needed there.
+      //
+      // Source files:
+      //   plugins/withAndroidBackupExclusion.js
+      //   plugins/withIosBackupExclusion.js
+      //   android-config/backup_rules.xml
+      //   android-config/data_extraction_rules.xml
+      './plugins/withAndroidBackupExclusion.js',
+      './plugins/withIosBackupExclusion.js',
     ],
     extra: {
       APP_ENV,
+      // API_BASE_URL resolution: explicit env > profile-specific > no fallback to localhost for prod
       API_BASE_URL:
-        process.env.API_BASE_URL ??
+        process.env.API_BASE_URL ||
         (APP_ENV === 'production'
-          ? (process.env.PROD_API_URL ?? 'https://api.petchain.app/api')
+          ? process.env.PROD_API_URL // Production: require explicit PROD_API_URL, no fallback
           : APP_ENV === 'staging'
             ? (process.env.STAGING_API_URL ?? 'https://staging.petchain.app/api')
-            : 'http://localhost:3000/api'),
+            : (process.env.API_BASE_URL ?? 'http://localhost:3000/api')), // Dev: localhost default
       STAGING_API_URL: process.env.STAGING_API_URL ?? 'https://staging.petchain.app/api',
       PROD_API_URL: process.env.PROD_API_URL ?? 'https://api.petchain.app/api',
       API_TIMEOUT: process.env.API_TIMEOUT ?? '10000',
