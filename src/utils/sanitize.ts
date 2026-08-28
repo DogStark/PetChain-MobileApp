@@ -25,9 +25,9 @@
  *
  * Removed / escaped:
  *  - HTML/XML tags  (`<` and `>`)
- *  - SQL meta-characters  (`'`, `"`, `;`, `--`, `/*`, `*/`)
+ *  - SQL meta-characters  (single quote, double quote, semicolon, comment markers)
  *  - NoSQL / template injection markers  (`{`, `}`, `$`)
- *  - Null bytes  (`\0`)
+ *  - Null bytes  (NUL char)
  *  - Redundant whitespace (leading/trailing trimmed; internal runs collapsed
  *    to a single space)
  *
@@ -43,21 +43,23 @@ export function sanitizeString(input: unknown): string {
   if (input === null || input === undefined) return '';
   if (typeof input !== 'string') return sanitizeString(String(input));
 
-  return input
-    .trim()
-    // Remove null bytes
-    .replace(/\0/g, '')
-    // Strip HTML/XML tags (and their content markers)
-    .replace(/[<>]/g, '')
-    // Remove SQL single-quote, double-quote, semicolons
-    .replace(/['"`;]/g, '')
-    // Remove SQL comment sequences
-    .replace(/--|\/\*|\*\//g, '')
-    // Remove NoSQL / template injection markers
-    .replace(/[{}$]/g, '')
-    // Collapse internal whitespace to a single space
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+  return (
+    input
+      .trim()
+      // Remove null bytes
+      .replace(/\0/g, '')
+      // Strip HTML/XML tags (and their content markers)
+      .replace(/[<>]/g, '')
+      // Remove SQL single-quote, double-quote, semicolons
+      .replace(/['"`;]/g, '')
+      // Remove SQL comment sequences
+      .replace(/--|\/\*|\*\//g, '')
+      // Remove NoSQL / template injection markers
+      .replace(/[{}$]/g, '')
+      // Collapse internal whitespace to a single space
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+  );
 }
 
 // ─── sanitizeObject ──────────────────────────────────────────────────────────
