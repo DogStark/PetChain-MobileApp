@@ -57,6 +57,11 @@ export interface NotificationPreferences {
     appointmentReminders?: boolean;
     vaccinationAlerts?: boolean;
   }[];
+  privacySettings?: {
+    medicationDetailsPrivate?: boolean;
+    appointmentDetailsPrivate?: boolean;
+    vaccinationDetailsPrivate?: boolean;
+  };
 }
 
 export type NotificationCategory = 'medication' | 'appointments' | 'health' | 'general';
@@ -210,6 +215,11 @@ const DEFAULT_PREFS: NotificationPreferences = {
   quietHoursStart: '22:00',
   quietHoursEnd: '07:00',
   petOverrides: [],
+  privacySettings: {
+    medicationDetailsPrivate: true,
+    appointmentDetailsPrivate: true,
+    vaccinationDetailsPrivate: true,
+  },
 };
 
 // ─── Notification actions ────────────────────────────────────────────────────
@@ -685,16 +695,59 @@ export const isQuietHour = (start: string, end: string): boolean => {
 
 // ─── Permissions ──────────────────────────────────────────────────────────────
 
+export type PermissionState =
+  | 'granted'
+  | 'denied'
+  | 'provisional'
+  | 'ephemeral'
+  | 'not_determined'
+  | 'permanently_denied'
+  | 'unknown';
+
+export const checkPermissionState = async (): Promise<PermissionState> => {
+  try {
+    const result = await Notifications.getPermissionsAsync();
+    const ios = (result as any).ios;
+    const android = (result as any).android;
+
+    if (ios) {
+      const status = ios.status;
+      if (status === 'granted') return 'granted';
+      if (status === 'denied') return 'denied';
+      if (status === 'provisional') return 'provisional';
+      if (status === 'ephemeral') return 'ephemeral';
+      if (status === 'undetermined') return 'not_determined';
+    }
+
+    if (android) {
+      if (android.granted) return 'granted';
+      if (android.canAskAgain === false) return 'permanently_denied';
+      return 'denied';
+    }
+
+    const granted = (result as any).granted ?? (result as any).status === 'granted';
+    return granted ? 'granted' : 'not_determined';
+  } catch {
+    return 'unknown';
+  }
+};
+
 export const requestPermissions = async (): Promise<boolean> => {
-  const existing = await Notifications.getPermissionsAsync();
-  if ((existing as any).granted ?? (existing as any).status === 'granted') return true;
-  const result = await Notifications.requestPermissionsAsync();
-  return (result as any).granted ?? (result as any).status === 'granted';
+  const state = await checkPermissionState();
+  if (state === 'granted' || state === 'provisional') return true;
+  if (state === 'denied' || state === 'permanently_denied') return false;
+
+  try {
+    const result = await Notifications.requestPermissionsAsync();
+    return (result as any).granted ?? (result as any).status === 'granted';
+  } catch {
+    return false;
+  }
 };
 
 export const checkPermissions = async (): Promise<boolean> => {
-  const result = await Notifications.getPermissionsAsync();
-  return (result as any).granted ?? (result as any).status === 'granted';
+  const state = await checkPermissionState();
+  return state === 'granted' || state === 'provisional';
 };
 
 // ─── Preferences ─────────────────────────────────────────────────────────────
@@ -1222,3 +1275,83 @@ export async function updateServerPreferences(
 ): Promise<void> {
   await apiClient.patch('/api/notifications/preferences', prefs);
 }
+
+// ─── Privacy-aware notification content ─────────────────────────────────────
+
+export const getPrivateNotificationContent = (
+  category: NotificationCategory | NotificationGroup,
+  originalContent: { title: string; body: string },
+): { title: string; body: string } => {
+  const isPrivate =
+    (category === 'medication') || (category === 'appointment') || (category === 'vaccination' || category === 'health');
+
+  if (!isPrivate) return originalContent;
+
+  return {
+    title:
+      category === 'medication'
+        ? '💊 Reminder'
+        : category === 'appointment'
+          ? '📅 Reminder'
+          : category === 'vaccination' || category === 'health'
+            ? '🏥 Reminder'
+            : originalContent.title,
+    body: 'You have a reminder',
+  };
+};
+
+// ─── Push token lifecycle (rotation & revocation) ────────────────────────────
+
+const PUSH_TOKEN_KEY = '@push_token';
+
+export const registerPushToken = async (token?: string): Promise<string | null> => {
+  try {
+    const pushToken = token || (await Notifications.getExpoPushTokenAsync()).data;
+    if (!pushToken) return null;
+
+    await apiClient.post('/api/push/tokens', {
+      token: pushToken,
+      platform: 'mobile',
+      deviceId: 'device-fingerprint',
+    });
+
+    await setItem(PUSH_TOKEN_KEY, pushToken);
+    return pushToken;
+  } catch {
+    return null;
+  }
+};
+
+export const rotatePushToken = async (oldToken: string, newToken: string): Promise<void> => {
+  try {
+    await apiClient.post('/api/push/tokens', {
+      token: newToken,
+      platform: 'mobile',
+    });
+    await apiClient.delete(`/api/push/tokens/${oldToken}`);
+    await setItem(PUSH_TOKEN_KEY, newToken);
+  } catch {
+    // Non-critical
+  }
+};
+
+export const revokePushToken = async (token: string): Promise<void> => {
+  try {
+    await apiClient.delete(`/api/push/tokens/${token}`);
+    const stored = await getItem(PUSH_TOKEN_KEY);
+    if (stored === token) await removeItem(PUSH_TOKEN_KEY);
+  } catch {
+    // Non-critical
+  }
+};
+
+export const revokeAllDeviceTokensOnLogout = async (): Promise<void> => {
+  try {
+    const token = await getItem(PUSH_TOKEN_KEY);
+    if (token) {
+      await revokePushToken(token);
+    }
+  } catch {
+    // Non-critical
+  }
+};
