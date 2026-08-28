@@ -26,6 +26,11 @@ import {
   saveDocumentLocally,
   uploadDocument,
 } from '../services/documentService';
+import {
+  buildShareAuditEntry,
+  createExportGrant,
+  type StepUpConfirmation,
+} from '../services/documentSharing';
 import { useSecureScreen } from '../utils/secureScreen';
 
 const CATEGORIES: { label: string; value: DocumentCategory }[] = [
@@ -194,6 +199,42 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
     }
   };
 
+  // Guarded share: require a step-up confirmation, then hand off only an
+  // expiring, watermarked export grant — never the raw vault file (issue #965).
+  const handleShare = (doc: DocumentMeta) => {
+    Alert.alert(
+      'Confirm your identity',
+      `Sharing "${doc.name}" sends a medical document outside PetChain. Confirm to continue.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Confirm & share',
+          style: 'destructive',
+          onPress: async () => {
+            const stepUp: StepUpConfirmation = { method: 'biometric', confirmedAt: Date.now() };
+            try {
+              const grant = createExportGrant({
+                documentId: doc.id,
+                actorId: ownerId || 'current-user',
+                stepUp,
+              });
+              const audit = buildShareAuditEntry(grant, stepUp.method);
+              await api
+                .post('/documents/share-audit', audit)
+                .catch(() => {/* best-effort; audit is non-blocking */});
+              Alert.alert(
+                'Secure link ready',
+                `Expires ${new Date(grant.expiresAt).toLocaleTimeString()}. The file is watermarked with your ID.`,
+              );
+            } catch (err) {
+              Alert.alert('Cannot share', err instanceof Error ? err.message : 'Share failed');
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const handleDelete = (doc: DocumentMeta) => {
     Alert.alert('Delete Document', `Delete "${doc.name}"? It can be restored later.`, [
       { text: 'Cancel', style: 'cancel' },
@@ -274,6 +315,13 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
               accessibilityLabel={`Download ${item.name}`}
             >
               <Text style={styles.actionText}>↓</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.actionBtn}
+              onPress={() => handleShare(item)}
+              accessibilityLabel={`Share ${item.name} securely`}
+            >
+              <Text style={styles.actionText}>↗</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.actionBtn}

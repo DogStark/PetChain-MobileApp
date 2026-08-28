@@ -11,13 +11,14 @@ import {
 } from '@stellar/stellar-sdk';
 
 import { query } from '../src/db';
+import { canonicalDecimal, decimalToUnits, unitsToDecimal } from '../utils/decimal';
 
 const HORIZON_URL = process.env.STELLAR_HORIZON_URL || 'https://horizon-testnet.stellar.org';
 const NETWORK_PASSPHRASE =
   process.env.STELLAR_NETWORK === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
 const RECEIVING_SECRET = process.env.STELLAR_RECEIVING_SECRET || '';
-const PREMIUM_PRICE_XLM = parseFloat(process.env.PREMIUM_PRICE_XLM || '10');
-const OVERPAYMENT_TOLERANCE = 0.001;
+const PREMIUM_PRICE_XLM = canonicalDecimal(process.env.PREMIUM_PRICE_XLM || '10', 7);
+const OVERPAYMENT_TOLERANCE_STROOPS = decimalToUnits('0.001', 7);
 const REFUND_MEMO = 'PetChain refund';
 
 const server = new Horizon.Server(HORIZON_URL);
@@ -25,7 +26,7 @@ const server = new Horizon.Server(HORIZON_URL);
 export interface PaymentIntent {
   transactionId: string;
   destination: string;
-  amountXlm: number;
+  amountXlm: string;
   memo: string;
   expiresAt: Date;
 }
@@ -36,7 +37,7 @@ export type PaymentIdempotencyStatus = 'processing' | 'submitted' | 'failed';
 
 export interface PaymentResult {
   status: PaymentStatus;
-  amountReceived: number;
+  amountReceived: string;
   txHash: string;
 }
 
@@ -210,16 +211,20 @@ export function streamPayment(
           const transaction = await payment.transaction();
           if (transaction.memo !== intent.memo) return;
 
-          const received = parseFloat(payment.amount);
-          const expected = intent.amountXlm;
+          const received = decimalToUnits(String(payment.amount), 7);
+          const expected = decimalToUnits(intent.amountXlm, 7);
           const status =
-            received > expected + OVERPAYMENT_TOLERANCE
+            received > expected + OVERPAYMENT_TOLERANCE_STROOPS
               ? 'overpaid'
-              : received >= expected - OVERPAYMENT_TOLERANCE
+              : received >= expected - OVERPAYMENT_TOLERANCE_STROOPS
                 ? 'confirmed'
                 : 'partial';
 
-          onResult({ status, amountReceived: received, txHash: payment.transaction_hash });
+          onResult({
+            status,
+            amountReceived: unitsToDecimal(received, 7),
+            txHash: payment.transaction_hash,
+          });
           close();
         } catch (error) {
           onError?.(

@@ -1,4 +1,4 @@
-import { CacheManager } from '../cacheManager';
+import { CacheManager } from '../../../backend/services/cacheManager';
 
 describe('CacheManager', () => {
   let cacheManager: CacheManager;
@@ -60,6 +60,23 @@ describe('CacheManager', () => {
 
     expect(loader).toHaveBeenCalled();
     expect(cacheManager.get('warm-key')).toBe('warmed-data');
+  });
+
+  it('should not throw and should skip the entry when a warm loader rejects', async () => {
+    const failingLoader = jest.fn().mockRejectedValue(new Error('load failed'));
+    await expect(
+      cacheManager.warm([{ key: 'broken-key', loader: failingLoader }]),
+    ).resolves.toBeUndefined();
+
+    expect(cacheManager.get('broken-key')).toBeUndefined();
+  });
+
+  it('should overwrite an existing value for the same key', () => {
+    cacheManager.set('key1', 'value1');
+    cacheManager.set('key1', 'value1-updated');
+
+    expect(cacheManager.get('key1')).toBe('value1-updated');
+    expect(cacheManager.size).toBe(1);
   });
 
   it('should clear all entries', () => {

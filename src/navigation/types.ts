@@ -3,6 +3,7 @@ import type { CompositeScreenProps } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import type { Pet } from '../models/Pet';
+import type { CoSignPayload } from '../screens/PendingCoSignScreen';
 
 // ─── Root Stack ───────────────────────────────────────────────────────────────
 export type RootStackParamList = {
@@ -16,7 +17,12 @@ export type RootStackParamList = {
   ManualEntry: undefined;
   // Future: Payment / Subscription
   Payment: { planId?: string };
-  FiatOnRamp: undefined;
+  PendingCoSign: {
+    payload: CoSignPayload;
+    expectedSequence: number;
+    onApprove: (payload: CoSignPayload) => void;
+    onReject: (txId: string) => void;
+  };
 };
 
 // ─── Main Tab ─────────────────────────────────────────────────────────────────

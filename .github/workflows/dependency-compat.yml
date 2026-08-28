@@ -1,0 +1,56 @@
+name: Dependency Compatibility — Expo & React Native
+
+# Issue #989 — block upgrades that drift Expo, React Native or native libraries
+# beyond the supported matrix.
+
+on:
+  push:
+    branches: [main, master, develop]
+    paths:
+      - package.json
+      - package-lock.json
+      - app.config.js
+      - app.json
+      - eas.json
+      - scripts/check-dependency-compat.ts
+      - .github/workflows/dependency-compat.yml
+  pull_request:
+    branches: [main, master, develop]
+    paths:
+      - package.json
+      - package-lock.json
+      - app.config.js
+      - app.json
+      - eas.json
+      - scripts/check-dependency-compat.ts
+      - .github/workflows/dependency-compat.yml
+  workflow_dispatch:
+
+concurrency:
+  group: dependency-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compat:
+    name: Expo Doctor + Native Dependency Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Check Expo / React Native compatibility matrix
+        run: npx tsx scripts/check-dependency-compat.ts
+
+      - name: Peer dependency check (informational)
+        if: always()
+        run: npm ls --all --legacy-peer-deps || true

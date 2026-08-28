@@ -14,7 +14,7 @@ type StoredIntent = PaymentIntent & {
   id: string;
   userId: string;
   status: 'pending' | 'confirmed' | 'partial' | 'overpaid' | 'expired';
-  amountReceived?: number;
+  amountReceived?: string;
   txHash?: string;
 };
 

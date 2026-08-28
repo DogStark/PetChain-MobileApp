@@ -18,6 +18,7 @@ import type {
   Treatment,
   VaccinationRecord,
 } from '../models/MedicalRecord';
+import { validateMedicalImportFile } from '../utils/medicalFileValidation';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -108,6 +109,20 @@ const ImportRecordScreen: React.FC<Props> = ({ petId, petName, onBack, onImporte
   const handleParsePdf = useCallback(async () => {
     if (!pdfBase64) {
       Alert.alert('Error', 'No PDF provided');
+      return;
+    }
+
+    // Validate the document before it reaches the parser: enforce type/size
+    // limits and reject encrypted or malformed PDFs with a safe error. (#962)
+    const approxBytes = Math.floor((pdfBase64.replace(/\s/g, '').length * 3) / 4);
+    const validation = validateMedicalImportFile({
+      name: 'import.pdf',
+      size: approxBytes,
+      mimeType: 'application/pdf',
+      base64: pdfBase64,
+    });
+    if (!validation.ok) {
+      Alert.alert('Cannot import file', validation.message);
       return;
     }
 

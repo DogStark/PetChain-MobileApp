@@ -16,6 +16,7 @@ import type {
   PaymentProvider,
 } from '../models/Payment';
 import { SUBSCRIPTION_PLANS } from '../models/Payment';
+import { decimalToUnits } from '../utils/decimal';
 
 // Initialize Stripe client
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_dummy', {
@@ -83,7 +84,11 @@ async function createPaymentIntent(
   // Create Stripe payment intent
   const paymentIntent = await stripe.paymentIntents.create(
     {
-      amount: Math.round(amount * 100), // Convert to cents
+      amount: (() => {
+        const cents = decimalToUnits(amount, 2);
+        if (cents > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Payment amount is too large');
+        return Number(cents);
+      })(),
       currency: 'usd',
       metadata: {
         userId: input.userId,

@@ -283,6 +283,76 @@ When creating a new issue, please add relevant labels to help with triage.
 
 ---
 
+## Backup Exclusion Policy
+
+PetChain stores sensitive health records, auth tokens, and PII locally. To prevent the OS from exporting this data through device backup transports (Google Drive Auto Backup on Android, iCloud on iOS), we configure explicit backup exclusions as part of the native build.
+
+### What is excluded
+
+| Data | Location | Reason |
+|------|----------|--------|
+| `petchain.db` | `databases/` (Android) / `Library/Application Support/` (iOS) | expo-sqlite database: medications, health records, appointments, kv_store (tokens, PII) |
+| RNCAsyncStorage | `shared_prefs/` (Android) / `Library/Preferences/` (iOS) | AsyncStorage: auth tokens, session, pet list, notification prefs, emergency contacts |
+| `Documents/` | expo-file-system documentDirectory | PDF medical exports, QR codes, travel certificates |
+
+> **expo-secure-store** (iOS Keychain / Android Keystore) is **not** affected — it is never included in device backups regardless of these settings.
+
+### How it works
+
+**Android** — two XML rule files plus a manifest attribute:
+
+- `android-config/backup_rules.xml` — used for API 23–30 (`android:fullBackupContent`)
+- `android-config/data_extraction_rules.xml` — used for API 31+ (`android:dataExtractionRules`), covers both cloud and device-transfer transports
+- Both are applied by `plugins/withAndroidBackupExclusion.js` during `expo prebuild`, which also sets `android:allowBackup="false"` in `AndroidManifest.xml`
+
+**iOS** — `NSURLIsExcludedFromBackupKey` set at launch:
+
+- `plugins/withIosBackupExclusion.js` injects `BackupExclusion.swift` into the Xcode target and patches `AppDelegate` to call `BackupExclusion.excludeSensitiveDirectoriesFromBackup()` before the app finishes launching
+- This sets `NSURLIsExcludedFromBackupKey = true` on `Library/Application Support`, `Library/Preferences`, and `Documents`
+
+### Adding new sensitive local storage
+
+If you add a new file, database, or preference key that contains PII, health data, auth material, or wallet keys:
+
+1. **Android**: add an `<exclude>` entry to both `android-config/backup_rules.xml` and `android-config/data_extraction_rules.xml`
+2. **iOS**: add the parent directory path to `sensitivePaths(fm:)` in the `SWIFT_SOURCE` constant inside `plugins/withIosBackupExclusion.js`
+3. **Update `storageKeys.ts`** (or add a comment there) so the key is visible in the sensitive-data inventory
+4. **Update the tests** in `src/__tests__/backupExclusion.test.ts` to assert the new exclusion is present
+5. Run `expo prebuild` to regenerate the native project and verify the manifest/XML changes are applied
+
+### Verifying after `expo prebuild`
+
+After running `expo prebuild`:
+
+```bash
+# Android — confirm manifest attributes
+grep -E "allowBackup|fullBackupContent|dataExtractionRules" android/app/src/main/AndroidManifest.xml
+
+# Android — confirm XML files were copied
+ls android/app/src/main/res/xml/
+
+# iOS — confirm Swift file was injected
+ls ios/<AppName>/BackupExclusion.swift
+
+# iOS — confirm AppDelegate was patched
+grep "excludeSensitiveDirectoriesFromBackup" ios/<AppName>/AppDelegate.swift
+```
+
+### Tests
+
+Automated tests live in:
+
+- `src/__tests__/backupExclusion.characterization.test.ts` — documents the pre-fix state (used as a baseline)
+- `src/__tests__/backupExclusion.test.ts` — verifies the post-fix configuration is complete and correct
+
+Run them with:
+
+```bash
+npm test -- --testPathPattern="backupExclusion"
+```
+
+---
+
 ## Getting Help
 
 - **GitHub Issues**: Use the [issue tracker](https://github.com/DogStark/PetChain-MobileApp/issues) for bug reports and feature requests.
