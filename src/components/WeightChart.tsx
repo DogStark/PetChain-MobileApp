@@ -12,6 +12,7 @@ import Svg, {
 } from 'react-native-svg';
 
 import { useAppTheme } from '../theme';
+import { normalizeWeightSeries, seriesHasMixedUnits, type WeightUnit } from './chartUnits';
 import {
   buildDataPointAccessibilityLabel,
   buildWeightChartAccessibilityLabel,
@@ -41,7 +42,12 @@ export interface WeightRange {
 }
 
 interface Props {
-  data: WeightDataPoint[];
+  /**
+   * Weight readings. Each point may declare the `unit` it was recorded in
+   * (`kg` default) and a `source`; the chart normalizes everything to kg before
+   * plotting so kg and lb readings are never aggregated on one axis (issue #968).
+   */
+  data: (WeightDataPoint & { unit?: WeightUnit; source?: string })[];
   petName?: string;
   vetRecommendedRange?: WeightRange;
   onExport?: () => void;
@@ -67,12 +73,36 @@ const WeightChart: React.FC<Props> = ({
   const [selectedPoint, setSelectedPoint] = useState<number | null>(null);
   const [showTableView, setShowTableView] = useState(false);
 
+  // Normalize every reading to kilograms up front so a mixed kg/lb history is
+  // never plotted on a single axis (issue #968).
+  const normalizedData = useMemo<WeightDataPoint[]>(
+    () =>
+      normalizeWeightSeries(
+        data.map((p) => ({
+          date: p.date,
+          weight: p.weightKg,
+          unit: p.unit,
+          source: p.source,
+          note: p.note,
+        })),
+      ).map((p) => ({ date: p.date, weightKg: p.weightKg, note: p.note })),
+    [data],
+  );
+
+  const hasMixedUnitProvenance = useMemo(
+    () =>
+      seriesHasMixedUnits(
+        data.map((p) => ({ date: p.date, weight: p.weightKg, unit: p.unit })),
+      ),
+    [data],
+  );
+
   const filteredData = useMemo(
     () =>
-      filterDataByRange(data, selectedRange).sort(
+      filterDataByRange(normalizedData, selectedRange).sort(
         (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
       ),
-    [data, selectedRange],
+    [normalizedData, selectedRange],
   );
 
   const chartAccessibilityLabel = useMemo(
@@ -237,6 +267,15 @@ const WeightChart: React.FC<Props> = ({
           {chartAccessibilityLabel}
         </Text>
       </View>
+
+      {hasMixedUnitProvenance && (
+        <Text
+          style={[styles.summaryText, { color: colors.secondaryText, marginBottom: 8 }]}
+          accessibilityRole="text"
+        >
+          Readings were recorded in different units and have been converted to kg for comparison.
+        </Text>
+      )}
 
       {showTableView ? (
         <FlatList

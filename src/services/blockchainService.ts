@@ -538,6 +538,23 @@ export const submitStellarTransaction = async (
   }
 };
 
+// ==============================
+// DESTINATION & MEMO VALIDATION (Issue #948)
+// ==============================
+
+export interface StellarDestinationValidation {
+  /** Original input, untrimmed */
+  address: string;
+  /** `ed25519` for classic `G...` keys, `muxed` for `M...` addresses */
+  type: 'ed25519' | 'muxed';
+  /** Trimmed, canonical form safe to hand to the SDK */
+  normalized: string;
+}
+
+type AccountDataLoader = (
+  publicKey: string,
+) => Promise<{ data_attr?: Record<string, string> | null }>;
+
 /**
  * Idempotency-protected wrapper around {@link submitStellarTransaction}
  * (issues #946 and #947).
@@ -594,10 +611,62 @@ export const submitStellarTransactionOnce = async (
  * Build and submit a payment transaction.
  * Wraps transaction building and submission in circuit breaker protection.
  */
-export const sendPayment = async (
-  sourceSecretKey: string,
+export const validateStellarDestination = (address: string): StellarDestinationValidation => {
+  const normalized = (address ?? '').trim();
+
+  if (!normalized) {
+    throw new BlockchainServiceError('Destination address is required', 'INVALID_DESTINATION');
+  }
+  if (StellarSdk.StrKey.isValidEd25519PublicKey(normalized)) {
+    return { address, type: 'ed25519', normalized };
+  }
+  if (StellarSdk.StrKey.isValidMed25519PublicKey(normalized)) {
+    return { address, type: 'muxed', normalized };
+  }
+  throw new BlockchainServiceError(
+    'Destination is not a valid Stellar address (expected a G... or M... key)',
+    'INVALID_DESTINATION',
+  );
+};
+
+/**
+ * SEP-0029: an account signals that inbound payments MUST carry a memo by
+ * publishing a `config.memo_required` data entry (exchanges and custodians do
+ * this to route deposits). Returns true when the destination has opted in.
+ *
+ * The account loader is injectable for testing; it defaults to the live
+ * Horizon-backed lookup which is already circuit-breaker protected.
+ */
+export const destinationRequiresMemo = async (
   destinationPublicKey: string,
-  amount: string,
+  loadAccount: AccountDataLoader = getStellarAccountDetails as unknown as AccountDataLoader,
+): Promise<boolean> => {
+  const validated = validateStellarDestination(destinationPublicKey);
+
+  // A muxed address already carries its routing id — no separate memo is needed.
+  if (validated.type === 'muxed') {
+    return false;
+  }
+
+  try {
+    const account = await loadAccount(validated.normalized);
+    const data = account?.data_attr ?? {};
+    return Object.prototype.hasOwnProperty.call(data, 'config.memo_required');
+  } catch (error) {
+    // An unfunded / unknown account cannot have opted in.
+    if (error instanceof BlockchainServiceError && error.code === 'ACCOUNT_NOT_FOUND') {
+      return false;
+    }
+    throw error;
+  }
+};
+
+/**
+ * Guard invoked before building a payment: rejects invalid destinations and
+ * blocks sends to memo-required accounts when no memo was supplied.
+ */
+export const assertDestinationAndMemo = async (
+  destinationPublicKey: string,
   memo?: string,
   /** Business key recorded with the submission, for idempotency tracking. */
   operationKey?: string,
@@ -608,7 +677,7 @@ export const sendPayment = async (
     const sourceKeypair = StellarSdk.Keypair.fromSecret(sourceSecretKey);
     const sourceAccount = await server.loadAccount(sourceKeypair.publicKey());
 
-    const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
+    const builder = new StellarSdk.TransactionBuilder(sourceAccount, {
       fee: StellarSdk.BASE_FEE,
       networkPassphrase: NETWORK_PASSPHRASE,
     })
@@ -621,17 +690,29 @@ export const sendPayment = async (
       )
       .setTimeout(30);
 
-    if (memo) {
-      transaction.addMemo(StellarSdk.Memo.text(memo));
-    }
+    const transaction = builder.build();
+    transaction.sign(sourceKeypair);
 
-    const builtTransaction = transaction.build();
-    builtTransaction.sign(sourceKeypair);
+    try {
+      return await submitStellarTransaction(transaction);
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxRebuilds && isBadSequenceError(error)) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  // Unreachable: the loop either returns or throws, but satisfies the type checker.
+  throw lastError ?? new BlockchainServiceError('Transaction submission failed', 'TRANSACTION_FAILED');
+};
 
     // Issue #946: submit at most once. Rapid taps share one request, and an
     // ambiguous timeout is reconciled against Horizon rather than rebuilt.
     return await submitStellarTransactionOnce(builtTransaction, operationKey);
   } catch (error) {
+    if (error instanceof BlockchainServiceError) throw error;
     handleBlockchainError(error);
     throw error;
   }
