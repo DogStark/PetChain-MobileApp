@@ -130,6 +130,72 @@ function _isTokenExpired(token: string): boolean {
   }
 }
 
+// ─── Session generation guard (Issue #904) ────────────────────────────────────
+
+/**
+ * Monotonic counter identifying the currently authenticated session.
+ *
+ * Every write of credentials to secure storage is tagged with the generation
+ * that was current when the work started. `logout()` and each successful
+ * sign-in bump the counter, which invalidates any refresh that is still in
+ * flight: when it finally resolves it sees a generation mismatch and discards
+ * its response instead of writing it.
+ *
+ * Without this, an in-flight `POST /auth/refresh` that started before logout
+ * would call `storeSecureTokens()` after `clearSecureTokens()` had already
+ * run, silently restoring a session the user just ended. The same race
+ * restores the *previous* account's tokens when a user switches accounts.
+ */
+let authGeneration = 0;
+
+/**
+ * The refresh currently in flight, if any, together with the generation it
+ * belongs to. Concurrent callers within the same generation share one request
+ * rather than each issuing their own — several screens calling `getToken()`
+ * at once previously fired several refreshes, and whichever finished last won.
+ */
+let inFlightRefresh: { generation: number; promise: Promise<string> } | null = null;
+
+/** Current session generation. Exposed for tests and diagnostics. */
+export function getAuthGeneration(): number {
+  return authGeneration;
+}
+
+/**
+ * Invalidate the current session generation.
+ *
+ * Call this whenever the identity behind the stored credentials changes —
+ * logout, account switch, or a fresh sign-in. Any refresh still in flight is
+ * abandoned: it will not write its response.
+ *
+ * @returns the new generation number
+ */
+export function invalidateAuthSession(): number {
+  authGeneration += 1;
+  inFlightRefresh = null;
+  return authGeneration;
+}
+
+/** True while `generation` is still the live session. */
+function isCurrentGeneration(generation: number): boolean {
+  return generation === authGeneration;
+}
+
+/**
+ * Structural check for the stale-session sentinel.
+ *
+ * Deliberately not `err instanceof AuthError`: subclassing `Error` does not
+ * survive Babel's class transform (and behaves inconsistently under Hermes),
+ * so `instanceof` can be false for an error this module threw itself.
+ */
+function isSessionChangedError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: unknown }).code === 'SESSION_CHANGED'
+  );
+}
+
 // ─── API client ───────────────────────────────────────────────────────────────
 
 function createAuthClient(): AxiosInstance {
@@ -162,23 +228,14 @@ export async function login(email: string, password: string): Promise<AuthSessio
     const payload: LoginRequest = { email: sanitizedEmail, password: sanitizedPassword };
     const { data } = await authClient.post<LoginResponse>(API_ENDPOINTS.AUTH_LOGIN, payload);
 
-    const userId = data.user.id;
-    const previousAccountId = getCurrentAccountId();
+    // A new sign-in establishes a new identity: abandon any refresh still in
+    // flight for the previous session so it cannot overwrite these tokens.
+    invalidateAuthSession();
 
-    // Atomically clear credentials from previous account if switching
-    if (previousAccountId && previousAccountId !== userId) {
-      await clearSecureTokens(previousAccountId);
-    }
-
-    // Set current account and store tokens bound to this account
-    setCurrentAccountId(userId);
-    await storeSecureTokens(
-      {
-        token: data.token,
-        refreshToken: data.refreshToken,
-      },
-      userId,
-    );
+    await storeSecureTokens({
+      token: data.token,
+      refreshToken: data.refreshToken,
+    });
 
     return {
       user: data.user,
@@ -226,23 +283,12 @@ export async function register(payload: RegisterRequest): Promise<AuthSession> {
   try {
     const { data } = await authClient.post<RegisterResponse>(API_ENDPOINTS.AUTH_REGISTER, payload);
 
-    const userId = data.user.id;
-    const previousAccountId = getCurrentAccountId();
+    invalidateAuthSession();
 
-    // Atomically clear credentials from previous account if switching
-    if (previousAccountId && previousAccountId !== userId) {
-      await clearSecureTokens(previousAccountId);
-    }
-
-    // Set current account and store tokens bound to this account
-    setCurrentAccountId(userId);
-    await storeSecureTokens(
-      {
-        token: data.token,
-        refreshToken: data.refreshToken,
-      },
-      userId,
-    );
+    await storeSecureTokens({
+      token: data.token,
+      refreshToken: data.refreshToken,
+    });
 
     return {
       user: data.user,
@@ -261,12 +307,41 @@ export async function register(payload: RegisterRequest): Promise<AuthSession> {
   }
 }
 
+/**
+ * Refresh the access token.
+ *
+ * Concurrent callers share a single in-flight request, and the result is
+ * discarded if the session generation changed while it was pending — see
+ * {@link invalidateAuthSession}.
+ *
+ * @throws {AuthError} `SESSION_CHANGED` if the session ended mid-refresh,
+ *   `REFRESH_FAILED` for every other failure.
+ */
 export async function refreshToken(): Promise<string> {
+  // Single-flight: reuse a pending refresh belonging to the live generation.
+  if (inFlightRefresh && isCurrentGeneration(inFlightRefresh.generation)) {
+    return inFlightRefresh.promise;
+  }
+
+  const generation = authGeneration;
+  const promise = performTokenRefresh(generation).finally(() => {
+    // Only clear the slot if it still holds *this* request; a newer
+    // generation may already have replaced it.
+    if (inFlightRefresh?.generation === generation) {
+      inFlightRefresh = null;
+    }
+  });
+
+  inFlightRefresh = { generation, promise };
+  return promise;
+}
+
+async function performTokenRefresh(generation: number): Promise<string> {
   try {
     const accountId = getCurrentAccountId();
     const storedRefresh = await getSecureRefreshToken(accountId || undefined);
     if (!storedRefresh) {
-      await clearSecureTokens(accountId || undefined);
+      await clearTokensIfCurrent(generation);
       const error = new AuthError('No refresh token available', 'NO_REFRESH_TOKEN');
       logError(error, { service: 'authService', action: 'refresh_missing_token' });
       throw error;
@@ -276,18 +351,35 @@ export async function refreshToken(): Promise<string> {
       refreshToken: storedRefresh,
     });
 
-    await storeSecureTokens(
-      {
-        token: data.token,
-        refreshToken: data.refreshToken ?? storedRefresh,
-      },
-      accountId || undefined,
-    );
+    // The request above is the race window. If logout or a new sign-in landed
+    // while it was pending, writing this response would resurrect credentials
+    // for a session that no longer exists.
+    if (!isCurrentGeneration(generation)) {
+      throw new AuthError('Session changed during token refresh', 'SESSION_CHANGED');
+    }
+
+    await storeSecureTokens({
+      token: data.token,
+      refreshToken: data.refreshToken ?? storedRefresh,
+    });
+
+    // `storeSecureTokens` is itself asynchronous, so re-check and undo the
+    // write if the session ended while it was being persisted.
+    if (!isCurrentGeneration(generation)) {
+      await clearSecureTokens();
+      throw new AuthError('Session changed during token refresh', 'SESSION_CHANGED');
+    }
 
     return data.token;
   } catch (err: unknown) {
-    const accountId = getCurrentAccountId();
-    await clearSecureTokens(accountId || undefined);
+    if (isSessionChangedError(err)) {
+      // Expected outcome of a logout race — not an error worth reporting as a
+      // refresh failure, and the tokens must be left exactly as logout left them.
+      logError(err as Error, { service: 'authService', action: 'refresh_discarded_stale_session' });
+      throw err;
+    }
+
+    await clearTokensIfCurrent(generation);
 
     logError(err as Error, { service: 'authService', action: 'refresh_token' });
 
@@ -295,10 +387,23 @@ export async function refreshToken(): Promise<string> {
   }
 }
 
+/**
+ * Clear stored credentials only if they still belong to `generation`.
+ *
+ * A failed refresh must not wipe the tokens of a session that started after
+ * it — otherwise a slow, doomed refresh from a previous account logs the user
+ * out of the account they just signed in to.
+ */
+async function clearTokensIfCurrent(generation: number): Promise<void> {
+  if (isCurrentGeneration(generation)) {
+    await clearSecureTokens();
+  }
+}
+
 export async function logout(): Promise<void> {
-  // Increment logout generation to invalidate any queued requests
-  // (they should not be replayed with a new token after logout)
-  incrementLogoutGeneration();
+  // Bump the generation *before* clearing so a refresh that resolves during
+  // the clear already sees itself as stale.
+  invalidateAuthSession();
   await clearSecureTokens();
 }
 
@@ -602,20 +707,9 @@ export async function loginWithOAuth(
       data: { user: AuthSession['user']; token: string; refreshToken: string; expiresIn: number };
     }>(`/auth/oauth/${provider}`, { code, state, name });
 
-    const userId = data.data.user.id;
-    const previousAccountId = getCurrentAccountId();
+    invalidateAuthSession();
 
-    // Atomically clear credentials from previous account if switching
-    if (previousAccountId && previousAccountId !== userId) {
-      await clearSecureTokens(previousAccountId);
-    }
-
-    // Set current account and store tokens bound to this account
-    setCurrentAccountId(userId);
-    await storeSecureTokens(
-      { token: data.data.token, refreshToken: data.data.refreshToken },
-      userId,
-    );
+    await storeSecureTokens({ token: data.data.token, refreshToken: data.data.refreshToken });
 
     return {
       user: data.data.user,
@@ -635,8 +729,8 @@ export async function loginWithOAuth(
 
 /** Refresh an OAuth access token using the stored refresh token. */
 export async function refreshOAuthToken(): Promise<string> {
-  const accountId = getCurrentAccountId();
-  const storedRefresh = await getSecureRefreshToken(accountId || undefined);
+  const generation = authGeneration;
+  const storedRefresh = await getSecureRefreshToken();
   if (!storedRefresh) throw new AuthError('No refresh token', 'NO_REFRESH_TOKEN');
 
   try {
@@ -645,13 +739,28 @@ export async function refreshOAuthToken(): Promise<string> {
       data: { token: string; refreshToken: string; expiresIn: number };
     }>('/auth/oauth/refresh', { refreshToken: storedRefresh });
 
-    await storeSecureTokens(
-      { token: data.data.token, refreshToken: data.data.refreshToken },
-      accountId || undefined,
-    );
+    // Same logout race as the primary refresh path — see refreshToken().
+    if (!isCurrentGeneration(generation)) {
+      throw new AuthError('Session changed during token refresh', 'SESSION_CHANGED');
+    }
+
+    await storeSecureTokens({ token: data.data.token, refreshToken: data.data.refreshToken });
+
+    if (!isCurrentGeneration(generation)) {
+      await clearSecureTokens();
+      throw new AuthError('Session changed during token refresh', 'SESSION_CHANGED');
+    }
+
     return data.data.token;
   } catch (err) {
-    await clearSecureTokens(accountId || undefined);
+    if (isSessionChangedError(err)) {
+      logError(err as Error, {
+        service: 'authService',
+        action: 'oauth_refresh_discarded_stale_session',
+      });
+      throw err;
+    }
+    await clearTokensIfCurrent(generation);
     logError(err as Error, { service: 'authService', action: 'oauth_refresh' });
     throw new AuthError('Token refresh failed', 'REFRESH_FAILED');
   }
@@ -672,8 +781,8 @@ export async function revokeOAuthToken(): Promise<void> {
   } catch {
     // Best-effort — always clear local tokens
   } finally {
-    await clearSecureTokens(accountId || undefined);
-    setCurrentAccountId(null);
+    invalidateAuthSession();
+    await clearSecureTokens();
   }
 }
 

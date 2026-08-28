@@ -9,7 +9,7 @@ import {
   Platform,
 } from 'react-native';
 
-import emergencyService from '../services/emergencyService';
+import emergencyService, { type SOSPlan } from '../services/emergencyService';
 import { hapticLight, hapticMedium, hapticSOSSent } from '../utils/hapticFeedback';
 
 interface SOSButtonProps {
@@ -21,6 +21,13 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
   const [isPressing, setIsPressing] = useState(false);
   const [isCountdown, setIsCountdown] = useState(false);
   const [countdown, setCountdown] = useState(3);
+  /**
+   * The dispatch plan for the pending SOS (Issue #942).
+   *
+   * Resolved as soon as the countdown starts so the user can see exactly who
+   * will be contacted — and cancel — before anything leaves the device.
+   */
+  const [plan, setPlan] = useState<SOSPlan | null>(null);
 
   const pressAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -29,16 +36,49 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
   const triggerSOS = useCallback(async () => {
     setIsCountdown(false);
     setCountdown(3);
+
+    // Nothing to send to — surface it rather than silently doing nothing.
+    if (plan && !plan.canDispatch) {
+      setPlan(null);
+      return;
+    }
+
     // Strong double-tap haptic to confirm SOS was sent
     void hapticSOSSent();
     Vibration.vibrate([0, 500, 200, 500]);
     try {
-      await emergencyService.triggerSOS('Pet emergency - need immediate help');
+      await emergencyService.triggerSOS('Pet emergency - need immediate help', {
+        // Dispatch to exactly the recipients shown in the preview.
+        confirmedRecipientIds: plan?.recipients.map((r) => r.id),
+      });
       if (onSOSSent) onSOSSent();
     } catch (error) {
       console.error('SOS failed', error);
+    } finally {
+      setPlan(null);
     }
-  }, [onSOSSent]);
+  }, [onSOSSent, plan]);
+
+  // Resolve the dispatch plan as soon as the countdown begins, so the preview
+  // below reflects the real recipients rather than a guess.
+  useEffect(() => {
+    if (!isCountdown) {
+      setPlan(null);
+      return;
+    }
+    let cancelled = false;
+    void emergencyService
+      .prepareSOS('Pet emergency - need immediate help')
+      .then((resolved) => {
+        if (!cancelled) setPlan(resolved);
+      })
+      .catch(() => {
+        if (!cancelled) setPlan(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isCountdown]);
 
   useEffect(() => {
     if (isCountdown) {
@@ -130,6 +170,22 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
       >
         <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
           <Text style={styles.countdownText}>{countdown}</Text>
+
+          {/* Explicit recipient preview — who is about to receive this. */}
+          <Text style={styles.recipientText} testID="sos-recipient-preview">
+            {plan == null
+              ? 'Checking contacts…'
+              : plan.recipients.length === 0
+                ? 'No emergency contacts selected'
+                : `Sending to: ${plan.recipients.map((r) => r.name).join(', ')}`}
+          </Text>
+
+          {plan?.warnings.map((warning) => (
+            <Text key={warning} style={styles.warningText} testID="sos-warning">
+              {warning}
+            </Text>
+          ))}
+
           <Text style={styles.cancelText} testID="sos-cancel-button">
             TAP TO CANCEL
           </Text>
@@ -159,6 +215,21 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
 };
 
 const styles = StyleSheet.create({
+  recipientText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 8,
+    paddingHorizontal: 12,
+  },
+  warningText: {
+    color: '#ffe0e0',
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: 4,
+    paddingHorizontal: 12,
+  },
   container: {
     margin: 16,
     borderRadius: 12,
