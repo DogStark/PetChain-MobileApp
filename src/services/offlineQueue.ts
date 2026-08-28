@@ -819,6 +819,16 @@ class OfflineQueue {
     };
     this.statusListeners.forEach((l) => l(status));
   }
+
+  async clearAll(): Promise<void> {
+    await setItem(QUEUE_KEY, JSON.stringify([]));
+    await setItem(CONFLICTS_KEY, JSON.stringify([]));
+    try {
+      await executeSql(`DELETE FROM blockchain_anchor_queue`);
+    } catch {
+      // Ignored if table doesn't exist yet
+    }
+  }
 }
 
 export const offlineQueue = new OfflineQueue();

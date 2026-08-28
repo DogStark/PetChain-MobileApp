@@ -94,6 +94,33 @@ jest.mock('../sessionMonitoringService', () => ({
   },
 }));
 
+jest.mock('../localDB', () => ({
+  __esModule: true,
+  clearAllData: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../offlineQueue', () => ({
+  __esModule: true,
+  default: {
+    clearAll: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
+jest.mock('../syncEngine', () => ({
+  __esModule: true,
+  default: {
+    clearAll: jest.fn().mockResolvedValue(undefined),
+    destroy: jest.fn(),
+  },
+}));
+
+jest.mock('../widgetService', () => ({
+  __esModule: true,
+  default: {
+    clearWidgetData: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
 // ─── Imports (after mocks) ────────────────────────────────────────────────────
 
 import {
@@ -116,6 +143,10 @@ import {
   setPin,
   verifyPin,
 } from '../authService';
+import { clearAllData } from '../localDB';
+import offlineQueue from '../offlineQueue';
+import syncEngine from '../syncEngine';
+import widgetService from '../widgetService';
 
 // ─── JWT helpers ─────────────────────────────────────────────────────────────
 
@@ -310,6 +341,18 @@ describe('logout()', () => {
   it('is idempotent — calling logout twice does not throw', async () => {
     await expect(logout()).resolves.toBeUndefined();
     await expect(logout()).resolves.toBeUndefined();
+  });
+
+  it('purges user-scoped offline data atomically (localDB, queues, widgets)', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+
+    await logout();
+
+    expect(syncEngine.clearAll).toHaveBeenCalled();
+    expect(offlineQueue.clearAll).toHaveBeenCalled();
+    expect(widgetService.clearWidgetData).toHaveBeenCalled();
+    expect(clearAllData).toHaveBeenCalled();
   });
 });
 

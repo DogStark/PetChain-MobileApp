@@ -29,6 +29,10 @@ import {
 } from '../utils/encryption/keychain';
 import { logError } from '../utils/errorLogger';
 import { sanitizeString } from '../utils/sanitize';
+import { clearAllData } from './localDB';
+import offlineQueue from './offlineQueue';
+import syncEngine from './syncEngine';
+import widgetService from './widgetService';
 
 // ─── Custom error ─────────────────────────────────────────────────────────────
 
@@ -401,9 +405,12 @@ async function clearTokensIfCurrent(generation: number): Promise<void> {
 }
 
 export async function logout(): Promise<void> {
-  // Bump the generation *before* clearing so a refresh that resolves during
-  // the clear already sees itself as stale.
-  invalidateAuthSession();
+  await Promise.allSettled([
+    syncEngine.clearAll(),
+    offlineQueue.clearAll(),
+    widgetService.clearWidgetData(),
+    clearAllData(),
+  ]);
   await clearSecureTokens();
 }
 
