@@ -47,6 +47,9 @@ jobs:
       - name: Check translations (no missing Spanish keys)
         run: npm run check:translations
 
+      - name: Validate mobile client against backend OpenAPI (#977)
+        run: npm run openapi:validate-client
+
       - name: Lint
         run: npm run lint
 
