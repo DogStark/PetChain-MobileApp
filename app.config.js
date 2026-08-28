@@ -118,13 +118,14 @@ module.exports = {
     ],
     extra: {
       APP_ENV,
+      // API_BASE_URL resolution: explicit env > profile-specific > no fallback to localhost for prod
       API_BASE_URL:
-        process.env.API_BASE_URL ??
+        process.env.API_BASE_URL ||
         (APP_ENV === 'production'
-          ? (process.env.PROD_API_URL ?? 'https://api.petchain.app/api')
+          ? process.env.PROD_API_URL // Production: require explicit PROD_API_URL, no fallback
           : APP_ENV === 'staging'
             ? (process.env.STAGING_API_URL ?? 'https://staging.petchain.app/api')
-            : 'http://localhost:3000/api'),
+            : (process.env.API_BASE_URL ?? 'http://localhost:3000/api')), // Dev: localhost default
       STAGING_API_URL: process.env.STAGING_API_URL ?? 'https://staging.petchain.app/api',
       PROD_API_URL: process.env.PROD_API_URL ?? 'https://api.petchain.app/api',
       API_TIMEOUT: process.env.API_TIMEOUT ?? '10000',

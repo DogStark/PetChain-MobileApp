@@ -22,6 +22,7 @@ import {
 } from './src/services/appLockService';
 import { registerBackgroundMedicationTask } from './src/services/backgroundTaskService';
 import errorTracking from './src/services/errorTracking';
+import navigationQueueService from './src/services/navigationQueueService';
 import {
   registerNotificationActions,
   watchNotificationActions,
@@ -123,13 +124,14 @@ function App() {
   }, []);
 
   // Handle initial notification if app was launched from a notification tap
-  // (cold-start or background)
+  // (cold-start or background). Queue it if app-lock verification is pending.
   useEffect(() => {
     const checkInitialNotification = async () => {
       const notification = await Notifications.getLastNotificationResponseAsync();
       if (notification) {
         const data = notification.notification.request.content.data;
-        handleNotificationDeepLink(data);
+        // Queue the deep link until app-lock verification completes
+        navigationQueueService.queueNotification(data);
       }
     };
     void checkInitialNotification();
@@ -138,7 +140,18 @@ function App() {
   if (!appReady) return <View style={styles.root} />;
 
   if (locked) {
-    return <LockScreen showPinFallback={pinFallback} onUnlock={() => setLocked(false)} />;
+    return (
+      <LockScreen
+        showPinFallback={pinFallback}
+        onUnlock={() => {
+          // Unlock complete: clear lock state and replay any queued navigation
+          setLocked(false);
+          navigationQueueService.clearAndUnlock();
+          // Replay the queued deep-link or notification navigation
+          navigationQueueService.replayAndClear();
+        }}
+      />
+    );
   }
 
   return (

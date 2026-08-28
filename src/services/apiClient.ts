@@ -9,7 +9,8 @@ import { fetch as pinnedFetch } from 'react-native-ssl-pinning';
 import config from '../config';
 import { getToken, logout, refreshToken } from './authService';
 import { buildSignatureHeaders } from './certPinning';
-import { SSL_PINS, PIN_FAILURE_SUPPORT_URL } from '../config/security';
+import { SSL_PIN_STRINGS, PIN_FAILURE_SUPPORT_URL } from '../config/security';
+import { recordPinFailure, isPinErrorFromNetworkIssue, checkPinExpiry } from './pinRotationService';
 import { setupInterceptors } from '../middleware/apiInterceptors';
 import { logError } from '../utils/errorLogger';
 import performance, { recordApiTiming, startSpan, finishSpan } from '../utils/performance';
@@ -209,13 +210,21 @@ function hostnameOf(url: string): string {
 /**
  * Perform a pinned HTTPS request using react-native-ssl-pinning.
  * Falls back to a user-facing error (not a silent bypass) on pin failure.
+ * Records privacy-safe failure telemetry and monitors for expiry.
  */
 export async function pinnedRequest<T>(
   url: string,
   options: RequestInit & { method?: string } = {},
 ): Promise<T> {
   const hostname = hostnameOf(url);
-  const pins = SSL_PINS[hostname];
+  const pins = SSL_PIN_STRINGS[hostname];
+
+  // Periodically check for upcoming pin expirations
+  try {
+    checkPinExpiry();
+  } catch {
+    // Expiry monitoring errors should not block requests
+  }
 
   if (!pins || pins.length === 0) {
     // No pins configured for this host — use regular fetch
@@ -235,19 +244,25 @@ export async function pinnedRequest<T>(
     });
     return JSON.parse(res.bodyString ?? '{}') as T;
   } catch (err) {
-    const isPinFailure =
-      err instanceof Error &&
-      (err.message.includes('SSL') ||
-        err.message.includes('certificate') ||
-        err.message.includes('pinning'));
+    if (!(err instanceof Error)) throw err;
 
-    if (isPinFailure) {
-      logError(err, { service: 'apiClient', action: 'ssl_pin_failure', hostname });
+    const isPinFailure =
+      err.message.includes('SSL') ||
+      err.message.includes('certificate') ||
+      err.message.includes('pinning');
+    const isNetworkIssue = isPinErrorFromNetworkIssue(err);
+
+    if (isPinFailure && !isNetworkIssue) {
+      // Record privacy-safe telemetry (no raw error, no tokens, no PII)
+      recordPinFailure(err, hostname);
+
       throw new Error(
         `Security error: the server certificate could not be verified. ` +
           `If this persists, contact support at ${PIN_FAILURE_SUPPORT_URL}`,
       );
     }
+
+    // Network issues (timeout/offline) are not pin failures
     throw err;
   }
 }
@@ -301,14 +316,16 @@ function recordFailure(): void {
   }
 }
 
-// --- Single-flight token refresh (Issue #547) ---
+// --- Single-flight token refresh with logout generation guard (Issue #903) ---
 // If multiple 401 responses arrive concurrently, only one refresh call is made.
 // All queued requests resolve / reject together once the refresh settles.
+// Logout generation guard ensures requests queued before logout are not replayed after.
 
 type RefreshSubscriber = (newToken: string) => void;
 type RefreshRejecter = (err: unknown) => void;
 
 let refreshInFlight = false;
+let logoutGeneration = 1; // Incremented on logout; guards against stale token replays
 const refreshSubscribers: RefreshSubscriber[] = [];
 const refreshRejecters: RefreshRejecter[] = [];
 
@@ -344,6 +361,10 @@ async function singleFlightRefresh(): Promise<string> {
   } finally {
     refreshInFlight = false;
   }
+}
+
+export function getLogoutGeneration(): number {
+  return logoutGeneration;
 }
 
 // --- Retry ---
@@ -395,16 +416,36 @@ apiClient.interceptors.request.use(async (requestConfig) => {
 });
 setupInterceptors(apiClient);
 
-// 401 → single-flight token refresh (Issue #547)
+// 401 → single-flight token refresh with logout generation guard (Issue #903)
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
-    const original = error.config as AxiosRequestConfig & { _retried?: boolean };
+    const original = error.config as AxiosRequestConfig & {
+      _retried?: boolean;
+      _generation?: number;
+    };
+
     if (error.response?.status === 401 && !original._retried) {
       original._retried = true;
-      const newToken = await singleFlightRefresh();
-      (original.headers as Record<string, string>).Authorization = `Bearer ${newToken}`;
-      return apiClient.request(original);
+      const requestGeneration = original._generation ?? logoutGeneration;
+
+      try {
+        const newToken = await singleFlightRefresh();
+
+        // Check if logout happened while we were refreshing
+        if (requestGeneration !== logoutGeneration) {
+          // Request is stale — don't replay it after logout
+          return Promise.reject(new Error('Logout occurred during token refresh'));
+        }
+
+        (original.headers as Record<string, string>).Authorization = `Bearer ${newToken}`;
+        // Preserve generation for any retries
+        original._generation = logoutGeneration;
+        return apiClient.request(original);
+      } catch (refreshErr) {
+        // Token refresh failed — logout already called in singleFlightRefresh
+        return Promise.reject(refreshErr);
+      }
     }
     return Promise.reject(error);
   },
@@ -479,11 +520,17 @@ export async function resilientRequest<T>(
 
 export const getCircuitState = () => circuit.state;
 
+/** Increment logout generation to invalidate queued requests (call on logout) */
+export function incrementLogoutGeneration(): void {
+  logoutGeneration++;
+}
+
 /** Exposed for testing only */
 export const _resetRefreshState = () => {
   refreshInFlight = false;
   refreshSubscribers.splice(0);
   refreshRejecters.splice(0);
+  logoutGeneration = 1;
 };
 
 /** Exposed for testing only */
