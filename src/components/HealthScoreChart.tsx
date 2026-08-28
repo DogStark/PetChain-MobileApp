@@ -12,6 +12,7 @@ import Svg, {
 } from 'react-native-svg';
 
 import { useAppTheme } from '../theme';
+import { assertHomogeneousBiomarker, IncompatibleSeriesError } from './chartUnits';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -21,6 +22,9 @@ export interface HealthScoreDataPoint {
   explanation?: any;
   confidenceMin?: number;
   confidenceMax?: number;
+  /** Optional provenance — used to block mixing incompatible biomarkers (issue #968). */
+  biomarker?: string;
+  unit?: string;
 }
 
 export interface MedicalEvent {
@@ -151,7 +155,37 @@ const HealthScoreChart: React.FC<Props> = ({
 
   const trendDescription = useMemo(() => describeTrend(filteredData), [filteredData]);
 
+  // Refuse to aggregate a series that mixes biomarkers or units (issue #968).
+  const incompatibleSeriesMessage = useMemo(() => {
+    try {
+      assertHomogeneousBiomarker(
+        data.map((d) => ({ date: d.date, value: d.score, biomarker: d.biomarker, unit: d.unit })),
+      );
+      return null;
+    } catch (err) {
+      return err instanceof IncompatibleSeriesError ? err.message : 'Series is not comparable';
+    }
+  }, [data]);
+
   // ── Render empty state ────────────────────────────────────────────────────
+
+  if (incompatibleSeriesMessage) {
+    return (
+      <View
+        style={[styles.container, { backgroundColor: colors.card, shadowColor: colors.shadow }]}
+      >
+        <View style={styles.header}>
+          <Text style={[styles.title, { color: colors.text }]}>Health Score Trend</Text>
+        </View>
+        <View style={[styles.emptyContainer, { height }]}>
+          <Text style={[styles.emptyText, { color: colors.error }]} accessibilityRole="text">
+            {incompatibleSeriesMessage}. Showing these together could be misleading — view each
+            metric on its own chart.
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   if (filteredData.length === 0) {
     return (
