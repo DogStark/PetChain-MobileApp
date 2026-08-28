@@ -498,3 +498,130 @@ export async function scheduleRefillReminder(med: Medication): Promise<void> {
     trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: trigger },
   });
 }
+
+// ── Interaction-warning data provenance & freshness (issue #959) ───────────────
+
+/**
+ * Provenance for the bundled medication-interaction knowledge base. Interaction
+ * warnings are only as trustworthy as the dataset behind them, so every warning
+ * surfaced to an owner must be able to state where it came from, which version
+ * produced it, and how old that data is.
+ *
+ * Synthetic placeholder values — replace `source`/`version`/`publishedAt` from
+ * the real dataset manifest at build time. No PII or health records here.
+ */
+export const INTERACTION_DATA_PROVENANCE = {
+  /** Human-readable name of the dataset / reference used to derive warnings. */
+  source: 'PetChain Bundled Interaction Reference',
+  /** Semantic version of the dataset shipped with this build. */
+  version: '0.0.0-bundled',
+  /** ISO date the dataset snapshot was published upstream. */
+  publishedAt: '2026-01-01T00:00:00.000Z',
+  /** Where the maintained dataset lives, for audit / update tooling. */
+  reference: 'https://petchain.app/docs/medication-interaction-data',
+} as const;
+
+/** Number of days after which bundled interaction data is considered stale. */
+export const INTERACTION_DATA_STALE_AFTER_DAYS = 90;
+/** Number of days after which bundled interaction data must not be shown as authoritative. */
+export const INTERACTION_DATA_UNAVAILABLE_AFTER_DAYS = 180;
+
+export type InteractionDataFreshness = 'fresh' | 'stale' | 'expired';
+
+export interface InteractionDataStatus {
+  freshness: InteractionDataFreshness;
+  /** Age of the dataset in whole days relative to `now`. */
+  ageDays: number;
+  /** True while the data may be presented as clinically meaningful guidance. */
+  authoritative: boolean;
+  /** True when the data is too old to show warnings from at all. */
+  unavailable: boolean;
+  provenance: typeof INTERACTION_DATA_PROVENANCE;
+  /** Policy describing how/when the dataset is refreshed. */
+  updatePolicy: string;
+  /** Owner-facing disclaimer that must accompany any interaction warning. */
+  disclaimer: string;
+}
+
+const INTERACTION_UPDATE_POLICY =
+  'Interaction data ships with the app and refreshes on app update. ' +
+  `Data older than ${INTERACTION_DATA_STALE_AFTER_DAYS} days is flagged as stale; ` +
+  `data older than ${INTERACTION_DATA_UNAVAILABLE_AFTER_DAYS} days is withheld until the app is updated.`;
+
+const BASE_DISCLAIMER =
+  'This is an automated screening aid, not veterinary advice. ' +
+  'Always confirm medication safety with your veterinarian.';
+
+/**
+ * Assess how fresh the bundled interaction dataset is and what may be shown to
+ * the owner as a result. Pure function — pass `now` for deterministic tests.
+ */
+export function assessInteractionDataFreshness(
+  now: Date = new Date(),
+  provenance: typeof INTERACTION_DATA_PROVENANCE = INTERACTION_DATA_PROVENANCE,
+): InteractionDataStatus {
+  const publishedMs = new Date(provenance.publishedAt).getTime();
+  const ageDays = Number.isNaN(publishedMs)
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, Math.floor((now.getTime() - publishedMs) / (24 * 60 * 60 * 1000)));
+
+  const unavailable = ageDays >= INTERACTION_DATA_UNAVAILABLE_AFTER_DAYS;
+  const stale = !unavailable && ageDays >= INTERACTION_DATA_STALE_AFTER_DAYS;
+  const freshness: InteractionDataFreshness = unavailable ? 'expired' : stale ? 'stale' : 'fresh';
+
+  let disclaimer = BASE_DISCLAIMER;
+  if (stale) {
+    disclaimer =
+      `Interaction data is ${ageDays} days old and may be out of date. ` +
+      'Do not rely on these warnings as current — update the app and consult your veterinarian.';
+  } else if (unavailable) {
+    disclaimer =
+      'Interaction screening is unavailable because the local data is too old to be trusted. ' +
+      'Update the app to restore it, and consult your veterinarian in the meantime.';
+  }
+
+  return {
+    freshness,
+    ageDays,
+    authoritative: freshness === 'fresh',
+    unavailable,
+    provenance,
+    updatePolicy: INTERACTION_UPDATE_POLICY,
+    disclaimer,
+  };
+}
+
+export interface PresentedInteractionWarning {
+  message: string;
+  /** Provenance line safe to render under the warning, e.g. "Source X v1 · 12 days old". */
+  attribution: string;
+  disclaimer: string;
+  /** False when the warning must be visually de-emphasised (stale/expired data). */
+  authoritative: boolean;
+  /** True when no warning should be shown and the unavailable state is surfaced instead. */
+  suppressed: boolean;
+}
+
+/**
+ * Wrap a raw interaction-warning string with provenance, an attribution line and
+ * the freshness-appropriate disclaimer. When the dataset is expired the warning
+ * is suppressed and the caller should show the unavailable state instead.
+ */
+export function presentInteractionWarning(
+  rawMessage: string,
+  now: Date = new Date(),
+): PresentedInteractionWarning {
+  const status = assessInteractionDataFreshness(now);
+  const { source, version } = status.provenance;
+  const attribution =
+    `Source: ${source} ${version} · ${INTERACTION_DATA_PROVENANCE.publishedAt.slice(0, 10)}` +
+    ` · ${status.ageDays === Number.POSITIVE_INFINITY ? 'unknown age' : `${status.ageDays} days old`}`;
+
+  return {
+    message: status.unavailable ? '' : rawMessage,
+    attribution,
+    disclaimer: status.disclaimer,
+    authoritative: status.authoritative,
+    suppressed: status.unavailable,
+  };
+}
