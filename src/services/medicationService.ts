@@ -18,6 +18,13 @@ export interface DoseLog {
   skipped?: boolean;
   scheduledFor?: string;
   notes?: string;
+  /**
+   * Stable identity for the scheduled dose this log fulfils. Derived from the
+   * medication ID and the scheduled instant so the same dose resolves to the
+   * same ID regardless of entry point (manual tap, notification action, or
+   * offline-queue replay). Used to make dose logging idempotent.
+   */
+  scheduledDoseId?: string;
 }
 
 export interface MedicationAdherence {
@@ -46,6 +53,130 @@ export async function getDoseLogs(): Promise<DoseLog[]> {
 
 export async function logDose(log: DoseLog): Promise<void> {
   await dbAddDoseLog(log);
+}
+
+// ── Idempotent dose logging (#958) ───────────────────────────────────────────
+
+/**
+ * Deterministic identity for a single scheduled dose.
+ *
+ * The same medication + scheduled instant always yields the same ID, so a dose
+ * marked from a notification action, a manual tap, and a replayed offline-queue
+ * entry all collapse onto one record instead of being counted 2–3 times.
+ *
+ * The scheduled time is snapped to a whole minute in UTC so sub-minute clock
+ * skew between the notification trigger and the queue flush does not fork the
+ * identity. This is also the key used for conflict-safe server sync.
+ */
+export function scheduledDoseId(medicationId: string, scheduledFor: string | Date): string {
+  const ms =
+    scheduledFor instanceof Date ? scheduledFor.getTime() : new Date(scheduledFor).getTime();
+  if (Number.isNaN(ms)) {
+    throw new Error('scheduledDoseId: invalid scheduledFor timestamp');
+  }
+  const minuteIso = new Date(Math.floor(ms / 60_000) * 60_000).toISOString();
+  return `dose:${medicationId}:${minuteIso}`;
+}
+
+/** Resolve the scheduled-dose identity for a log, deriving it if not stored. */
+function resolveDoseId(log: Pick<DoseLog, 'scheduledDoseId' | 'medicationId' | 'scheduledFor' | 'takenAt'>): string {
+  return log.scheduledDoseId ?? scheduledDoseId(log.medicationId, log.scheduledFor ?? log.takenAt);
+}
+
+/** True when `logs` already contains an entry for the same scheduled dose. */
+export function isDoseAlreadyLogged(log: DoseLog, logs: DoseLog[]): boolean {
+  const key = resolveDoseId(log);
+  return logs.some((existing) => resolveDoseId(existing) === key);
+}
+
+/**
+ * Conflict-safe dose logging. Stamps a stable `scheduledDoseId` and only writes
+ * when no log for that dose exists yet. Returns the record that is authoritative
+ * for the dose — the pre-existing one on a duplicate, the freshly written one
+ * otherwise — plus a `duplicate` flag so callers and the server can converge on
+ * a single record.
+ *
+ * Safe to call repeatedly from offline-queue replay and notification actions.
+ */
+export async function logDoseIdempotent(
+  log: DoseLog,
+): Promise<{ log: DoseLog; duplicate: boolean }> {
+  const withId: DoseLog = { ...log, scheduledDoseId: resolveDoseId(log) };
+  const existing = await getDoseLogs();
+  const match = existing.find((l) => resolveDoseId(l) === withId.scheduledDoseId);
+  if (match) {
+    return { log: match, duplicate: true };
+  }
+  await dbAddDoseLog(withId);
+  return { log: withId, duplicate: false };
+}
+
+// ── Timezone-safe schedule reconciliation (#957) ─────────────────────────────
+
+export interface ScheduledDose {
+  /** OS notification identifier, when this dose is already scheduled. */
+  notificationId?: string;
+  medicationId: string;
+  /** Absolute instant the dose is due (Date or ISO string). */
+  fireDate: Date | string;
+}
+
+/**
+ * Identity of a scheduled dose as an absolute UTC instant (snapped to the
+ * minute). Editing a schedule or crossing a timezone — including DST
+ * transitions and overnight doses — must not change this key for a dose still
+ * due at the same real-world moment, so reconciliation drops duplicates instead
+ * of stacking overlapping local notifications.
+ */
+export function doseIdentityKey(dose: ScheduledDose): string {
+  const ms = dose.fireDate instanceof Date ? dose.fireDate.getTime() : new Date(dose.fireDate).getTime();
+  if (Number.isNaN(ms)) {
+    throw new Error('doseIdentityKey: invalid fireDate');
+  }
+  const minuteIso = new Date(Math.floor(ms / 60_000) * 60_000).toISOString();
+  return `${dose.medicationId}@${minuteIso}`;
+}
+
+/**
+ * Reconcile a freshly-computed desired schedule against what is already
+ * scheduled with the OS, keyed by dose identity.
+ *
+ * @returns `toCancel` — notification IDs that are stale or exact duplicates;
+ *          `toSchedule` — desired doses not yet scheduled;
+ *          `keep` — notification IDs that already match a desired dose.
+ */
+export function reconcileDoseSchedules(
+  existing: ScheduledDose[],
+  desired: ScheduledDose[],
+): { toCancel: string[]; toSchedule: ScheduledDose[]; keep: string[] } {
+  const existingByKey = new Map<string, ScheduledDose[]>();
+  for (const dose of existing) {
+    const key = doseIdentityKey(dose);
+    const group = existingByKey.get(key);
+    if (group) group.push(dose);
+    else existingByKey.set(key, [dose]);
+  }
+
+  const desiredKeys = new Set(desired.map(doseIdentityKey));
+  const toCancel: string[] = [];
+  const keep: string[] = [];
+
+  for (const [key, group] of existingByKey) {
+    const [first, ...duplicates] = group;
+    for (const dup of duplicates) {
+      if (dup.notificationId) toCancel.push(dup.notificationId);
+    }
+    if (desiredKeys.has(key)) {
+      if (first.notificationId) keep.push(first.notificationId);
+    } else if (first.notificationId) {
+      toCancel.push(first.notificationId);
+    }
+  }
+
+  const existingKeys = new Set(existing.map(doseIdentityKey));
+  const toSchedule = desired.filter((dose) => !existingKeys.has(doseIdentityKey(dose)));
+
+  return { toCancel, toSchedule, keep };
 }
 
 export function getDoseStatus(
@@ -366,4 +497,131 @@ export async function scheduleRefillReminder(med: Medication): Promise<void> {
     },
     trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: trigger },
   });
+}
+
+// ── Interaction-warning data provenance & freshness (issue #959) ───────────────
+
+/**
+ * Provenance for the bundled medication-interaction knowledge base. Interaction
+ * warnings are only as trustworthy as the dataset behind them, so every warning
+ * surfaced to an owner must be able to state where it came from, which version
+ * produced it, and how old that data is.
+ *
+ * Synthetic placeholder values — replace `source`/`version`/`publishedAt` from
+ * the real dataset manifest at build time. No PII or health records here.
+ */
+export const INTERACTION_DATA_PROVENANCE = {
+  /** Human-readable name of the dataset / reference used to derive warnings. */
+  source: 'PetChain Bundled Interaction Reference',
+  /** Semantic version of the dataset shipped with this build. */
+  version: '0.0.0-bundled',
+  /** ISO date the dataset snapshot was published upstream. */
+  publishedAt: '2026-01-01T00:00:00.000Z',
+  /** Where the maintained dataset lives, for audit / update tooling. */
+  reference: 'https://petchain.app/docs/medication-interaction-data',
+} as const;
+
+/** Number of days after which bundled interaction data is considered stale. */
+export const INTERACTION_DATA_STALE_AFTER_DAYS = 90;
+/** Number of days after which bundled interaction data must not be shown as authoritative. */
+export const INTERACTION_DATA_UNAVAILABLE_AFTER_DAYS = 180;
+
+export type InteractionDataFreshness = 'fresh' | 'stale' | 'expired';
+
+export interface InteractionDataStatus {
+  freshness: InteractionDataFreshness;
+  /** Age of the dataset in whole days relative to `now`. */
+  ageDays: number;
+  /** True while the data may be presented as clinically meaningful guidance. */
+  authoritative: boolean;
+  /** True when the data is too old to show warnings from at all. */
+  unavailable: boolean;
+  provenance: typeof INTERACTION_DATA_PROVENANCE;
+  /** Policy describing how/when the dataset is refreshed. */
+  updatePolicy: string;
+  /** Owner-facing disclaimer that must accompany any interaction warning. */
+  disclaimer: string;
+}
+
+const INTERACTION_UPDATE_POLICY =
+  'Interaction data ships with the app and refreshes on app update. ' +
+  `Data older than ${INTERACTION_DATA_STALE_AFTER_DAYS} days is flagged as stale; ` +
+  `data older than ${INTERACTION_DATA_UNAVAILABLE_AFTER_DAYS} days is withheld until the app is updated.`;
+
+const BASE_DISCLAIMER =
+  'This is an automated screening aid, not veterinary advice. ' +
+  'Always confirm medication safety with your veterinarian.';
+
+/**
+ * Assess how fresh the bundled interaction dataset is and what may be shown to
+ * the owner as a result. Pure function — pass `now` for deterministic tests.
+ */
+export function assessInteractionDataFreshness(
+  now: Date = new Date(),
+  provenance: typeof INTERACTION_DATA_PROVENANCE = INTERACTION_DATA_PROVENANCE,
+): InteractionDataStatus {
+  const publishedMs = new Date(provenance.publishedAt).getTime();
+  const ageDays = Number.isNaN(publishedMs)
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, Math.floor((now.getTime() - publishedMs) / (24 * 60 * 60 * 1000)));
+
+  const unavailable = ageDays >= INTERACTION_DATA_UNAVAILABLE_AFTER_DAYS;
+  const stale = !unavailable && ageDays >= INTERACTION_DATA_STALE_AFTER_DAYS;
+  const freshness: InteractionDataFreshness = unavailable ? 'expired' : stale ? 'stale' : 'fresh';
+
+  let disclaimer = BASE_DISCLAIMER;
+  if (stale) {
+    disclaimer =
+      `Interaction data is ${ageDays} days old and may be out of date. ` +
+      'Do not rely on these warnings as current — update the app and consult your veterinarian.';
+  } else if (unavailable) {
+    disclaimer =
+      'Interaction screening is unavailable because the local data is too old to be trusted. ' +
+      'Update the app to restore it, and consult your veterinarian in the meantime.';
+  }
+
+  return {
+    freshness,
+    ageDays,
+    authoritative: freshness === 'fresh',
+    unavailable,
+    provenance,
+    updatePolicy: INTERACTION_UPDATE_POLICY,
+    disclaimer,
+  };
+}
+
+export interface PresentedInteractionWarning {
+  message: string;
+  /** Provenance line safe to render under the warning, e.g. "Source X v1 · 12 days old". */
+  attribution: string;
+  disclaimer: string;
+  /** False when the warning must be visually de-emphasised (stale/expired data). */
+  authoritative: boolean;
+  /** True when no warning should be shown and the unavailable state is surfaced instead. */
+  suppressed: boolean;
+}
+
+/**
+ * Wrap a raw interaction-warning string with provenance, an attribution line and
+ * the freshness-appropriate disclaimer. When the dataset is expired the warning
+ * is suppressed and the caller should show the unavailable state instead.
+ */
+export function presentInteractionWarning(
+  rawMessage: string,
+  now: Date = new Date(),
+): PresentedInteractionWarning {
+  const status = assessInteractionDataFreshness(now);
+  const { source, version } = status.provenance;
+  const attribution =
+    `Source: ${source} ${version} · ${INTERACTION_DATA_PROVENANCE.publishedAt.slice(0, 10)}` +
+    ` · ${status.ageDays === Number.POSITIVE_INFINITY ? 'unknown age' : `${status.ageDays} days old`}`;
+
+  return {
+    message: status.unavailable ? '' : rawMessage,
+    attribution,
+    disclaimer: status.disclaimer,
+    authoritative: status.authoritative,
+    suppressed: status.unavailable,
+  };
 }

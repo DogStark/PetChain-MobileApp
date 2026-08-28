@@ -19,13 +19,19 @@ import {
   enableScreenCapturePrevention,
   loadLockTimeout,
   getLockTimeoutMs,
+  persistAppBackground,
+  persistAppForeground,
+  getElapsedSinceBackground,
+  clearPersistedTimestamps,
 } from './src/services/appLockService';
 import { registerBackgroundMedicationTask } from './src/services/backgroundTaskService';
 import errorTracking from './src/services/errorTracking';
+import navigationQueueService from './src/services/navigationQueueService';
 import {
   registerNotificationActions,
   watchNotificationActions,
 } from './src/services/notificationService';
+import { reconcilePendingStellarTransactions } from './src/services/stellarStartup';
 import updateService from './src/services/updateService';
 import { checkAppVersion } from './src/services/versionCheckService';
 import { initializeWidgetService } from './src/services/widgetService';
@@ -48,7 +54,6 @@ function App() {
   >({ visible: false });
   const [locked, setLocked] = useState(false);
   const [pinFallback, setPinFallback] = useState(false);
-  const backgroundedAt = React.useRef<number | null>(null);
 
   // Enable screen capture prevention on mount
   useEffect(() => {
@@ -59,10 +64,10 @@ function App() {
   useEffect(() => {
     const onChange = async (state: AppStateStatus) => {
       if (state === 'background' || state === 'inactive') {
-        backgroundedAt.current = Date.now();
-      } else if (state === 'active' && backgroundedAt.current !== null) {
-        const elapsed = Date.now() - backgroundedAt.current;
-        backgroundedAt.current = null;
+        await persistAppBackground();
+      } else if (state === 'active') {
+        await persistAppForeground();
+        const elapsed = await getElapsedSinceBackground();
         const timeout = await loadLockTimeout();
         const ms = getLockTimeoutMs(timeout);
         if (ms > 0 && elapsed >= ms) {
@@ -113,6 +118,12 @@ function App() {
     const subscription = watchNotificationActions();
     void registerBackgroundMedicationTask();
 
+    // Issue #947: the app can be terminated between submitting a Stellar
+    // transaction and learning its outcome. Resolve anything left in flight
+    // against Horizon on launch, so a payment is never silently lost — and,
+    // just as importantly, never re-sent because its status was unknown.
+    void reconcilePendingStellarTransactions();
+
     // Initialize widget service and update widgets
     const unsubscribeWidget = initializeWidgetService();
 
@@ -123,13 +134,14 @@ function App() {
   }, []);
 
   // Handle initial notification if app was launched from a notification tap
-  // (cold-start or background)
+  // (cold-start or background). Queue it if app-lock verification is pending.
   useEffect(() => {
     const checkInitialNotification = async () => {
       const notification = await Notifications.getLastNotificationResponseAsync();
       if (notification) {
         const data = notification.notification.request.content.data;
-        handleNotificationDeepLink(data);
+        // Queue the deep link until app-lock verification completes
+        navigationQueueService.queueNotification(data);
       }
     };
     void checkInitialNotification();
@@ -138,7 +150,18 @@ function App() {
   if (!appReady) return <View style={styles.root} />;
 
   if (locked) {
-    return <LockScreen showPinFallback={pinFallback} onUnlock={() => setLocked(false)} />;
+    return (
+      <LockScreen
+        showPinFallback={pinFallback}
+        onUnlock={() => {
+          // Unlock complete: clear lock state and replay any queued navigation
+          setLocked(false);
+          navigationQueueService.clearAndUnlock();
+          // Replay the queued deep-link or notification navigation
+          navigationQueueService.replayAndClear();
+        }}
+      />
+    );
   }
 
   return (

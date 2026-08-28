@@ -1,14 +1,38 @@
 /**
- * KeyRotationScreen — key rotation with UX guards:
- *   1. Block if pending co-sign requests exist (show modal listing them)
- *   2. Require biometric re-auth before proceeding
- *   3. Step-by-step progress with per-step retry on failure
- *   4. Clear old key from secure store on completion
+ * KeyRotationScreen — key rotation with rollback and recovery (#954)
+ *
+ * ### Changes in this version
+ *
+ * The screen now delegates all rotation logic to `keyRotationService`, which
+ * provides:
+ *   - **Staged rotation** — four atomic steps with individual retry on failure.
+ *   - **Checkpointing** — progress is persisted to SecureStore after each step
+ *     so the rotation can be resumed if the app is killed mid-flight.
+ *   - **Dual-read window** — the old key remains active until the final
+ *     `REVOKE_OLD_KEY` stage so the user can still decrypt existing data during
+ *     the transition on both iOS and Android.
+ *   - **Rollback** — a "Roll Back" button is shown after any failure so the
+ *     user can restore the device to the pre-rotation state.
+ *   - **Recovery plan** — a human-readable explanation of the next steps is
+ *     shown after every failure.
+ *
+ * ### Guard flow (unchanged)
+ *   1. Validate the new public key.
+ *   2. Check for pending co-sign requests (block if any exist).
+ *   3. Require biometric re-authentication.
+ *   4. Run the staged rotation via `keyRotationService.startRotation`.
+ *
+ * ### Resume
+ *
+ * On mount the screen checks `keyRotationService.loadCheckpoint`.  If an
+ * interrupted rotation is found the user is offered "Resume" as the primary
+ * action so they don't have to re-enter details.
  */
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -18,12 +42,25 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  type AppStateStatus,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 
 import { authenticateWithBiometric } from '../services/authService';
-import keyBackupService from '../services/keyBackupService';
+import {
+  ROTATION_STAGES,
+  buildRecoveryPlan,
+  clearCheckpoint,
+  loadCheckpoint,
+  resumeRotation,
+  rollbackRotation,
+  startRotation,
+  type RotationCheckpoint,
+  type RotationStage,
+  type StageResult,
+  type StageStatus,
+} from '../services/keyRotationService';
 import multisigService, { type PendingTransactionResponse } from '../services/multisigService';
-import { clearSecret } from '../services/stellarAccountService';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,30 +74,30 @@ interface Props {
 }
 
 type Phase =
-  | 'form' // user fills in new key
-  | 'checking' // querying pending co-sign requests
-  | 'blocked' // modal: pending requests must be resolved
-  | 'biometric' // waiting for biometric auth
-  | 'rotating' // step-by-step execution
+  | 'form'
+  | 'checking'
+  | 'blocked'
+  | 'biometric'
+  | 'rotating'
+  | 'failed'
+  | 'rolling_back'
   | 'done';
 
-type StepStatus = 'waiting' | 'running' | 'done' | 'error';
-
-interface Step {
+interface StepDisplay {
   label: string;
-  status: StepStatus;
+  status: StageStatus;
   error?: string;
 }
 
-const STEP_LABELS = [
-  'Generate new keypair',
-  'Update on-chain signers',
-  'Backup new key',
-  'Revoke old key',
-];
+const STEP_LABELS: Record<RotationStage, string> = {
+  GENERATE_NEW_KEY: 'Generate new keypair',
+  UPDATE_SIGNERS: 'Update on-chain signers',
+  BACKUP_NEW_KEY: 'Backup new key',
+  REVOKE_OLD_KEY: 'Revoke old key',
+};
 
-function makeSteps(): Step[] {
-  return STEP_LABELS.map((label) => ({ label, status: 'waiting' }));
+function makeSteps(): StepDisplay[] {
+  return ROTATION_STAGES.map((stage) => ({ label: STEP_LABELS[stage], status: 'pending' }));
 }
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
@@ -77,75 +114,116 @@ const KeyRotationScreen: React.FC<Props> = ({
   const [reason, setReason] = useState('');
   const [phase, setPhase] = useState<Phase>('form');
   const [pendingRequests, setPendingRequests] = useState<PendingTransactionResponse[]>([]);
-  const [steps, setSteps] = useState<Step[]>(makeSteps());
-  // newMnemonic is kept in state only during the rotation session
-  const [newMnemonic, setNewMnemonic] = useState<string | null>(null);
+  const [steps, setSteps] = useState<StepDisplay[]>(makeSteps());
+  const [failedStage, setFailedStage] = useState<RotationStage | null>(null);
+  const [failureError, setFailureError] = useState<string>('');
+  const [recoveryPlan, setRecoveryPlan] = useState<ReturnType<typeof buildRecoveryPlan> | null>(
+    null,
+  );
+  const [resumableCheckpoint, setResumableCheckpoint] = useState<RotationCheckpoint | null>(null);
+
+  // ── Check for a resumable checkpoint on mount ─────────────────────────────
+  useEffect(() => {
+    loadCheckpoint()
+      .then((cp) => {
+        if (cp && cp.lastCompletedStage !== 'REVOKE_OLD_KEY') {
+          setResumableCheckpoint(cp);
+        }
+      })
+      .catch(() => {
+        /* non-fatal */
+      });
+  }, []);
+
+  const appStateRef = useRef<AppStateStatus>('active');
+
+  // Clear sensitive state atomically
+  const clearSensitiveState = useCallback(() => {
+    setNewPublicKey('');
+    setReason('');
+    setNewMnemonic(null);
+    setSteps(makeSteps());
+    setPendingRequests([]);
+  }, []);
+
+  // Track app state for background clearing
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, [phase]);
+
+  const handleAppStateChange = (state: AppStateStatus) => {
+    appStateRef.current = state;
+    // Clear sensitive state if backgrounded
+    if (state === 'background' || state === 'inactive') {
+      if (phase === 'rotating' || phase === 'biometric' || phase === 'form') {
+        clearSensitiveState();
+        setPhase('form');
+      }
+    }
+  };
+
+  // Cleanup on component unmount or screen focus loss
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        clearSensitiveState();
+      };
+    }, [clearSensitiveState]),
+  );
 
   const isValidStellarKey = (key: string) => /^G[A-Z2-7]{55}$/.test(key.trim());
 
-  function setStepStatus(index: number, status: StepStatus, error?: string) {
+  // ── Step display helpers ──────────────────────────────────────────────────
+
+  function updateStep(stage: RotationStage, status: StageStatus, error?: string) {
+    const index = ROTATION_STAGES.indexOf(stage);
     setSteps((prev) =>
       prev.map((s, i) => (i === index ? { ...s, status, error: error ?? s.error } : s)),
     );
   }
 
-  // ─── Step execution ──────────────────────────────────────────────────────
+  function handleStageUpdate(result: StageResult) {
+    updateStep(result.stage, result.status, result.error);
+  }
 
-  async function runStep(index: number): Promise<boolean> {
-    setStepStatus(index, 'running', undefined);
-    try {
-      switch (index) {
-        case 0: {
-          // Generate new keypair — mnemonic for backup, new public key derived from it
-          const mnemonic = await keyBackupService.generateMnemonic();
-          setNewMnemonic(mnemonic);
-          break;
-        }
-        case 1: {
-          // Request key rotation (creates pending signer_management tx on server)
-          await multisigService.requestKeyRotation({
-            jointOwnershipId,
-            oldPublicKey: currentPublicKey,
-            newPublicKey: newPublicKey.trim(),
-            reason: reason.trim() || undefined,
-          });
-          await multisigService.notifyCoSignRequest(
-            'signer_management',
-            `A co-owner of ${petName} has requested a key rotation. Your approval is needed.`,
-            jointOwnershipId,
-          );
-          break;
-        }
-        case 2: {
-          // Backup new mnemonic encrypted with the user's ID as a PIN surrogate.
-          // In production this would prompt for a PIN; here we use currentUserId.
-          if (!newMnemonic) throw new Error('Mnemonic not generated');
-          await keyBackupService.createBackupWithPin(newMnemonic, currentUserId);
-          break;
-        }
-        case 3: {
-          // Clear old key from expo-secure-store
-          await clearSecret();
-          break;
-        }
-      }
-      setStepStatus(index, 'done');
-      return true;
-    } catch (err: any) {
-      setStepStatus(index, 'error', err?.message ?? 'Unknown error');
-      return false;
+  // ── Rotation execution ────────────────────────────────────────────────────
+
+  async function executeRotation(resume: boolean) {
+    setPhase('rotating');
+    setSteps(makeSteps());
+    setFailedStage(null);
+    setFailureError('');
+    setRecoveryPlan(null);
+
+    const rotationResult = resume
+      ? await resumeRotation({ petName, onStageUpdate: handleStageUpdate })
+      : await startRotation({
+          jointOwnershipId,
+          oldPublicKey: currentPublicKey,
+          newPublicKey: newPublicKey.trim(),
+          currentUserId,
+          petName,
+          reason: reason.trim() || undefined,
+          onStageUpdate: handleStageUpdate,
+        });
+
+    if (rotationResult.success) {
+      setPhase('done');
+    } else {
+      const lastCompleted =
+        rotationResult.completedStages.length > 0
+          ? rotationResult.completedStages[rotationResult.completedStages.length - 1]
+          : null;
+
+      setFailedStage(rotationResult.failedStage ?? null);
+      setFailureError(rotationResult.error ?? 'Unknown error');
+      setRecoveryPlan(buildRecoveryPlan(lastCompleted));
+      setPhase('failed');
     }
   }
 
-  async function runAllSteps(startFrom = 0) {
-    for (let i = startFrom; i < STEP_LABELS.length; i++) {
-      const ok = await runStep(i);
-      if (!ok) return; // stop; user can retry this step
-    }
-    setPhase('done');
-  }
-
-  // ─── Guard flow ───────────────────────────────────────────────────────────
+  // ── Guard flow ────────────────────────────────────────────────────────────
 
   async function handleProceed() {
     const trimmedKey = newPublicKey.trim();
@@ -158,7 +236,6 @@ const KeyRotationScreen: React.FC<Props> = ({
       return;
     }
 
-    // Step 1: check pending co-sign requests
     setPhase('checking');
     try {
       const pending = await multisigService.getPendingTransactions(jointOwnershipId);
@@ -168,21 +245,36 @@ const KeyRotationScreen: React.FC<Props> = ({
         return;
       }
     } catch {
-      // Non-fatal: if we can't check, warn and allow continuing
       Alert.alert('Warning', 'Could not verify pending co-sign requests. Proceed with caution.', [
         { text: 'Cancel', onPress: () => setPhase('form') },
-        { text: 'Continue Anyway', onPress: () => requestBiometric() },
+        { text: 'Continue Anyway', onPress: () => requestBiometric(false) },
       ]);
       return;
     }
 
-    requestBiometric();
+    requestBiometric(false);
   }
 
-  async function requestBiometric() {
+  async function handleResume() {
     setPhase('biometric');
     const ok = await authenticateWithBiometric();
     if (!ok) {
+      Alert.alert(
+        'Authentication Failed',
+        'Biometric re-authentication is required to resume key rotation.',
+      );
+      setPhase('form');
+      return;
+    }
+    await executeRotation(true);
+  }
+
+  async function requestBiometric(resume: boolean) {
+    setPhase('biometric');
+    const ok = await authenticateWithBiometric();
+    if (!ok) {
+      // Clear sensitive state on auth failure
+      clearSensitiveState();
       Alert.alert(
         'Authentication Failed',
         'Biometric re-authentication is required to rotate your key.',
@@ -190,21 +282,50 @@ const KeyRotationScreen: React.FC<Props> = ({
       setPhase('form');
       return;
     }
-    setSteps(makeSteps());
-    setPhase('rotating');
-    await runAllSteps(0);
+    await executeRotation(resume);
   }
 
-  // ─── Render helpers ───────────────────────────────────────────────────────
+  // ── Rollback ──────────────────────────────────────────────────────────────
 
-  function renderStepIcon(status: StepStatus, index: number) {
-    if (status === 'done') return <Text style={styles.stepIconDone}>✓</Text>;
-    if (status === 'error') return <Text style={styles.stepIconError}>✕</Text>;
+  async function handleRollback() {
+    Alert.alert(
+      'Roll Back Rotation',
+      'This will undo all changes made so far and restore your original key. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Roll Back',
+          style: 'destructive',
+          onPress: async () => {
+            setPhase('rolling_back');
+            try {
+              const result = await rollbackRotation();
+              setResumableCheckpoint(null);
+              Alert.alert(
+                result.canRollback ? 'Rolled Back' : 'Rollback Not Available',
+                result.message,
+                [{ text: 'OK', onPress: () => setPhase('form') }],
+              );
+            } catch (err) {
+              Alert.alert('Rollback Failed', err instanceof Error ? err.message : String(err));
+              setPhase('failed');
+            }
+          },
+        },
+      ],
+    );
+  }
+
+  // ── Render helpers ────────────────────────────────────────────────────────
+
+  function renderStepIcon(status: StageStatus, index: number) {
+    if (status === 'complete') return <Text style={styles.stepIconDone}>✓</Text>;
+    if (status === 'failed') return <Text style={styles.stepIconError}>✕</Text>;
     if (status === 'running') return <ActivityIndicator size="small" color="#1565c0" />;
     return <Text style={styles.stepIconWaiting}>{index + 1}</Text>;
   }
 
-  // ─── Render ───────────────────────────────────────────────────────────────
+  // ── Done screen ───────────────────────────────────────────────────────────
 
   if (phase === 'done') {
     return (
@@ -216,13 +337,22 @@ const KeyRotationScreen: React.FC<Props> = ({
             Your new key has been submitted for co-owner approval. The old key has been cleared from
             this device.
           </Text>
-          <TouchableOpacity style={styles.submitBtn} onPress={onRotationComplete}>
+          <TouchableOpacity
+            style={styles.submitBtn}
+            onPress={() => {
+              // Clear secrets on successful completion
+              clearSensitiveState();
+              onRotationComplete();
+            }}
+          >
             <Text style={styles.submitBtnText}>Done</Text>
           </TouchableOpacity>
         </View>
       </View>
     );
   }
+
+  // ── Main render ───────────────────────────────────────────────────────────
 
   return (
     <KeyboardAvoidingView
@@ -231,8 +361,16 @@ const KeyRotationScreen: React.FC<Props> = ({
     >
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={onBack} style={styles.backBtn} disabled={phase !== 'form'}>
-          <Text style={[styles.backText, phase !== 'form' && styles.disabledText]}>‹ Back</Text>
+        <TouchableOpacity
+          onPress={onBack}
+          style={styles.backBtn}
+          disabled={phase !== 'form' && phase !== 'failed'}
+        >
+          <Text
+            style={[styles.backText, phase !== 'form' && phase !== 'failed' && styles.disabledText]}
+          >
+            ‹ Back
+          </Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Key Rotation</Text>
         <View style={styles.headerRight} />
@@ -256,7 +394,13 @@ const KeyRotationScreen: React.FC<Props> = ({
                 </Text>
               </View>
             ))}
-            <TouchableOpacity style={styles.modalBtn} onPress={() => setPhase('form')}>
+            <TouchableOpacity
+              style={styles.modalBtn}
+              onPress={() => {
+                clearSensitiveState();
+                setPhase('form');
+              }}
+            >
               <Text style={styles.modalBtnText}>Go Back</Text>
             </TouchableOpacity>
           </View>
@@ -264,26 +408,86 @@ const KeyRotationScreen: React.FC<Props> = ({
       </Modal>
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        {/* Step progress (shown during rotation) */}
-        {phase === 'rotating' && (
+        {/* Resumable-rotation banner */}
+        {resumableCheckpoint && phase === 'form' && (
+          <View style={styles.resumeBanner}>
+            <Text style={styles.resumeBannerTitle}>⚡ Interrupted Rotation Found</Text>
+            <Text style={styles.resumeBannerBody}>
+              A previous rotation was interrupted at the{' '}
+              <Text style={styles.bold}>
+                {resumableCheckpoint.lastCompletedStage
+                  ? STEP_LABELS[resumableCheckpoint.lastCompletedStage]
+                  : 'start'}
+              </Text>{' '}
+              stage. You can resume it or roll it back.
+            </Text>
+            <View style={styles.resumeActions}>
+              <TouchableOpacity style={styles.resumeBtn} onPress={handleResume}>
+                <Text style={styles.resumeBtnText}>Resume</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.rollbackBtnSmall} onPress={handleRollback}>
+                <Text style={styles.rollbackBtnSmallText}>Roll Back</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* Step progress (shown during/after rotation) */}
+        {(phase === 'rotating' || phase === 'failed' || phase === 'rolling_back') && (
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Rotation Progress</Text>
+            <Text style={styles.cardTitle}>
+              {phase === 'rolling_back' ? 'Rolling Back…' : 'Rotation Progress'}
+            </Text>
+            {phase === 'failed' && (
+              <Text style={styles.stepError}>
+                Failed at {failedStage ?? 'an unknown stage'}: {failureError}
+              </Text>
+            )}
             {steps.map((step, i) => (
               <View key={i} style={styles.stepRow}>
                 <View style={styles.stepIconBox}>{renderStepIcon(step.status, i)}</View>
                 <View style={styles.stepTextBox}>
                   <Text style={styles.stepLabel}>{step.label}</Text>
-                  {step.status === 'error' && (
-                    <>
-                      <Text style={styles.stepError}>{step.error}</Text>
-                      <TouchableOpacity onPress={() => runAllSteps(i)}>
-                        <Text style={styles.retryLink}>Retry this step →</Text>
-                      </TouchableOpacity>
-                    </>
-                  )}
+                  {step.status === 'failed' && <Text style={styles.stepError}>{step.error}</Text>}
                 </View>
               </View>
             ))}
+          </View>
+        )}
+
+        {/* Recovery plan (shown after failure) */}
+        {phase === 'failed' && recoveryPlan && (
+          <View style={styles.recoveryCard}>
+            <Text style={styles.recoveryTitle}>📋 {recoveryPlan.title}</Text>
+            {recoveryPlan.steps.map((step, i) => (
+              <Text key={i} style={styles.recoveryStep}>
+                {'•'} {step}
+              </Text>
+            ))}
+            <View style={styles.recoveryActions}>
+              {recoveryPlan.canResume && (
+                <TouchableOpacity style={styles.submitBtn} onPress={() => requestBiometric(true)}>
+                  <Text style={styles.submitBtnText}>Resume</Text>
+                </TouchableOpacity>
+              )}
+              {recoveryPlan.canRollback && (
+                <TouchableOpacity style={styles.rollbackBtn} onPress={handleRollback}>
+                  <Text style={styles.rollbackBtnText}>Roll Back</Text>
+                </TouchableOpacity>
+              )}
+              {!recoveryPlan.canResume && !recoveryPlan.canRollback && (
+                <TouchableOpacity
+                  style={styles.submitBtn}
+                  onPress={() => {
+                    clearCheckpoint().catch(() => {});
+                    setPhase('form');
+                    setSteps(makeSteps());
+                  }}
+                >
+                  <Text style={styles.submitBtnText}>Start Fresh</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
         )}
 
@@ -295,7 +499,8 @@ const KeyRotationScreen: React.FC<Props> = ({
               <View style={styles.infoText}>
                 <Text style={styles.infoTitle}>Rotate Your Signing Key</Text>
                 <Text style={styles.infoBody}>
-                  Biometric re-authentication and co-owner approval are required. Any pending
+                  Biometric re-authentication and co-owner approval are required. Progress is
+                  checkpointed — if interrupted you can resume without losing work. Any pending
                   co-sign requests will be checked before proceeding.
                 </Text>
               </View>
@@ -323,6 +528,7 @@ const KeyRotationScreen: React.FC<Props> = ({
                 autoCorrect={false}
                 placeholderTextColor="#bbb"
                 editable={phase === 'form'}
+                accessibilityLabel="New Stellar public key"
               />
               {newPublicKey.length > 0 && !isValidStellarKey(newPublicKey) && (
                 <Text style={styles.fieldError}>Must start with G and be 56 characters</Text>
@@ -338,6 +544,7 @@ const KeyRotationScreen: React.FC<Props> = ({
                 numberOfLines={3}
                 placeholderTextColor="#bbb"
                 editable={phase === 'form'}
+                accessibilityLabel="Rotation reason"
               />
             </View>
 
@@ -345,10 +552,10 @@ const KeyRotationScreen: React.FC<Props> = ({
               style={[styles.submitBtn, phase !== 'form' && styles.submitBtnDisabled]}
               onPress={handleProceed}
               disabled={phase !== 'form'}
+              accessibilityRole="button"
+              accessibilityLabel="Start key rotation"
             >
-              {phase === 'checking' ? (
-                <ActivityIndicator color="#fff" />
-              ) : phase === 'biometric' ? (
+              {phase === 'checking' || phase === 'biometric' ? (
                 <ActivityIndicator color="#fff" />
               ) : (
                 <Text style={styles.submitBtnText}>Rotate Key</Text>
@@ -380,6 +587,59 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 17, fontWeight: '700', color: '#1a1a1a' },
   headerRight: { width: 60 },
   content: { padding: 16, paddingBottom: 40 },
+
+  // Resumable banner
+  resumeBanner: {
+    backgroundColor: '#E8F5E9',
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#A5D6A7',
+  },
+  resumeBannerTitle: { fontSize: 14, fontWeight: '700', color: '#1B5E20', marginBottom: 6 },
+  resumeBannerBody: { fontSize: 13, color: '#2E7D32', lineHeight: 18, marginBottom: 10 },
+  resumeActions: { flexDirection: 'row', gap: 10 },
+  resumeBtn: {
+    flex: 1,
+    backgroundColor: '#4CAF50',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  resumeBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  rollbackBtnSmall: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#F44336',
+  },
+  rollbackBtnSmallText: { color: '#F44336', fontWeight: '700', fontSize: 13 },
+
+  // Recovery plan
+  recoveryCard: {
+    backgroundColor: '#FFF3E0',
+    borderRadius: 10,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#FFB74D',
+  },
+  recoveryTitle: { fontSize: 14, fontWeight: '700', color: '#E65100', marginBottom: 10 },
+  recoveryStep: { fontSize: 13, color: '#5D4037', marginBottom: 4, lineHeight: 18 },
+  recoveryActions: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  rollbackBtn: {
+    flex: 1,
+    backgroundColor: '#F44336',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  rollbackBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+
   infoBanner: {
     flexDirection: 'row',
     backgroundColor: '#e3f2fd',
@@ -434,6 +694,7 @@ const styles = StyleSheet.create({
   textArea: { height: 80, textAlignVertical: 'top' },
   fieldError: { fontSize: 11, color: '#F44336', marginTop: 4 },
   submitBtn: {
+    flex: 1,
     backgroundColor: '#1565c0',
     borderRadius: 10,
     paddingVertical: 14,
@@ -441,6 +702,7 @@ const styles = StyleSheet.create({
   },
   submitBtnDisabled: { opacity: 0.6 },
   submitBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
+
   // Step progress
   stepRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 14 },
   stepIconBox: { width: 28, alignItems: 'center', marginRight: 10, paddingTop: 2 },
@@ -450,7 +712,7 @@ const styles = StyleSheet.create({
   stepTextBox: { flex: 1 },
   stepLabel: { fontSize: 14, color: '#1a1a1a' },
   stepError: { fontSize: 12, color: '#F44336', marginTop: 2 },
-  retryLink: { fontSize: 12, color: '#1565c0', marginTop: 4 },
+
   // Blocking modal
   modalOverlay: {
     flex: 1,
@@ -458,11 +720,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 24,
   },
-  modalBox: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 20,
-  },
+  modalBox: { backgroundColor: '#fff', borderRadius: 14, padding: 20 },
   modalTitle: { fontSize: 17, fontWeight: '700', color: '#c62828', marginBottom: 10 },
   modalBody: { fontSize: 14, color: '#333', marginBottom: 12, lineHeight: 20 },
   pendingRow: {
@@ -483,6 +741,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   modalBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+
   // Done screen
   doneContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
   doneIcon: { fontSize: 56, marginBottom: 16 },

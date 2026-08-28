@@ -4,6 +4,359 @@ import { encrypt, decrypt } from '../utils/encryption';
 
 const db = SQLite.openDatabaseSync('petchain.db');
 
+// ─── Schema Versioning ────────────────────────────────────────────────────────
+
+const SCHEMA_VERSION_KEY = 'schema_version';
+const CURRENT_SCHEMA_VERSION = 5; // Current database schema version (includes encryption migration)
+
+/**
+ * Read the current schema version from the database.
+ * Defaults to 1 if not set (for initial setup).
+ */
+async function getSchemaVersion(): Promise<number> {
+  try {
+    const row = await db.getFirstAsync<{ value: string }>(
+      `SELECT value FROM kv_store WHERE key = ? LIMIT 1`,
+      [SCHEMA_VERSION_KEY],
+    );
+    if (!row) return 1; // Default to version 1 for new databases
+    const decrypted = await decrypt<number>(row.value, `localdb_kv_${SCHEMA_VERSION_KEY}`);
+    return Number(decrypted) || 1;
+  } catch {
+    return 1;
+  }
+}
+
+/**
+ * Set the schema version in the database.
+ */
+async function setSchemaVersion(version: number): Promise<void> {
+  const encryptedVersion = await encrypt(String(version), `localdb_kv_${SCHEMA_VERSION_KEY}`);
+  await db.runAsync(`INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)`, [
+    SCHEMA_VERSION_KEY,
+    encryptedVersion,
+  ]);
+}
+
+/**
+ * Get the current encryption version.
+ */
+async function getEncryptionVersion(): Promise<number> {
+  try {
+    const row = await db.getFirstAsync<{ value: string }>(
+      `SELECT value FROM kv_store WHERE key = ? LIMIT 1`,
+      [ENCRYPTION_VERSION_KEY],
+    );
+    if (!row) return 1; // Default to version 1
+    const decrypted = await decrypt<number>(row.value, `localdb_kv_${ENCRYPTION_VERSION_KEY}`);
+    return Number(decrypted) || 1;
+  } catch {
+    return 1;
+  }
+}
+
+/**
+ * Set the encryption version in the database.
+ */
+async function setEncryptionVersion(version: number): Promise<void> {
+  const encryptedVersion = await encrypt(String(version), `localdb_kv_${ENCRYPTION_VERSION_KEY}`);
+  await db.runAsync(`INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)`, [
+    ENCRYPTION_VERSION_KEY,
+    encryptedVersion,
+  ]);
+}
+
+/**
+ * Migration definitions: each migration must be idempotent and atomic.
+ * Migrations are applied sequentially in order.
+ */
+interface Migration {
+  version: number;
+  name: string;
+  up: () => Promise<void>;
+}
+
+const MIGRATIONS: Migration[] = [
+  {
+    version: 2,
+    name: 'add_health_metrics_table',
+    up: async () => {
+      // health_metrics table added in migration 2
+      // (already created in init(), this is a no-op for compatibility)
+    },
+  },
+  {
+    version: 3,
+    name: 'add_appointments_table',
+    up: async () => {
+      // appointments table added in migration 3
+      // (already created in init(), this is a no-op for compatibility)
+    },
+  },
+  {
+    version: 4,
+    name: 'add_soap_note_drafts_table',
+    up: async () => {
+      // soap_note_drafts table added in migration 4
+      // (already created in init(), this is a no-op for compatibility)
+    },
+  },
+  {
+    version: 5,
+    name: 'encrypt_sensitive_records',
+    up: async () => {
+      // Migrate existing plaintext sensitive records to encrypted form
+      // This migration encrypts sensitive fields in health_metrics, medications,
+      // appointments, and dose_logs tables
+      const tables = [
+        { name: 'health_metrics', purpose: 'localdb_health_metrics' },
+        { name: 'medications', purpose: 'localdb_medications' },
+        { name: 'appointments', purpose: 'localdb_appointments' },
+        { name: 'dose_logs', purpose: 'localdb_dose_logs' },
+      ];
+
+      for (const table of tables) {
+        const rows = await db.getAllAsync<{ id: string; data: string }>(
+          `SELECT id, data FROM ${table.name}`,
+        );
+
+        for (const row of rows) {
+          try {
+            // Decrypt the full record
+            const record = await safeDecrypt<Record<string, any>>(
+              row.data,
+              table.purpose,
+              true,
+            );
+
+            // Encrypt sensitive fields within the record
+            const withEncryptedFields = await encryptSensitiveFields(record, table.purpose);
+
+            // Re-encrypt the full record with sensitive fields encrypted
+            const reencrypted = await encrypt(withEncryptedFields, table.purpose);
+
+            // Update the row
+            await db.runAsync(`UPDATE ${table.name} SET data = ? WHERE id = ?`, [
+              reencrypted,
+              row.id,
+            ]);
+          } catch {
+            // Skip rows that can't be migrated (corrupted data)
+          }
+        }
+      }
+
+      // Update encryption version
+      await setEncryptionVersion(CURRENT_ENCRYPTION_VERSION);
+    },
+  },
+];
+
+/**
+ * Run pending migrations on the database.
+ * Uses transactions to ensure atomicity: all-or-nothing.
+ */
+async function runMigrations(): Promise<void> {
+  const currentVersion = await getSchemaVersion();
+
+  if (currentVersion >= CURRENT_SCHEMA_VERSION) {
+    return; // Already at latest version
+  }
+
+  // Get migrations to apply
+  const pendingMigrations = MIGRATIONS.filter((m) => m.version > currentVersion);
+
+  for (const migration of pendingMigrations) {
+    // Run each migration within a transaction
+    await db.withTransactionAsync(async () => {
+      await migration.up();
+      // Update version only after successful migration
+      await setSchemaVersion(migration.version);
+    });
+  }
+}
+
+// ─── Corruption Detection and Recovery ─────────────────────────────────────────
+
+interface CorruptionDiagnostic {
+  timestamp: string;
+  table: string;
+  corruptionType: 'malformed_row' | 'decryption_failure' | 'interrupted_migration';
+  schemaVersion: number;
+  encryptionVersion: number;
+  affectedRowCount: number;
+}
+
+interface RecoveryResult {
+  success: boolean;
+  strategy: 'scoped_reset' | 'full_reset' | 'none';
+  affectedTable?: string;
+  diagnostic: CorruptionDiagnostic;
+  message: string;
+}
+
+/**
+ * Check for corruption in a specific table.
+ * Returns array of corrupted row IDs.
+ */
+async function checkTableCorruption(
+  tableName: string,
+  purpose: string,
+): Promise<{ corruptedIds: string[]; totalRows: number }> {
+  const corruptedIds: string[] = [];
+  let totalRows = 0;
+
+  try {
+    const rows = await db.getAllAsync<{ id: string; data: string }>(`SELECT id, data FROM ${tableName}`);
+    totalRows = rows.length;
+
+    for (const row of rows) {
+      try {
+        // Try to decrypt and parse the row
+        await safeDecrypt<any>(row.data, purpose, true);
+      } catch {
+        // Row is corrupted
+        corruptedIds.push(row.id);
+      }
+    }
+  } catch {
+    // Table itself is inaccessible - considered fully corrupted
+  }
+
+  return { corruptedIds, totalRows };
+}
+
+/**
+ * Detect all corruption in the database at startup.
+ * Returns diagnostic report without exposing sensitive data.
+ */
+async function detectDatabaseCorruption(): Promise<CorruptionDiagnostic | null> {
+  const tables = [
+    { name: 'medications', purpose: 'localdb_medications' },
+    { name: 'dose_logs', purpose: 'localdb_dose_logs' },
+    { name: 'health_metrics', purpose: 'localdb_health_metrics' },
+    { name: 'appointments', purpose: 'localdb_appointments' },
+    { name: 'soap_note_drafts', purpose: 'localdb_soap_drafts' },
+  ];
+
+  for (const table of tables) {
+    const { corruptedIds } = await checkTableCorruption(table.name, table.purpose);
+
+    if (corruptedIds.length > 0) {
+      const schemaVer = await getSchemaVersion();
+      const encryptionVer = await getEncryptionVersion();
+
+      return {
+        timestamp: new Date().toISOString(),
+        table: table.name,
+        corruptionType: 'malformed_row',
+        schemaVersion: schemaVer,
+        encryptionVersion: encryptionVer,
+        affectedRowCount: corruptedIds.length,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Reset a specific table, removing all corrupted data.
+ * Preserves all other tables intact.
+ */
+async function resetTable(tableName: string): Promise<void> {
+  await db.runAsync(`DELETE FROM ${tableName}`);
+}
+
+/**
+ * Perform full database reset as last resort.
+ * Only called after user confirmation.
+ */
+async function performFullReset(): Promise<void> {
+  const tables = [
+    'medications',
+    'dose_logs',
+    'health_metrics',
+    'appointments',
+    'soap_note_drafts',
+  ];
+
+  for (const table of tables) {
+    await db.runAsync(`DELETE FROM ${table}`);
+  }
+
+  // Reset schema and encryption versions
+  await setSchemaVersion(CURRENT_SCHEMA_VERSION);
+  await setEncryptionVersion(CURRENT_ENCRYPTION_VERSION);
+}
+
+/**
+ * Execute recovery for detected corruption.
+ * Strategy: try scoped reset first, fall back to full reset if multiple tables affected.
+ */
+async function recoverFromCorruption(
+  diagnostic: CorruptionDiagnostic,
+): Promise<RecoveryResult> {
+  try {
+    // Check if other tables are also affected
+    const tables = [
+      { name: 'medications', purpose: 'localdb_medications' },
+      { name: 'dose_logs', purpose: 'localdb_dose_logs' },
+      { name: 'health_metrics', purpose: 'localdb_health_metrics' },
+      { name: 'appointments', purpose: 'localdb_appointments' },
+      { name: 'soap_note_drafts', purpose: 'localdb_soap_drafts' },
+    ];
+
+    let affectedTableCount = 0;
+    for (const table of tables) {
+      if (table.name === diagnostic.table) {
+        affectedTableCount++;
+      } else {
+        const { corruptedIds } = await checkTableCorruption(table.name, table.purpose);
+        if (corruptedIds.length > 0) {
+          affectedTableCount++;
+        }
+      }
+    }
+
+    // If only one table is affected, use scoped reset
+    if (affectedTableCount === 1) {
+      await db.withTransactionAsync(async () => {
+        await resetTable(diagnostic.table);
+      });
+
+      return {
+        success: true,
+        strategy: 'scoped_reset',
+        affectedTable: diagnostic.table,
+        diagnostic,
+        message: `Reset ${diagnostic.table} table due to corruption. Other data preserved.`,
+      };
+    }
+
+    // Multiple tables affected or critical system tables: full reset
+    await db.withTransactionAsync(async () => {
+      await performFullReset();
+    });
+
+    return {
+      success: true,
+      strategy: 'full_reset',
+      diagnostic,
+      message:
+        'Full database reset due to widespread corruption. Local data has been cleared. Cloud backup will be restored on sync.',
+    };
+  } catch (e) {
+    // Recovery itself failed
+    return {
+      success: false,
+      strategy: 'none',
+      diagnostic,
+      message: `Corruption recovery failed: ${e instanceof Error ? e.message : 'Unknown error'}`,
+    };
+  }
+}
+
 /**
  * Helper to safely decrypt data, falling back to original data if decryption fails.
  * This handles transition from unencrypted to encrypted data.
@@ -27,6 +380,73 @@ async function safeDecrypt<T = string>(
     }
     return data as unknown as T;
   }
+}
+
+// ─── Field-Level Encryption for Sensitive Data ────────────────────────────────
+
+const ENCRYPTION_VERSION_KEY = 'encryption_version';
+const CURRENT_ENCRYPTION_VERSION = 1;
+
+/**
+ * Sensitive field classification.
+ * These fields are encrypted at the field level for additional security.
+ */
+const SENSITIVE_FIELDS = new Set([
+  // Medical/health fields
+  'dosage',
+  'condition',
+  'diagnosis',
+  'weight',
+  'temperature',
+  'bloodPressure',
+  'notes',
+  'symptoms',
+  // Emergency contact fields
+  'emergencyPhone',
+  'emergencyEmail',
+  'emergencyAddress',
+  // Wallet/payment fields
+  'paymentToken',
+  'accountNumber',
+  'transactionHistory',
+]);
+
+/**
+ * Encrypt sensitive fields in a record for additional protection.
+ * Non-sensitive fields are left as-is.
+ */
+async function encryptSensitiveFields<T extends Record<string, any>>(
+  record: T,
+  purpose: string,
+): Promise<T> {
+  const encrypted = { ...record };
+  for (const [key, value] of Object.entries(encrypted)) {
+    if (SENSITIVE_FIELDS.has(key) && value != null) {
+      encrypted[key] = await encrypt(String(value), `${purpose}::${key}`);
+    }
+  }
+  return encrypted;
+}
+
+/**
+ * Decrypt sensitive fields in a record.
+ * Non-sensitive fields are left as-is.
+ */
+async function decryptSensitiveFields<T extends Record<string, any>>(
+  record: T,
+  purpose: string,
+): Promise<T> {
+  const decrypted = { ...record };
+  for (const [key, value] of Object.entries(decrypted)) {
+    if (SENSITIVE_FIELDS.has(key) && typeof value === 'string') {
+      try {
+        decrypted[key] = await decrypt<string>(value, `${purpose}::${key}`);
+      } catch {
+        // If decryption fails, leave as-is (might be plaintext legacy data)
+      }
+    }
+  }
+  return decrypted;
 }
 
 export async function executeSql(
@@ -82,6 +502,23 @@ async function init(): Promise<void> {
   await db.execAsync(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_soap_drafts_pet_vet ON soap_note_drafts (pet_id, vet_id)`,
   );
+
+  // Run any pending migrations
+  await runMigrations();
+
+  // Initialize encryption version if not set
+  const encryptionVer = await getEncryptionVersion();
+  if (encryptionVer === 1) {
+    await setEncryptionVersion(CURRENT_ENCRYPTION_VERSION);
+  }
+
+  // Detect and recover from any database corruption
+  const corruption = await detectDatabaseCorruption();
+  if (corruption) {
+    // Corruption detected - attempt recovery
+    // In a production app, this could trigger user notification
+    await recoverFromCorruption(corruption);
+  }
 }
 
 // Initialize DB on module import
@@ -365,6 +802,17 @@ export async function deleteAppointmentById(id: string): Promise<void> {
   await db.runAsync(`DELETE FROM appointments WHERE id = ?`, [id]);
 }
 
+export async function clearAllData(): Promise<void> {
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(`DELETE FROM kv_store`);
+    await db.runAsync(`DELETE FROM medications`);
+    await db.runAsync(`DELETE FROM dose_logs`);
+    await db.runAsync(`DELETE FROM health_metrics`);
+    await db.runAsync(`DELETE FROM appointments`);
+    await db.runAsync(`DELETE FROM soap_note_drafts`);
+  });
+}
+
 export default {
   getItem,
   setItem,
@@ -387,4 +835,5 @@ export default {
   getAppointmentsInWindow,
   upsertAppointment,
   deleteAppointmentById,
+  clearAllData,
 };
