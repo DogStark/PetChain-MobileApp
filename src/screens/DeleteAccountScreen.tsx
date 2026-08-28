@@ -67,9 +67,7 @@ const DeleteAccountScreen: React.FC<Props> = ({ onBack, onDeleted }) => {
         <View style={styles.warningCard}>
           <Text style={styles.warningIcon}>⚠️</Text>
           <Text style={styles.warningTitle}>This action is irreversible</Text>
-          <Text style={styles.warningBody}>
-            Deleting your account will permanently remove:
-          </Text>
+          <Text style={styles.warningBody}>Deleting your account will permanently remove:</Text>
           {[
             'Your profile and personal data',
             'All pets and their profiles',

@@ -90,9 +90,7 @@ const MedicalRecordShareScreen: React.FC<Props> = ({ petId, recordId, onBack }) 
         {/* Secure Link */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>🔗 Shareable Link</Text>
-          <Text style={styles.cardDesc}>
-            Generate a time-limited secure link anyone can open.
-          </Text>
+          <Text style={styles.cardDesc}>Generate a time-limited secure link anyone can open.</Text>
           {generatedLink ? (
             <Text style={styles.linkText} numberOfLines={2} accessibilityLabel="Generated link">
               {generatedLink}
@@ -116,9 +114,7 @@ const MedicalRecordShareScreen: React.FC<Props> = ({ petId, recordId, onBack }) 
         {/* PDF Export */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>📄 Export as PDF</Text>
-          <Text style={styles.cardDesc}>
-            Download a PDF copy and share via any app.
-          </Text>
+          <Text style={styles.cardDesc}>Download a PDF copy and share via any app.</Text>
           <TouchableOpacity
             style={[styles.btn, loading === 'pdf' && styles.btnDisabled]}
             onPress={handleExportPdf}
@@ -137,9 +133,7 @@ const MedicalRecordShareScreen: React.FC<Props> = ({ petId, recordId, onBack }) 
         {/* Direct Vet Share */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>🩺 Share with Vet</Text>
-          <Text style={styles.cardDesc}>
-            Send directly to a vet using their Vet ID.
-          </Text>
+          <Text style={styles.cardDesc}>Send directly to a vet using their Vet ID.</Text>
           <TextInput
             style={styles.input}
             placeholder="Enter Vet ID"

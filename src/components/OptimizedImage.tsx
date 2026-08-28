@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Image, ImageProps, View, ActivityIndicator, StyleSheet } from 'react-native';
+import { Image, type ImageProps, View, ActivityIndicator, StyleSheet } from 'react-native';
+
+import { cacheManager } from '../../backend/services/cacheManager';
 import { getItem } from '../services/localDB';
-import { cacheManager } from '../services/cacheManager';
 
 interface OptimizedImageProps extends ImageProps {
   uri: string;
@@ -18,7 +19,9 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
   style,
   ...props
 }) => {
-  const [currentUri, setCurrentUri] = useState<string | null>(cacheManager.get<string>(uri) || null);
+  const [currentUri, setCurrentUri] = useState<string | null>(
+    cacheManager.get<string>(uri) || null,
+  );
   const [loading, setLoading] = useState(!currentUri);
   const [error, setError] = useState(false);
 
@@ -28,7 +31,7 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
     const loadImage = async () => {
       if (cacheManager.get(uri)) {
         if (isMounted) {
-          setCurrentUri(cacheManager.get<string>(uri)!);
+          setCurrentUri(cacheManager.get<string>(uri) ?? null);
           setLoading(false);
         }
         return;

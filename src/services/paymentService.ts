@@ -4,8 +4,14 @@
  * In-app purchase / subscription provider integration is stubbed.
  */
 
-import type { Payment, Subscription, SubscriptionPlan, SubscriptionPlanDetails, PaymentProvider } from '../models/Payment';
 import apiClient from './apiClient';
+import type {
+  Payment,
+  Subscription,
+  SubscriptionPlan,
+  SubscriptionPlanDetails,
+  PaymentProvider,
+} from '../models/Payment';
 
 interface ApiResponse<T> {
   success: boolean;
@@ -34,7 +40,11 @@ class PaymentService {
    * Initiate a payment for a subscription plan.
    * Returns a pending Payment that must be confirmed after provider processing.
    */
-  async initiatePayment(plan: SubscriptionPlan, provider: PaymentProvider, providerTransactionId?: string): Promise<Payment> {
+  async initiatePayment(
+    plan: SubscriptionPlan,
+    provider: PaymentProvider,
+    providerTransactionId?: string,
+  ): Promise<Payment> {
     const res = await apiClient.post<ApiResponse<Payment>>('/payments/initiate', {
       plan,
       provider,
@@ -47,7 +57,9 @@ class PaymentService {
    * Confirm a payment after the provider has processed it.
    * Activates the subscription on success.
    */
-  async confirmPayment(paymentId: string): Promise<{ payment: Payment; subscription: Subscription }> {
+  async confirmPayment(
+    paymentId: string,
+  ): Promise<{ payment: Payment; subscription: Subscription }> {
     const res = await apiClient.post<ApiResponse<{ payment: Payment; subscription: Subscription }>>(
       `/payments/${paymentId}/confirm`,
       {},

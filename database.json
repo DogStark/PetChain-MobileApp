@@ -1,0 +1,12 @@
+{
+  "defaultEnv": "default",
+  "default": {
+    "url": {
+      "ENV": "DATABASE_URL"
+    },
+    "dir": "backend/migrations",
+    "migration-file-language": "sql",
+    "migrations-table": "schema_migrations",
+    "verbose": true
+  }
+}

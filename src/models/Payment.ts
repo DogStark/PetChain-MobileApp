@@ -5,7 +5,7 @@
 
 export type SubscriptionPlan = 'free' | 'premium_monthly' | 'premium_annual';
 export type PaymentStatus = 'pending' | 'completed' | 'failed' | 'refunded' | 'cancelled';
-export type PaymentProvider = 'stripe' | 'apple_iap' | 'google_play' | 'stub';
+export type PaymentProvider = 'stripe' | 'apple_iap' | 'google_play' | 'stub' | 'stellar_path';
 export type SubscriptionStatus = 'active' | 'inactive' | 'cancelled' | 'past_due' | 'trialing';
 
 export interface SubscriptionPlanDetails {

@@ -1,4 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
+
 import authService from '../authService';
 
 jest.mock('expo-secure-store', () => ({
@@ -22,9 +23,9 @@ describe('backend authService', () => {
           data: {
             token: 'test-token',
             refreshToken: 'refresh-token',
-            user: { id: '1' }
-          }
-        })
+            user: { id: '1' },
+          },
+        }),
       };
 
       const result = await authService.login({ email: 't@t.com', password: 'p' }, mockApiClient);

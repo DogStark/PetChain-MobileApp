@@ -1,6 +1,7 @@
 /**
  * Pet data model interfaces and types
  */
+import type { OwnershipType } from './JointOwnership';
 
 /**
  * Medical history record for a pet
@@ -54,9 +55,16 @@ export interface Pet {
   species: Species;
   breed?: string;
   dateOfBirth?: string;
+  weightKg?: number;
   microchipId?: string;
   photoUrl?: string;
   ownerId: string;
+  /** 'sole' for single owner, 'joint' for multisig co-ownership */
+  ownershipType?: OwnershipType;
+  /** ID of the JointOwnership record (present when ownershipType === 'joint') */
+  jointOwnershipId?: string;
+  /** Stellar multisig account public key (present when ownershipType === 'joint') */
+  multisigPublicKey?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -67,6 +75,7 @@ export interface Pet {
 export interface PetWithDetails extends Pet {
   age?: number;
   weight?: number;
+  weightKg?: number;
   gender?: 'male' | 'female';
   color?: string;
   medicalHistory: MedicalHistoryRecord[];

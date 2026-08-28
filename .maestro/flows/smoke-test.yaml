@@ -1,0 +1,20 @@
+appId: app.petchain.mobile.staging
+---
+- launchApp
+- assertVisible: "Welcome to PetChain"
+- tapOn: "Next"
+- assertVisible: "Secure Medical Records"
+- tapOn: "Next"
+- assertVisible: "Smart QR Scanning"
+- tapOn: "Next"
+- assertVisible: "Veterinarian Network"
+- tapOn: "Next"
+- assertVisible: "Emergency Ready"
+- tapOn: "Get Started"
+- assertVisible: "Welcome Back"
+- assertVisible: "Sign in to PetMedTracka"
+- tapOn: "Email"
+- inputText: "test@petchain.app"
+- tapOn: "Password"
+- inputText: "SuperSecretPassword123"
+- tapOn: "Sign In"

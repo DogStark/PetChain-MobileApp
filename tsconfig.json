@@ -30,5 +30,13 @@
     "rootDir": "./"
   },
   "include": ["backend/**/*", "src/**/*"],
-  "exclude": ["node_modules", "dist", "**/__tests__/**", "**/__mocks__/**"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/__tests__/**",
+    "**/__mocks__/**",
+    "backend/docs/**",
+    "backend/scripts/**",
+    "e2e/**"
+  ]
 }

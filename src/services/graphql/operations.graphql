@@ -1,0 +1,89 @@
+query GetMe {
+  me {
+    id
+    email
+    name
+    role
+  }
+}
+
+query GetMyPets {
+  myPets {
+    id
+    name
+    species
+    breed
+    ownerId
+  }
+}
+
+query GetPet($id: ID!) {
+  pet(id: $id) {
+    id
+    name
+    species
+    breed
+    dateOfBirth
+    microchipId
+    photoUrl
+    ownerId
+    medicalRecords {
+      id
+      type
+      visitDate
+      diagnosis
+    }
+    medications {
+      id
+      name
+      dosage
+      frequency
+      status
+    }
+    appointments {
+      id
+      date
+      time
+      type
+      status
+    }
+  }
+}
+
+mutation CreatePet($input: CreatePetInput!) {
+  createPet(input: $input) {
+    id
+    name
+    species
+    breed
+    ownerId
+  }
+}
+
+mutation TriggerSos($input: TriggerSosInput!) {
+  triggerSos(input: $input) {
+    id
+    message
+    triggeredAt
+  }
+}
+
+subscription OnSosAlert {
+  sosAlert {
+    id
+    userId
+    petId
+    latitude
+    longitude
+    message
+    triggeredAt
+  }
+}
+
+subscription OnSyncStatus {
+  syncStatus {
+    userId
+    status
+    updatedAt
+  }
+}

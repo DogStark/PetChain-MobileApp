@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PetChain Admin Dashboard</title>
+    <style>
+      :root {
+        --bg: #0b1220;
+        --panel: #101a2e;
+        --panel-2: #16233d;
+        --line: rgba(177, 196, 230, 0.16);
+        --text: #eef4ff;
+        --muted: #94a6c7;
+        --accent: #4ea0ff;
+        --accent-2: #67e8a7;
+        --danger: #ff7a7a;
+        --warning: #ffca6a;
+        --shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(78, 160, 255, 0.22), transparent 30%),
+          radial-gradient(circle at top right, rgba(103, 232, 167, 0.14), transparent 28%),
+          linear-gradient(180deg, #08101c, #09111d 45%, #06101a);
+        min-height: 100vh;
+      }
+      a { color: inherit; }
+      .shell { max-width: 1440px; margin: 0 auto; padding: 28px; }
+      .hero {
+        display: grid;
+        grid-template-columns: 1.3fr 0.9fr;
+        gap: 20px;
+        align-items: stretch;
+        margin-bottom: 18px;
+      }
+      .hero-card, .panel {
+        background: linear-gradient(180deg, rgba(16, 26, 46, 0.92), rgba(10, 16, 30, 0.92));
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow);
+        border-radius: 24px;
+      }
+      .hero-card { padding: 28px; }
+      .eyebrow { color: var(--accent-2); font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; font-size: 0.78rem; }
+      h1 { margin: 10px 0 12px; font-size: clamp(2rem, 4vw, 3.4rem); line-height: 1.03; }
+      .lede { color: var(--muted); max-width: 72ch; font-size: 1rem; line-height: 1.65; }
+      .toolbar {
+        display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px;
+      }
+      .btn {
+        border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px;
+        background: rgba(255, 255, 255, 0.03); color: var(--text); cursor: pointer;
+        font-weight: 650;
+      }
+      .btn.primary { background: linear-gradient(135deg, #4ea0ff, #2f7fff); border-color: transparent; }
+      .btn.good { background: linear-gradient(135deg, #67e8a7, #27c07b); border-color: transparent; color: #05130c; }
+      .status-box {
+        padding: 22px;
+        display: grid;
+        gap: 16px;
+      }
+      .status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .status-pill {
+        padding: 14px; border-radius: 18px; background: rgba(255,255,255,0.03);
+        border: 1px solid var(--line);
+      }
+      .status-pill strong { display: block; font-size: 1.6rem; margin-top: 4px; }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 16px;
+      }
+      .card { grid-column: span 4; padding: 20px; }
+      .card.wide { grid-column: span 8; }
+      .card.full { grid-column: 1 / -1; }
+      .panel { padding: 20px; }
+      .panel h2, .card h2 { margin: 0 0 14px; font-size: 1.1rem; }
+      .muted { color: var(--muted); }
+      .metric { display: grid; gap: 8px; }
+      .metric .value { font-size: 2rem; font-weight: 800; }
+      .table-wrap { overflow: auto; }
+      table { width: 100%; border-collapse: collapse; min-width: 760px; }
+      th, td { padding: 12px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+      th { color: var(--muted); font-size: 0.82rem; letter-spacing: 0.03em; text-transform: uppercase; }
+      .badge { display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 700; }
+      .b-open { background: rgba(255, 122, 122, 0.12); color: var(--danger); }
+      .b-progress { background: rgba(255, 202, 106, 0.12); color: var(--warning); }
+      .b-resolved { background: rgba(103, 232, 167, 0.12); color: var(--accent-2); }
+      .chip { display: inline-flex; padding: 4px 9px; border-radius: 999px; background: rgba(255,255,255,0.08); color: var(--text); margin: 0 6px 6px 0; font-size: 0.78rem; }
+      input, select, textarea {
+        width: 100%; border-radius: 14px; border: 1px solid var(--line);
+        background: rgba(255,255,255,0.04); color: var(--text);
+        padding: 12px 14px; font: inherit;
+      }
+      textarea { min-height: 110px; resize: vertical; }
+      .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .form-row { display: grid; gap: 6px; margin-bottom: 12px; }
+      .section-head { display:flex; align-items:center; justify-content:space-between; gap: 12px; margin-bottom: 14px; }
+      .linkbar { display:flex; flex-wrap: wrap; gap: 8px; }
+      .link { text-decoration: none; border: 1px solid var(--line); padding: 10px 12px; border-radius: 12px; background: rgba(255,255,255,0.03); }
+      .error { color: var(--danger); min-height: 1.2em; }
+      @media (max-width: 980px) {
+        .hero, .grid { grid-template-columns: 1fr; }
+        .card, .card.wide { grid-column: 1 / -1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="hero">
+        <div class="hero-card">
+          <div class="eyebrow">PetChain Admin</div>
+          <h1>Operations, analytics, and support in one place.</h1>
+          <p class="lede">
+            Monitor app health, track blockchain usage, manage user accounts, and work through
+            support requests from a single dashboard. This page uses the same admin JWT/MFA guard
+            as the API.
+          </p>
+          <div class="toolbar">
+            <a class="btn primary" href="/admin/api-keys.html">API Keys</a>
+            <button class="btn good" id="refresh-all">Refresh dashboard</button>
+            <button class="btn" id="export-csv">Export CSV</button>
+          </div>
+        </div>
+        <div class="hero-card status-box">
+          <div class="status-grid">
+            <div class="status-pill"><span class="muted">DAU</span><strong id="dau">0</strong></div>
+            <div class="status-pill"><span class="muted">MAU</span><strong id="mau">0</strong></div>
+            <div class="status-pill"><span class="muted">Users</span><strong id="users-total">0</strong></div>
+            <div class="status-pill"><span class="muted">Open tickets</span><strong id="tickets-open">0</strong></div>
+          </div>
+          <div class="muted" id="auth-status">Save an admin JWT below to unlock the dashboard.</div>
+          <div class="form-row">
+            <label class="muted" for="jwt">Admin JWT</label>
+            <input id="jwt" type="password" placeholder="Paste admin JWT or mock token" />
+          </div>
+          <div class="form-row">
+            <label class="muted" for="api-base">API base URL</label>
+            <input id="api-base" type="text" value="/api" />
+          </div>
+          <button class="btn primary" id="save-auth">Save auth</button>
+          <div class="error" id="auth-error"></div>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="panel card">
+          <h2>Server Metrics</h2>
+          <div class="metric">
+            <div class="muted">CPU user/system</div>
+            <div class="value" id="cpu">0 / 0</div>
+            <div class="muted">Memory RSS</div>
+            <div class="value" id="memory">0</div>
+            <div class="muted">DB connections</div>
+            <div class="value" id="db">0 total</div>
+          </div>
+        </div>
+
+        <div class="panel card wide">
+          <div class="section-head">
+            <h2>Analytics Snapshot</h2>
+            <span class="muted" id="analytics-updated">Not loaded yet</span>
+          </div>
+          <div class="grid" style="gap: 12px;">
+            <div class="panel" style="grid-column: span 3;"><div class="muted">DAU (7d)</div><div class="value" id="a-dau">0</div></div>
+            <div class="panel" style="grid-column: span 3;"><div class="muted">DAU (30d)</div><div class="value" id="a-mau">0</div></div>
+            <div class="panel" style="grid-column: span 3;"><div class="muted">Transactions</div><div class="value" id="tx-volume">0</div></div>
+            <div class="panel" style="grid-column: span 3;"><div class="muted">Error rate</div><div class="value" id="error-rate">0%</div></div>
+          </div>
+          <div style="margin-top: 12px;">
+            <span class="chip" id="users-count">Users: 0</span>
+            <span class="chip" id="pets-count">Pets: 0</span>
+            <span class="chip" id="records-count">Records: 0</span>
+            <span class="chip" id="appointments-count">Appointments: 0</span>
+            <span class="chip" id="medications-count">Medications: 0</span>
+          </div>
+        </div>
+
+        <div class="panel card full">
+          <div class="section-head">
+            <h2>User Management</h2>
+            <div class="linkbar">
+              <input id="user-search" type="text" placeholder="Search users by name, email, role, or id" style="min-width: 280px;" />
+              <button class="btn" id="search-users">Search</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Role</th>
+                  <th>Status</th>
+                  <th>Last login</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="users-table"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel card full">
+          <div class="section-head">
+            <h2>Support Requests</h2>
+            <span class="muted">Open, progress, and resolved tickets</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Request</th>
+                  <th>Priority</th>
+                  <th>Status</th>
+                  <th>Details</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="support-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const STORAGE_JWT = 'petchain_admin_jwt';
+      const STORAGE_BASE = 'petchain_api_base';
+
+      const jwtInput = document.getElementById('jwt');
+      const apiBaseInput = document.getElementById('api-base');
+      const authError = document.getElementById('auth-error');
+      const authStatus = document.getElementById('auth-status');
+
+      const usersTable = document.getElementById('users-table');
+      const supportTable = document.getElementById('support-table');
+
+      function setText(id, value) {
+        document.getElementById(id).textContent = value;
+      }
+
+      function getJwt() {
+        return localStorage.getItem(STORAGE_JWT) || jwtInput.value.trim();
+      }
+
+      function getBase() {
+        return localStorage.getItem(STORAGE_BASE) || apiBaseInput.value.trim() || '/api';
+      }
+
+      async function api(path, options = {}) {
+        const res = await fetch(`${getBase()}${path}`, {
+          ...options,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${getJwt()}`,
+            ...(options.headers || {}),
+          },
+        });
+        const text = await res.text();
+        const body = text ? JSON.parse(text) : {};
+        if (!res.ok) {
+          throw new Error(body.error?.message || res.statusText);
+        }
+        return body.data ?? body;
+      }
+
+      function badgeForStatus(status) {
+        const cls = status === 'resolved' ? 'b-resolved' : status === 'in_progress' ? 'b-progress' : 'b-open';
+        return `<span class="badge ${cls}">${status.replace('_', ' ')}</span>`;
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      function fmtDate(value) {
+        return value ? new Date(value).toLocaleString() : '—';
+      }
+
+      async function loadDashboard() {
+        const data = await api('/admin/dashboard');
+        setText('dau', data.analytics.activeUsers.last7Days);
+        setText('mau', data.analytics.activeUsers.last30Days);
+        setText('users-total', data.users.total);
+        setText('tickets-open', data.supportRequests.open);
+        setText('a-dau', data.analytics.activeUsers.last7Days);
+        setText('a-mau', data.analytics.activeUsers.last30Days);
+        setText('tx-volume', data.analytics.blockchain.transactionVolume);
+        setText('error-rate', `${data.analytics.errorRates.errorRateLast24h}%`);
+        document.getElementById('analytics-updated').textContent = new Date(
+          data.analytics.generatedAt,
+        ).toLocaleString();
+        document.getElementById('cpu').textContent = `${data.serverMetrics.cpu.userMicroseconds} / ${data.serverMetrics.cpu.systemMicroseconds}`;
+        document.getElementById('memory').textContent = `${Math.round(
+          data.serverMetrics.memory.rss / 1024 / 1024,
+        )} MB RSS`;
+        document.getElementById('db').textContent = `${data.serverMetrics.dbConnections.total} total, ${data.serverMetrics.dbConnections.idle} idle`;
+
+        document.getElementById('users-count').textContent = `Users: ${data.analytics.recordCounts.users}`;
+        document.getElementById('pets-count').textContent = `Pets: ${data.analytics.recordCounts.pets}`;
+        document.getElementById('records-count').textContent = `Records: ${data.analytics.recordCounts.medicalRecords}`;
+        document.getElementById('appointments-count').textContent = `Appointments: ${data.analytics.recordCounts.appointments}`;
+        document.getElementById('medications-count').textContent = `Medications: ${data.analytics.recordCounts.medications}`;
+      }
+
+      async function loadUsers(search = '') {
+        const suffix = search ? `?search=${encodeURIComponent(search)}&includeDeleted=true` : '?includeDeleted=true';
+        const data = await api(`/admin/users${suffix}`);
+        usersTable.innerHTML = data.data
+          .map(
+            (user) => `
+            <tr>
+              <td>
+                <strong>${escapeHtml(user.name)}</strong><br />
+                <span class="muted">${escapeHtml(user.email)}</span><br />
+                <span class="muted">${escapeHtml(user.id)}</span>
+              </td>
+              <td>${escapeHtml(user.role)}</td>
+              <td>${user.deletedAt ? '<span class="badge b-open">archived</span>' : '<span class="badge b-resolved">active</span>'}</td>
+              <td>${fmtDate(user.lastLoginAt)}</td>
+              <td>
+                ${
+                  user.deletedAt
+                    ? `<button class="btn" data-restore-user="${escapeHtml(user.id)}">Restore</button>`
+                    : `<button class="btn" data-delete-user="${escapeHtml(user.id)}">Soft delete</button>`
+                }
+              </td>
+            </tr>`,
+          )
+          .join('');
+
+        usersTable.querySelectorAll('[data-delete-user]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            if (!confirm('Soft delete this user?')) return;
+            await api(`/admin/users/${btn.dataset.deleteUser}`, { method: 'DELETE' });
+            await refresh();
+          });
+        });
+
+        usersTable.querySelectorAll('[data-restore-user]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            await api(`/admin/users/${btn.dataset.restoreUser}/restore`, { method: 'POST' });
+            await refresh();
+          });
+        });
+      }
+
+      async function loadSupport() {
+        const tickets = await api('/admin/support-requests');
+        supportTable.innerHTML = tickets
+          .map(
+            (ticket) => `
+            <tr>
+              <td>
+                <strong>${escapeHtml(ticket.subject)}</strong><br />
+                <span class="muted">${escapeHtml(ticket.name)} · ${escapeHtml(ticket.email)}</span><br />
+                <span class="muted">${escapeHtml(ticket.message)}</span>
+              </td>
+              <td>${escapeHtml(ticket.priority)}</td>
+              <td>${badgeForStatus(ticket.status)}</td>
+              <td>
+                <div class="muted">Created: ${fmtDate(ticket.createdAt)}</div>
+                <div class="muted">Assigned: ${escapeHtml(ticket.assignedTo || 'unassigned')}</div>
+              </td>
+              <td>
+                <select data-ticket="${escapeHtml(ticket.id)}">
+                  <option value="open" ${ticket.status === 'open' ? 'selected' : ''}>open</option>
+                  <option value="in_progress" ${ticket.status === 'in_progress' ? 'selected' : ''}>in progress</option>
+                  <option value="resolved" ${ticket.status === 'resolved' ? 'selected' : ''}>resolved</option>
+                </select>
+                <button class="btn" data-update-ticket="${escapeHtml(ticket.id)}">Update</button>
+              </td>
+            </tr>`,
+          )
+          .join('');
+
+        supportTable.querySelectorAll('[data-update-ticket]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const id = btn.dataset.updateTicket;
+            const status = supportTable.querySelector(`[data-ticket="${id}"]`).value;
+            await api(`/admin/support-requests/${id}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ status }),
+            });
+            await refresh();
+          });
+        });
+      }
+
+      async function refresh() {
+        await Promise.all([loadDashboard(), loadUsers(document.getElementById('user-search').value.trim()), loadSupport()]);
+      }
+
+      document.getElementById('save-auth').addEventListener('click', async () => {
+        const jwt = jwtInput.value.trim();
+        const base = apiBaseInput.value.trim() || '/api';
+        authError.textContent = '';
+        if (!jwt) {
+          authError.textContent = 'Admin JWT is required.';
+          return;
+        }
+        localStorage.setItem(STORAGE_JWT, jwt);
+        localStorage.setItem(STORAGE_BASE, base);
+        authStatus.textContent = 'Authenticated. Loading dashboard...';
+        try {
+          await refresh();
+          authStatus.textContent = 'Dashboard loaded successfully.';
+        } catch (error) {
+          authStatus.textContent = 'Authentication failed.';
+          authError.textContent = error.message;
+        }
+      });
+
+      document.getElementById('search-users').addEventListener('click', async () => {
+        await loadUsers(document.getElementById('user-search').value.trim());
+      });
+
+      document.getElementById('refresh-all').addEventListener('click', () => refresh());
+
+      document.getElementById('export-csv').addEventListener('click', async () => {
+        const res = await fetch(`${getBase()}/admin/analytics/export.csv`, {
+          headers: { Authorization: `Bearer ${getJwt()}` },
+        });
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'admin-analytics.csv';
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+
+      const savedJwt = localStorage.getItem(STORAGE_JWT);
+      const savedBase = localStorage.getItem(STORAGE_BASE);
+      if (savedJwt) jwtInput.value = savedJwt;
+      if (savedBase) apiBaseInput.value = savedBase;
+    </script>
+  </body>
+</html>

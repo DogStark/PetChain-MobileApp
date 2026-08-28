@@ -1,3 +1,4 @@
+import { useNavigation, type NavigationProp } from '@react-navigation/native';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
@@ -13,12 +14,8 @@ import {
 import { v4 as uuid } from 'uuid';
 
 import type { CommunityPost, PostCategory } from '../models/CommunityPost';
-import {
-  createPost,
-  deletePost,
-  getPosts,
-  toggleLike,
-} from '../services/communityService';
+import type { RootStackParamList } from '../navigation/types';
+import { createPost, deletePost, getPosts, toggleLike } from '../services/communityService';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,6 +32,7 @@ const EMPTY_FORM = { title: '', body: '', category: 'forum' as PostCategory };
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const CommunityScreen: React.FC = () => {
+  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [filter, setFilter] = useState<FilterTab>('all');
   const [posts, setPosts] = useState<CommunityPost[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
@@ -48,8 +46,7 @@ const CommunityScreen: React.FC = () => {
     void load();
   }, [load]);
 
-  const displayed =
-    filter === 'all' ? posts : posts.filter((p) => p.category === filter);
+  const displayed = filter === 'all' ? posts : posts.filter((p) => p.category === filter);
 
   // ─── Create ─────────────────────────────────────────────────────────────────
 
@@ -123,6 +120,12 @@ const CommunityScreen: React.FC = () => {
   return (
     <View style={styles.container}>
       {/* Filter tabs */}
+      <TouchableOpacity style={styles.forumNavBtn} onPress={() => navigation.navigate('Forum')}>
+        <Text style={styles.forumNavText}>Go to verified Forum</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.forumNavBtn} onPress={() => navigation.navigate('LostFound')}>
+        <Text style={styles.forumNavText}>Open Lost & Found Network</Text>
+      </TouchableOpacity>
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -143,9 +146,7 @@ const CommunityScreen: React.FC = () => {
             style={[styles.filterTab, filter === c.key && styles.filterTabActive]}
             onPress={() => setFilter(c.key)}
           >
-            <Text
-              style={[styles.filterTabText, filter === c.key && styles.filterTabTextActive]}
-            >
+            <Text style={[styles.filterTabText, filter === c.key && styles.filterTabTextActive]}>
               {c.label}
             </Text>
           </TouchableOpacity>
@@ -250,40 +251,118 @@ function categoryLabel(cat: PostCategory): string {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5' },
-  filterRow: { maxHeight: 52, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#e0e0e0' },
-  filterContent: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
-  filterTab: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 16, backgroundColor: '#f0f0f0' },
+  filterRow: {
+    maxHeight: 52,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  filterContent: { paddingHorizontal: 12, paddingVertical: 8 },
+  filterTab: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#f0f0f0',
+    marginRight: 8,
+  },
+  forumNavBtn: {
+    padding: 12,
+    backgroundColor: '#4A90E2',
+    margin: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  forumNavText: { color: '#fff', fontWeight: '700' },
   filterTabActive: { backgroundColor: '#4A90E2' },
   filterTabText: { fontSize: 13, color: '#555' },
   filterTabTextActive: { color: '#fff', fontWeight: '600' },
   listContent: { padding: 16, gap: 12 },
-  card: { backgroundColor: '#fff', borderRadius: 12, padding: 16, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
+  },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
   categoryBadge: { fontSize: 12, color: '#4A90E2', fontWeight: '600' },
   authorText: { fontSize: 12, color: '#999' },
   postTitle: { fontSize: 15, fontWeight: '700', color: '#222', marginBottom: 6 },
   postBody: { fontSize: 13, color: '#555', lineHeight: 18 },
-  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 },
+  cardFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+  },
   likeBtn: { flexDirection: 'row', alignItems: 'center' },
   likeBtnText: { fontSize: 14, color: '#555' },
   deleteText: { fontSize: 12, color: '#e74c3c' },
   emptyText: { textAlign: 'center', color: '#aaa', marginTop: 60, fontSize: 14 },
-  fab: { position: 'absolute', bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: '#4A90E2', justifyContent: 'center', alignItems: 'center', elevation: 6, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 6 },
+  fab: {
+    position: 'absolute',
+    bottom: 24,
+    right: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#4A90E2',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+  },
   fabText: { fontSize: 28, color: '#fff', lineHeight: 32 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24 },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 24,
+  },
   modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 16, color: '#222' },
-  categoryRow: { flexDirection: 'row', gap: 8, marginBottom: 16 },
-  categoryChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, backgroundColor: '#f0f0f0' },
+  categoryRow: { flexDirection: 'row', marginBottom: 16 },
+  categoryChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#f0f0f0',
+    marginRight: 8,
+  },
   categoryChipActive: { backgroundColor: '#4A90E2' },
   categoryChipText: { fontSize: 12, color: '#555' },
   categoryChipTextActive: { color: '#fff', fontWeight: '600' },
-  input: { borderWidth: 1, borderColor: '#ddd', borderRadius: 8, padding: 12, fontSize: 14, marginBottom: 12, backgroundColor: '#fafafa' },
+  input: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 14,
+    marginBottom: 12,
+    backgroundColor: '#fafafa',
+  },
   textArea: { height: 100, textAlignVertical: 'top' },
-  modalActions: { flexDirection: 'row', gap: 12, marginTop: 4 },
-  cancelBtn: { flex: 1, padding: 14, borderRadius: 8, borderWidth: 1, borderColor: '#ddd', alignItems: 'center' },
+  modalActions: { flexDirection: 'row', marginTop: 4 },
+  cancelBtn: {
+    flex: 1,
+    padding: 14,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    alignItems: 'center',
+  },
   cancelBtnText: { color: '#555', fontWeight: '600' },
-  submitBtn: { flex: 1, padding: 14, borderRadius: 8, backgroundColor: '#4A90E2', alignItems: 'center' },
+  submitBtn: {
+    flex: 1,
+    padding: 14,
+    borderRadius: 8,
+    backgroundColor: '#4A90E2',
+    alignItems: 'center',
+  },
   submitBtnText: { color: '#fff', fontWeight: '700' },
 });
 

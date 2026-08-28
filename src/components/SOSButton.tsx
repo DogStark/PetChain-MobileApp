@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,21 +8,77 @@ import {
   Vibration,
   Platform,
 } from 'react-native';
-import emergencyService from '../services/emergencyService';
+
+import emergencyService, { type SOSPlan } from '../services/emergencyService';
+import { hapticLight, hapticMedium, hapticSOSSent } from '../utils/hapticFeedback';
 
 interface SOSButtonProps {
   onSOSSent?: () => void;
-  style?: any;
+  style?: object;
 }
 
 const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
   const [isPressing, setIsPressing] = useState(false);
   const [isCountdown, setIsCountdown] = useState(false);
   const [countdown, setCountdown] = useState(3);
-  
+  /**
+   * The dispatch plan for the pending SOS (Issue #942).
+   *
+   * Resolved as soon as the countdown starts so the user can see exactly who
+   * will be contacted — and cancel — before anything leaves the device.
+   */
+  const [plan, setPlan] = useState<SOSPlan | null>(null);
+
   const pressAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  const triggerSOS = useCallback(async () => {
+    setIsCountdown(false);
+    setCountdown(3);
+
+    // Nothing to send to — surface it rather than silently doing nothing.
+    if (plan && !plan.canDispatch) {
+      setPlan(null);
+      return;
+    }
+
+    // Strong double-tap haptic to confirm SOS was sent
+    void hapticSOSSent();
+    Vibration.vibrate([0, 500, 200, 500]);
+    try {
+      await emergencyService.triggerSOS('Pet emergency - need immediate help', {
+        // Dispatch to exactly the recipients shown in the preview.
+        confirmedRecipientIds: plan?.recipients.map((r) => r.id),
+      });
+      if (onSOSSent) onSOSSent();
+    } catch (error) {
+      console.error('SOS failed', error);
+    } finally {
+      setPlan(null);
+    }
+  }, [onSOSSent, plan]);
+
+  // Resolve the dispatch plan as soon as the countdown begins, so the preview
+  // below reflects the real recipients rather than a guess.
+  useEffect(() => {
+    if (!isCountdown) {
+      setPlan(null);
+      return;
+    }
+    let cancelled = false;
+    void emergencyService
+      .prepareSOS('Pet emergency - need immediate help')
+      .then((resolved) => {
+        if (!cancelled) setPlan(resolved);
+      })
+      .catch(() => {
+        if (!cancelled) setPlan(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isCountdown]);
 
   useEffect(() => {
     if (isCountdown) {
@@ -39,7 +95,7 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
             duration: 500,
             useNativeDriver: true,
           }),
-        ])
+        ]),
       ).start();
 
       const id = setInterval(() => {
@@ -49,33 +105,23 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
             triggerSOS();
             return 0;
           }
+          // Light haptic tick once per second during countdown
+          void hapticLight();
           Vibration.vibrate(100);
           return prev - 1;
         });
       }, 1000);
-      
+
       timerRef.current = id;
     } else {
       pulseAnim.setValue(1);
-      if (timerRef.current) clearInterval(timerRef.current);
+      if (timerRef.current) clearTimeout(timerRef.current);
     }
 
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+      if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isCountdown]);
-
-  const triggerSOS = async () => {
-    setIsCountdown(false);
-    setCountdown(3);
-    Vibration.vibrate([0, 500, 200, 500]); // SOS-like pattern
-    try {
-      await emergencyService.triggerSOS('Pet emergency - need immediate help');
-      if (onSOSSent) onSOSSent();
-    } catch (error) {
-      console.error('SOS failed', error);
-    }
-  };
+  }, [isCountdown, pulseAnim, triggerSOS]);
 
   const handlePressIn = () => {
     setIsPressing(true);
@@ -104,6 +150,8 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
   const cancelSOS = () => {
     setIsCountdown(false);
     setCountdown(3);
+    // Medium haptic impact on cancel
+    void hapticMedium();
     Vibration.vibrate(100);
   };
 
@@ -118,10 +166,29 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
         style={[styles.button, styles.countdownButton, style]}
         onPress={cancelSOS}
         activeOpacity={0.9}
+        testID="sos-confirm-dialog"
       >
         <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
           <Text style={styles.countdownText}>{countdown}</Text>
-          <Text style={styles.cancelText}>TAP TO CANCEL</Text>
+
+          {/* Explicit recipient preview — who is about to receive this. */}
+          <Text style={styles.recipientText} testID="sos-recipient-preview">
+            {plan == null
+              ? 'Checking contacts…'
+              : plan.recipients.length === 0
+                ? 'No emergency contacts selected'
+                : `Sending to: ${plan.recipients.map((r) => r.name).join(', ')}`}
+          </Text>
+
+          {plan?.warnings.map((warning) => (
+            <Text key={warning} style={styles.warningText} testID="sos-warning">
+              {warning}
+            </Text>
+          ))}
+
+          <Text style={styles.cancelText} testID="sos-cancel-button">
+            TAP TO CANCEL
+          </Text>
         </Animated.View>
       </TouchableOpacity>
     );
@@ -134,26 +201,35 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
         activeOpacity={1}
+        testID="sos-button"
       >
         <View style={styles.content}>
           <Text style={styles.buttonText}>🚨 SOS EMERGENCY</Text>
           <Text style={styles.hintText}>HOLD TO ACTIVATE</Text>
         </View>
-        
-        {isPressing && (
-          <Animated.View 
-            style={[
-              styles.progressBar, 
-              { width: progressWidth }
-            ]} 
-          />
-        )}
+
+        {isPressing && <Animated.View style={[styles.progressBar, { width: progressWidth }]} />}
       </TouchableOpacity>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
+  recipientText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 8,
+    paddingHorizontal: 12,
+  },
+  warningText: {
+    color: '#ffe0e0',
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: 4,
+    paddingHorizontal: 12,
+  },
   container: {
     margin: 16,
     borderRadius: 12,
@@ -211,7 +287,7 @@ const styles = StyleSheet.create({
   progressBar: {
     position: 'absolute',
     bottom: 0,
-    left: 0,
+    start: 0,
     height: 6,
     backgroundColor: '#feb2b2', // Light red for progress
   },

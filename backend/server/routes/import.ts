@@ -1,9 +1,12 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion */
 import express from 'express';
 
 import { authenticateJWT, authorizeRoles, type AuthenticatedRequest } from '../../middleware/auth';
 import { UserRole } from '../../models/UserRole';
+import { processPdfFromBase64 } from '../../services/pdfExtractionService';
+import { parseVetRecordText, validateExtractedRecord } from '../../services/pdfParserService';
 import { ok, sendError } from '../response';
-import { store, type StoredPet } from '../store';
+import { store, type StoredPet, type StoredMedicalRecord } from '../store';
 
 const router = express.Router();
 
@@ -221,3 +224,274 @@ router.post(
 );
 
 export default router;
+
+// ─── PDF Medical Record Import ────────────────────────────────────────────────
+
+/**
+ * POST /api/import/medical-records/parse-pdf
+ *
+ * Parse a PDF vet record and extract structured medical data.
+ *
+ * Body: JSON with base64-encoded PDF
+ * {
+ *   pdfBase64: string,
+ *   petId: string,
+ *   enableOcr?: boolean
+ * }
+ *
+ * Returns extracted medical record data for user confirmation:
+ * {
+ *   vetName?: string,
+ *   vetClinic?: string,
+ *   vetPhone?: string,
+ *   vetEmail?: string,
+ *   visitDate?: string,
+ *   nextVisitDate?: string,
+ *   diagnoses: Array<{ diagnosisText: string, severity?: string }>,
+ *   treatments: Array<{ treatmentText: string }>,
+ *   prescriptions: Array<{ medicationName: string, dosage?: string, frequency?: string }>,
+ *   vaccinations: Array<{ vaccineName: string }>,
+ *   notes?: string,
+ *   confidence: number,
+ *   warnings: string[],
+ *   extractionDetails: {
+ *     pageCount: number,
+ *     isScanned: boolean,
+ *     extractionError?: string
+ *   }
+ * }
+ */
+router.post(
+  '/medical-records/parse-pdf',
+  authenticateJWT,
+  authorizeRoles(UserRole.ADMIN, UserRole.VET, UserRole.OWNER),
+  express.json({ limit: '10mb' }),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const {
+        pdfBase64,
+        petId,
+        enableOcr = false,
+      } = req.body as {
+        pdfBase64?: string;
+        petId?: string;
+        enableOcr?: boolean;
+      };
+
+      // Validate input
+      if (!pdfBase64 || typeof pdfBase64 !== 'string') {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'pdfBase64 is required');
+      }
+
+      if (!petId || typeof petId !== 'string') {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'petId is required');
+      }
+
+      // Verify pet exists and user has access
+      const pet = store.pets.get(petId);
+      if (!pet) {
+        return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
+      }
+
+      // Check authorization
+      if (req.user!.role === UserRole.OWNER && req.user!.id !== pet.ownerId) {
+        return sendError(
+          res,
+          403,
+          'FORBIDDEN',
+          'You do not have permission to import records for this pet',
+        );
+      }
+
+      // Extract text from PDF
+      const extractionResult = await processPdfFromBase64(pdfBase64, {
+        maxPages: 20,
+        enableOcr,
+      });
+
+      if (!extractionResult.success) {
+        return res.json(
+          ok({
+            success: false,
+            error: extractionResult.error,
+            extractionDetails: {
+              pageCount: extractionResult.pageCount,
+              isScanned: extractionResult.isScanned,
+              extractionError: extractionResult.error,
+            },
+          }),
+        );
+      }
+
+      // Parse extracted text
+      const extracted = parseVetRecordText(extractionResult.text);
+
+      // Return extracted data for user confirmation
+      return res.json(
+        ok({
+          success: true,
+          ...extracted,
+          extractionDetails: {
+            pageCount: extractionResult.pageCount,
+            isScanned: extractionResult.isScanned,
+          },
+        }),
+      );
+    } catch (error) {
+      console.error('[PDF Import Error]', error);
+      return sendError(
+        res,
+        500,
+        'INTERNAL_ERROR',
+        `PDF parsing failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  },
+);
+
+/**
+ * POST /api/import/medical-records/confirm
+ *
+ * Save extracted medical record data after user confirmation and edits.
+ *
+ * Body: JSON with extracted record data and user edits
+ * {
+ *   petId: string,
+ *   vetId?: string,
+ *   type: 'checkup' | 'vaccination' | 'surgery' | 'treatment' | 'other',
+ *   visitDate: string (YYYY-MM-DD),
+ *   nextVisitDate?: string,
+ *   diagnoses: Array<{ diagnosisText: string, severity?: string }>,
+ *   treatments: Array<{ treatmentText: string }>,
+ *   prescriptions: Array<{ medicationName: string, dosage?: string, frequency?: string }>,
+ *   vaccinations: Array<{ vaccineName: string }>,
+ *   notes?: string
+ * }
+ *
+ * Returns created medical record
+ */
+router.post(
+  '/medical-records/confirm',
+  authenticateJWT,
+  authorizeRoles(UserRole.ADMIN, UserRole.VET, UserRole.OWNER),
+  express.json(),
+  (req: AuthenticatedRequest, res) => {
+    try {
+      const {
+        petId,
+        vetId,
+        type = 'checkup',
+        visitDate,
+        nextVisitDate,
+        diagnoses = [],
+        treatments = [],
+        prescriptions = [],
+        vaccinations = [],
+        notes,
+      } = req.body as {
+        petId?: string;
+        vetId?: string;
+        type?: string;
+        visitDate?: string;
+        nextVisitDate?: string;
+        diagnoses?: Array<{ diagnosisText: string; severity?: string }>;
+        treatments?: Array<{ treatmentText: string }>;
+        prescriptions?: Array<{ medicationName: string; dosage?: string; frequency?: string }>;
+        vaccinations?: Array<{ vaccineName: string }>;
+        notes?: string;
+      };
+
+      // Validate input
+      if (!petId) {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'petId is required');
+      }
+
+      if (!visitDate) {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'visitDate is required');
+      }
+
+      // Verify pet exists and user has access
+      const pet = store.pets.get(petId);
+      if (!pet) {
+        return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
+      }
+
+      // Check authorization
+      if (req.user!.role === UserRole.OWNER && req.user!.id !== pet.ownerId) {
+        return sendError(
+          res,
+          403,
+          'FORBIDDEN',
+          'You do not have permission to create records for this pet',
+        );
+      }
+
+      // Use authenticated user as vet if not specified
+      const finalVetId = vetId || req.user!.id;
+
+      // Create medical record
+      const id = store.newId();
+      const now = new Date().toISOString();
+
+      const medicalRecord: StoredMedicalRecord = {
+        id,
+        petId,
+        vetId: finalVetId,
+        type,
+        diagnosis: diagnoses.map((d) => d.diagnosisText).join('; ') || undefined,
+        treatment: treatments.map((t) => t.treatmentText).join('; ') || undefined,
+        notes,
+        visitDate,
+        nextVisitDate,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      store.medicalRecords.set(id, medicalRecord);
+
+      // Create medications from prescriptions
+      prescriptions.forEach((prescription) => {
+        const medId = store.newId();
+        const medication = {
+          id: medId,
+          petId,
+          name: prescription.medicationName,
+          dosage: prescription.dosage || 'As prescribed',
+          frequency: prescription.frequency || 'As directed',
+          startDate: visitDate,
+          endDate: nextVisitDate,
+          active: true,
+          createdAt: now,
+          updatedAt: now,
+        };
+        store.medications.set(medId, medication);
+      });
+
+      return res.status(201).json(
+        ok(
+          {
+            id,
+            petId,
+            vetId: finalVetId,
+            type,
+            visitDate,
+            nextVisitDate,
+            diagnoses: diagnoses.length,
+            treatments: treatments.length,
+            prescriptions: prescriptions.length,
+            vaccinations: vaccinations.length,
+          },
+          'Medical record imported successfully',
+        ),
+      );
+    } catch (error) {
+      console.error('[Medical Record Import Error]', error);
+      return sendError(
+        res,
+        500,
+        'INTERNAL_ERROR',
+        `Failed to save medical record: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  },
+);

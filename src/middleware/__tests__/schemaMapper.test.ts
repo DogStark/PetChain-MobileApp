@@ -1,5 +1,6 @@
-import { applySchemaMapping } from '../schemaMapper';
 import { type AxiosResponse } from 'axios';
+
+import { applySchemaMapping } from '../schemaMapper';
 
 describe('schemaMapper', () => {
   it('should map pet_name to name for /pets endpoint', () => {

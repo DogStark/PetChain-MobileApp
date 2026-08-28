@@ -1,7 +1,8 @@
 import http from 'http';
+
+import { UserRole } from '../../models/UserRole';
 import { createApp } from '../app';
 import { store } from '../store';
-import { UserRole } from '../../models/UserRole';
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
@@ -21,19 +22,20 @@ function request(
     };
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    const req = http.request(
-      { hostname: '127.0.0.1', port, path, method, headers },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (c) => chunks.push(c as Buffer));
-        res.on('end', () => {
-          const raw = Buffer.concat(chunks).toString('utf8');
-          let parsed: any;
-          try { parsed = JSON.parse(raw); } catch { parsed = raw; }
-          resolve({ status: res.statusCode ?? 0, body: parsed });
-        });
-      },
-    );
+    const req = http.request({ hostname: '127.0.0.1', port, path, method, headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c) => chunks.push(c as Buffer));
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        let parsed: any;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          parsed = raw;
+        }
+        resolve({ status: res.statusCode ?? 0, body: parsed });
+      });
+    });
     req.on('error', reject);
     req.write(body);
     req.end();
@@ -96,28 +98,56 @@ describe('POST /api/import/pets', () => {
   it('403 when OWNER role tries to import', async () => {
     const ownerToken = `mock-${ownerId}`;
     const csv = `name,species,ownerId\nFido,dog,${ownerId}`;
-    const { status } = await request(port, '/api/import/pets', 'POST', csv, 'text/plain', ownerToken);
+    const { status } = await request(
+      port,
+      '/api/import/pets',
+      'POST',
+      csv,
+      'text/plain',
+      ownerToken,
+    );
     expect(status).toBe(403);
   });
 
   // ── Validation ────────────────────────────────────────────────────────────
 
   it('400 on empty body', async () => {
-    const { status, body } = await request(port, '/api/import/pets', 'POST', '', 'text/plain', adminToken);
+    const { status, body } = await request(
+      port,
+      '/api/import/pets',
+      'POST',
+      '',
+      'text/plain',
+      adminToken,
+    );
     expect(status).toBe(400);
     expect(body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('400 on body with no data rows', async () => {
     const csv = `name,species,ownerId`;
-    const { status, body } = await request(port, '/api/import/pets', 'POST', csv, 'text/plain', adminToken);
+    const { status, body } = await request(
+      port,
+      '/api/import/pets',
+      'POST',
+      csv,
+      'text/plain',
+      adminToken,
+    );
     expect(status).toBe(200);
     expect(body.data.imported).toBe(0);
   });
 
   it('reports error for missing required fields', async () => {
     const csv = `name,species,ownerId\n,dog,${ownerId}`;
-    const { status, body } = await request(port, '/api/import/pets', 'POST', csv, 'text/plain', adminToken);
+    const { status, body } = await request(
+      port,
+      '/api/import/pets',
+      'POST',
+      csv,
+      'text/plain',
+      adminToken,
+    );
     expect(status).toBe(200);
     expect(body.data.skipped).toBe(1);
     expect(body.data.errors).toEqual(
@@ -127,7 +157,14 @@ describe('POST /api/import/pets', () => {
 
   it('reports error for non-existent ownerId', async () => {
     const csv = `name,species,ownerId\nFido,dog,nonexistent-user`;
-    const { status, body } = await request(port, '/api/import/pets', 'POST', csv, 'text/plain', adminToken);
+    const { status, body } = await request(
+      port,
+      '/api/import/pets',
+      'POST',
+      csv,
+      'text/plain',
+      adminToken,
+    );
     expect(status).toBe(200);
     expect(body.data.skipped).toBe(1);
     expect(body.data.errors[0].field).toBe('ownerId');
@@ -135,7 +172,14 @@ describe('POST /api/import/pets', () => {
 
   it('reports error for invalid dateOfBirth format', async () => {
     const csv = `name,species,ownerId,dateOfBirth\nFido,dog,${ownerId},15-03-2020`;
-    const { status, body } = await request(port, '/api/import/pets', 'POST', csv, 'text/plain', adminToken);
+    const { status, body } = await request(
+      port,
+      '/api/import/pets',
+      'POST',
+      csv,
+      'text/plain',
+      adminToken,
+    );
     expect(status).toBe(200);
     expect(body.data.skipped).toBe(1);
     expect(body.data.errors[0].field).toBe('dateOfBirth');
@@ -145,7 +189,14 @@ describe('POST /api/import/pets', () => {
 
   it('imports a single valid pet', async () => {
     const csv = `name,species,ownerId\nRex,dog,${ownerId}`;
-    const { status, body } = await request(port, '/api/import/pets', 'POST', csv, 'text/plain', adminToken);
+    const { status, body } = await request(
+      port,
+      '/api/import/pets',
+      'POST',
+      csv,
+      'text/plain',
+      adminToken,
+    );
     expect(status).toBe(201);
     expect(body.data.imported).toBe(1);
     expect(body.data.skipped).toBe(0);
@@ -156,13 +207,20 @@ describe('POST /api/import/pets', () => {
   it('imports valid pets and skips invalid ones in the same CSV', async () => {
     const csv = [
       'name,species,ownerId,dateOfBirth,breed',
-      `Luna,cat,${ownerId},2021-06-01,Siamese`,   // valid
-      `,dog,${ownerId},,`,                          // invalid: missing name
-      `Milo,rabbit,${ownerId},2022-04-15,`,         // valid
-      `Max,dog,nonexistent-owner,,`,                // invalid: bad ownerId
+      `Luna,cat,${ownerId},2021-06-01,Siamese`, // valid
+      `,dog,${ownerId},,`, // invalid: missing name
+      `Milo,rabbit,${ownerId},2022-04-15,`, // valid
+      `Max,dog,nonexistent-owner,,`, // invalid: bad ownerId
     ].join('\n');
 
-    const { status, body } = await request(port, '/api/import/pets', 'POST', csv, 'text/plain', adminToken);
+    const { status, body } = await request(
+      port,
+      '/api/import/pets',
+      'POST',
+      csv,
+      'text/plain',
+      adminToken,
+    );
     expect(status).toBe(201);
     expect(body.data.imported).toBe(2);
     expect(body.data.skipped).toBe(2);
@@ -171,7 +229,14 @@ describe('POST /api/import/pets', () => {
 
   it('imports pets with optional fields', async () => {
     const csv = `name,species,ownerId,breed,dateOfBirth,microchipId\nBella,cat,${ownerId},Persian,2019-11-20,CHIP-999`;
-    const { status, body } = await request(port, '/api/import/pets', 'POST', csv, 'text/plain', adminToken);
+    const { status, body } = await request(
+      port,
+      '/api/import/pets',
+      'POST',
+      csv,
+      'text/plain',
+      adminToken,
+    );
     expect(status).toBe(201);
     expect(body.data.pets[0].name).toBe('Bella');
 
@@ -184,7 +249,14 @@ describe('POST /api/import/pets', () => {
 
   it('handles quoted CSV fields containing commas', async () => {
     const csv = `name,species,ownerId,breed\n"Charlie, Jr.",dog,${ownerId},"Labrador, Mixed"`;
-    const { status, body } = await request(port, '/api/import/pets', 'POST', csv, 'text/plain', adminToken);
+    const { status, body } = await request(
+      port,
+      '/api/import/pets',
+      'POST',
+      csv,
+      'text/plain',
+      adminToken,
+    );
     expect(status).toBe(201);
     expect(body.data.pets[0].name).toBe('Charlie, Jr.');
   });

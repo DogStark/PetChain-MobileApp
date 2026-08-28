@@ -1,3 +1,5 @@
+import crashReporting from '../services/crashReporting';
+
 declare const __DEV__: boolean;
 
 type ErrorContext = {
@@ -6,7 +8,7 @@ type ErrorContext = {
   action?: string;
   userId?: string;
   status?: number;
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
 type LoggedError = {
@@ -37,7 +39,7 @@ export function logError(error: Error, context?: ErrorContext): void {
 
   // Dev logging
   if (isDev) {
-    console.error("🚨 Error Logged:", log);
+    console.error('🚨 Error Logged:', log);
   }
 
   // Send to external service (mock for now)
@@ -45,8 +47,8 @@ export function logError(error: Error, context?: ErrorContext): void {
 }
 
 function sendToService(log: LoggedError, frequency: number): void {
-  console.log("📡 Sending error to service:", {
-    ...log,
+  crashReporting.captureException(Object.assign(new Error(log.message), { stack: log.stack }), {
+    ...(log.context ?? {}),
     frequency,
   });
 }

@@ -10,7 +10,7 @@ interface CacheStats {
 }
 
 class CacheManager {
-  private cache = new Map<string, CacheItem<any>>();
+  private cache = new Map<string, CacheItem<unknown>>();
   private readonly maxSize: number;
   private readonly defaultTTL: number;
 
@@ -44,7 +44,7 @@ class CacheManager {
   }
 
   async warmCache<T>(
-    entries: Array<{ key: string; loader: () => Promise<T>; ttl?: number }>
+    entries: Array<{ key: string; loader: () => Promise<T>; ttl?: number }>,
   ): Promise<void> {
     await Promise.all(
       entries.map(async ({ key, loader, ttl }) => {
@@ -54,7 +54,7 @@ class CacheManager {
         } catch {
           // warming failures are non-fatal
         }
-      })
+      }),
     );
   }
 
@@ -107,7 +107,7 @@ class CacheManager {
     return resolvedData;
   }
 
-  private isExpired(item: CacheItem<any>): boolean {
+  private isExpired(item: CacheItem<unknown>): boolean {
     return Date.now() - item.timestamp > item.ttl;
   }
 
@@ -132,8 +132,8 @@ class CacheManager {
     entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
 
     while (this.calculateCacheSize() > this.maxSize * 0.8 && entries.length > 0) {
-      const [key] = entries.shift()!;
-      this.cache.delete(key);
+      const shifted = entries.shift();
+      if (shifted) this.cache.delete(shifted[0]);
     }
   }
 }
@@ -149,28 +149,28 @@ export class PetCacheManager extends CacheManager {
     return PetCacheManager.instance;
   }
 
-  async cachePet(petId: string, petData: any): Promise<void> {
+  async cachePet(petId: string, petData: unknown): Promise<void> {
     await this.cacheData(`pet:${petId}`, petData);
   }
 
-  async getCachedPet(petId: string): Promise<any | null> {
+  async getCachedPet(petId: string): Promise<unknown> {
     return await this.getCachedData(`pet:${petId}`);
   }
 
-  async cachePetList(pets: any[]): Promise<void> {
+  async cachePetList(pets: unknown[]): Promise<void> {
     await this.cacheData('pets:list', pets);
   }
 
-  async getCachedPetList(): Promise<any[] | null> {
-    return await this.getCachedData('pets:list');
+  async getCachedPetList(): Promise<unknown[] | null> {
+    return await this.getCachedData<unknown[]>('pets:list');
   }
 
   async invalidatePet(petId: string): Promise<void> {
     await this.invalidateCache(`pet:${petId}`);
-    await this.invalidateCache('pets:list'); // Invalidate list when individual pet changes
+    await this.invalidateCache('pets:list');
   }
 
-  async syncPetData(petId: string, remoteData: any): Promise<any> {
+  async syncPetData(petId: string, remoteData: unknown): Promise<unknown> {
     const localData = await this.getCachedPet(petId);
     if (localData) {
       return await this.resolveConflict(`pet:${petId}`, localData, remoteData);

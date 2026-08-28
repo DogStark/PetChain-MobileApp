@@ -134,6 +134,36 @@ export interface Appointment {
 
   /** Reason for cancellation, if the appointment was cancelled */
   cancellationReason?: string;
+
+  /** Telemedicine appointment flag */
+  isTelemedicine?: boolean;
+
+  /** Video call link for telemedicine appointments */
+  videoCallUrl?: string;
+
+  /** Provider used to generate the video call link */
+  videoProvider?: 'jitsi' | 'zoom';
+
+  /** Timezone where the appointment is scheduled */
+  timeZone?: string;
+
+  /** UTC timestamp when the pre-consultation questionnaire is due */
+  questionnaireDueAt?: string;
+
+  /** UTC timestamp when the questionnaire was originally sent */
+  questionnaireSentAt?: string;
+
+  /** UTC timestamp when the questionnaire was responded to */
+  questionnaireRespondedAt?: string;
+
+  /** Questionnaire responses attached to the appointment */
+  questionnaireResponses?: Record<string, string>;
+
+  /** UTC timestamp when a no-show was reported */
+  noShowReportedAt?: string;
+
+  /** Previous appointment date/time when rescheduled */
+  rescheduledFrom?: string;
 }
 
 export type CreateAppointmentPayload = Omit<

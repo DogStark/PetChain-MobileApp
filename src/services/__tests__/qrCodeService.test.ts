@@ -1,4 +1,10 @@
-import { generatePetQRCode, parseQRCodeData, validateQRCode } from '../qrCodeService';
+import {
+  generatePetQRCode,
+  generateQR,
+  getQRImageUrl,
+  parseQRCodeData,
+  validateQRCode,
+} from '../qrCodeService';
 
 // ✅ LOCAL TYPES (no dependency on service exports)
 type Species = 'dog' | 'cat' | 'bird';
@@ -44,6 +50,16 @@ describe('qrCodeService', () => {
     });
   });
 
+  describe('generateQR', () => {
+    it('encodes pet data and builds an image URL', async () => {
+      const qrCode = await generateQR(mockPet);
+      const imageUrl = getQRImageUrl(qrCode);
+
+      expect(parseQRCodeData(qrCode).petId).toBe(mockPet.id);
+      expect(imageUrl).toContain(encodeURIComponent(qrCode));
+    });
+  });
+
   describe('parseQRCodeData', () => {
     it('should parse valid QR', async () => {
       const qrCode = await generatePetQRCode(mockPet);
@@ -56,13 +72,13 @@ describe('qrCodeService', () => {
   describe('validateQRCode', () => {
     it('should validate correct QR', async () => {
       const qrCode = await generatePetQRCode(mockPet);
-      const result = validateQRCode(qrCode);
+      const result = await validateQRCode(qrCode);
 
       expect(result.valid).toBe(true);
     });
 
-    it('should reject tampered QR', () => {
-      const result = validateQRCode('tampered');
+    it('should reject tampered QR', async () => {
+      const result = await validateQRCode('tampered');
       expect(result.valid).toBe(false);
     });
   });

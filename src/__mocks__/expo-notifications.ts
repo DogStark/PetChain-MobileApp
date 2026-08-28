@@ -5,3 +5,7 @@ export const scheduleNotificationAsync = jest.fn(() => Promise.resolve('notifica
 export const cancelScheduledNotificationAsync = jest.fn();
 export const cancelAllScheduledNotificationsAsync = jest.fn();
 export const getAllScheduledNotificationsAsync = jest.fn(() => Promise.resolve([]));
+export const setNotificationCategoryAsync = jest.fn(() => Promise.resolve(null));
+export const dismissNotificationAsync = jest.fn(() => Promise.resolve());
+export const addNotificationResponseReceivedListener = jest.fn(() => ({ remove: jest.fn() }));
+export const DEFAULT_ACTION_IDENTIFIER = 'expo.modules.notifications.actions.DEFAULT';

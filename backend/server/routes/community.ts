@@ -1,8 +1,10 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion */
 import express from 'express';
 import { v4 as uuid } from 'uuid';
 
 import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
 import { ok, sendError } from '../response';
+import { store } from '../store';
 
 // ─── In-memory store (future: replace with DB) ────────────────────────────────
 
@@ -32,7 +34,7 @@ router.get('/posts', (_req: AuthenticatedRequest, res) => {
   const sorted = Array.from(posts.values()).sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   );
-  return ok(res, sorted);
+  return res.json(ok(sorted));
 });
 
 // POST /community/posts
@@ -50,7 +52,7 @@ router.post('/posts', (req: AuthenticatedRequest, res) => {
   const post: CommunityPost = {
     id: uuid(),
     authorId: req.user!.id,
-    authorName: req.user!.name ?? req.user!.email,
+    authorName: store.users.get(req.user!.id)?.name ?? req.user!.email,
     category,
     title: title.trim(),
     body: body.trim(),
@@ -61,7 +63,7 @@ router.post('/posts', (req: AuthenticatedRequest, res) => {
     updatedAt: now,
   };
   posts.set(post.id, post);
-  return ok(res, post);
+  return res.json(ok(post));
 });
 
 // POST /community/posts/:id/like
@@ -71,7 +73,7 @@ router.post('/posts/:id/like', (req: AuthenticatedRequest, res) => {
   post.likes += 1;
   post.updatedAt = new Date().toISOString();
   posts.set(post.id, post);
-  return ok(res, post);
+  return res.json(ok(post));
 });
 
 // DELETE /community/posts/:id
@@ -82,7 +84,7 @@ router.delete('/posts/:id', (req: AuthenticatedRequest, res) => {
     return sendError(res, 403, 'FORBIDDEN', 'You can only delete your own posts');
   }
   posts.delete(req.params.id);
-  return ok(res, { deleted: true });
+  return res.json(ok({ deleted: true }));
 });
 
 export default router;

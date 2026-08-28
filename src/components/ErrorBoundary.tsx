@@ -1,9 +1,15 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+
+import ErrorFallback from './ErrorFallback';
+import crashReporting from '../services/crashReporting';
 import errorLogger from '../services/errorLogger';
+import updateService from '../services/updateService';
+import { encryptedAsyncStorage } from '../utils/encryptedAsyncStorage';
 
 interface Props {
   children: React.ReactNode;
+  context?: { screenName?: string; petId?: string; userId?: string };
 }
 
 interface State {
@@ -26,6 +32,10 @@ export class ErrorBoundary extends React.Component<Props, State> {
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     this.setState({ info });
     void errorLogger.logError(error, info.componentStack ?? '');
+    // Report to Sentry with component stack as extra context
+    crashReporting.captureException(error, {
+      componentStack: info.componentStack ?? '',
+    });
   }
 
   handleRetry = () => {
@@ -40,21 +50,33 @@ export class ErrorBoundary extends React.Component<Props, State> {
     }
   };
 
+  handleClearCache = async () => {
+    try {
+      await encryptedAsyncStorage.clear();
+    } catch (e) {
+      // ignore
+    }
+    // After clearing, offer retry by remounting
+    this.handleRetry();
+  };
+
+  handleRestart = async () => {
+    try {
+      await updateService.applyOtaUpdate();
+    } catch {
+      // ignore
+    }
+  };
+
   render() {
     if (this.state.hasError) {
       return (
-        <View style={styles.container} key={String(this.state.resetKey)}>
-          <Text style={styles.title}>Something went wrong</Text>
-          <Text style={styles.message}>An unexpected error occurred. You can retry or report the issue.</Text>
-          <View style={styles.actions}>
-            <TouchableOpacity style={styles.btn} onPress={this.handleRetry} accessibilityRole="button" accessibilityLabel="Retry">
-              <Text style={styles.btnText}>Retry</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.btn, styles.secondary]} onPress={this.handleReport} accessibilityRole="button" accessibilityLabel="Report error">
-              <Text style={[styles.btnText, styles.secondaryText]}>Report</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+        <ErrorFallback
+          onRetry={this.handleRetry}
+          onContactSupport={this.handleReport}
+          onRestart={this.handleRestart}
+          onClearCache={this.handleClearCache}
+        />
       );
     }
 
@@ -64,11 +86,23 @@ export class ErrorBoundary extends React.Component<Props, State> {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: '#fff' },
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+    backgroundColor: '#fff',
+  },
   title: { fontSize: 20, fontWeight: '700', marginBottom: 8, color: '#1a1a1a' },
   message: { fontSize: 14, color: '#444', textAlign: 'center', marginBottom: 20 },
   actions: { flexDirection: 'row', gap: 12 },
-  btn: { backgroundColor: '#4CAF50', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8, marginHorizontal: 8 },
+  btn: {
+    backgroundColor: '#4CAF50',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    marginHorizontal: 8,
+  },
   btnText: { color: '#fff', fontWeight: '600' },
   secondary: { backgroundColor: '#e0e0e0' },
   secondaryText: { color: '#333' },

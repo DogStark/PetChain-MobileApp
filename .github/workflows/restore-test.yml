@@ -1,0 +1,121 @@
+name: Restore Test
+
+on:
+  schedule:
+    # Run weekly on Sunday at 04:00 UTC
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  group: restore-test
+  cancel-in-progress: false
+
+jobs:
+  restore-test:
+    name: Backup Restore Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: petchain_restore_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install AWS SDK
+        run: npm install --no-save @aws-sdk/client-s3@3.600.0
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client
+
+      - name: Create test backup
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/petchain_restore_test
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_PREFIX: restore-test/${{ github.run_id }}
+          BACKUP_S3_REGION: ${{ secrets.BACKUP_S3_REGION || 'us-east-1' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_AWS_SECRET_ACCESS_KEY }}
+          BACKUP_RETENTION_DAYS: '1'
+        run: |
+          # Seed minimal test data
+          PGPASSWORD=postgres psql -h localhost -U postgres -d petchain_restore_test \
+            -c "CREATE TABLE IF NOT EXISTS restore_probe (id serial PRIMARY KEY, val text, created_at timestamptz DEFAULT now());"
+          PGPASSWORD=postgres psql -h localhost -U postgres -d petchain_restore_test \
+            -c "INSERT INTO restore_probe (val) VALUES ('restore-test-${{ github.run_id }}');"
+
+          npx ts-node backend/scripts/backup.ts
+
+      - name: Drop and restore database
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/petchain_restore_test
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_PREFIX: restore-test/${{ github.run_id }}
+          BACKUP_S3_REGION: ${{ secrets.BACKUP_S3_REGION || 'us-east-1' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_AWS_SECRET_ACCESS_KEY }}
+        run: npx ts-node backend/scripts/restore.ts
+
+      - name: Verify restored data
+        run: |
+          COUNT=$(PGPASSWORD=postgres psql -h localhost -U postgres -d petchain_restore_test \
+            -t -c "SELECT COUNT(*) FROM restore_probe WHERE val = 'restore-test-${{ github.run_id }}';" | tr -d ' ')
+          echo "Restored row count: $COUNT"
+          if [ "$COUNT" -lt "1" ]; then
+            echo "ERROR: Restore verification failed — expected row not found"
+            exit 1
+          fi
+          echo "Restore verification passed"
+
+      - name: Run backup unit tests
+        run: npm test -- backend/__tests__/backup.test.ts --ci
+
+      - name: Upload restore log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restore-test-log-${{ github.run_id }}
+          path: logs/
+          retention-days: 14
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          PAGERDUTY_ROUTING_KEY: ${{ secrets.PAGERDUTY_ROUTING_KEY }}
+        run: |
+          if [ -n "$PAGERDUTY_ROUTING_KEY" ]; then
+            curl -s -X POST https://events.pagerduty.com/v2/enqueue \
+              -H 'Content-Type: application/json' \
+              -d "{
+                \"routing_key\": \"$PAGERDUTY_ROUTING_KEY\",
+                \"event_action\": \"trigger\",
+                \"payload\": {
+                  \"summary\": \"PetChain restore test failed (run ${{ github.run_id }})\",
+                  \"severity\": \"critical\",
+                  \"source\": \"github-actions\"
+                }
+              }"
+          fi

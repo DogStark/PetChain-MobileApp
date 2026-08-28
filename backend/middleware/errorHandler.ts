@@ -1,5 +1,5 @@
-import { AxiosError } from 'axios';
 import * as Sentry from '@sentry/react-native';
+import { AxiosError } from 'axios';
 
 interface ErrorResponse {
   message: string;

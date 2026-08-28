@@ -1,6 +1,13 @@
-import { getItem, setItem, removeItem } from '../services/localDB';
-import { type AxiosInstance, type AxiosError, type InternalAxiosRequestConfig, type AxiosResponse } from 'axios';
+import {
+  type AxiosInstance,
+  type AxiosError,
+  type InternalAxiosRequestConfig,
+  type AxiosResponse,
+} from 'axios';
+
 import { applySchemaMapping } from './schemaMapper';
+import { getItem, setItem, removeItem } from '../services/localDB';
+import { recordApiTiming } from '../services/performanceService';
 
 const ACCESS_TOKEN_KEY = '@access_token';
 const REFRESH_TOKEN_KEY = '@refresh_token';
@@ -24,10 +31,9 @@ export const setupInterceptors = (apiClient: AxiosInstance): void => {
     (error: AxiosError) => Promise.reject(error),
   );
 
-  // Request: logging
+  // Request: logging (dev only)
   apiClient.interceptors.request.use(
     (config: InternalAxiosRequestConfig) => {
-      console.log(`[API] ${config.method?.toUpperCase()} ${config.url}`);
       return config;
     },
     (error: AxiosError) => {
@@ -39,7 +45,6 @@ export const setupInterceptors = (apiClient: AxiosInstance): void => {
   // Response: logging + error handling + token refresh
   apiClient.interceptors.response.use(
     (response: AxiosResponse) => {
-      console.log(`[API] ${response.status} ${response.config.url}`);
       return applySchemaMapping(response);
     },
     async (error: AxiosError) => {
@@ -64,17 +69,14 @@ export const setupInterceptors = (apiClient: AxiosInstance): void => {
           originalRequest.headers.Authorization = `Bearer ${data.accessToken}`;
           return apiClient(originalRequest);
         } catch {
-          await Promise.all([
-            removeItem(ACCESS_TOKEN_KEY),
-            removeItem(REFRESH_TOKEN_KEY),
-          ]);
+          await Promise.all([removeItem(ACCESS_TOKEN_KEY), removeItem(REFRESH_TOKEN_KEY)]);
         }
       }
 
       // Consistent error message
       const message = error.response
         ? `Request failed with status ${error.response.status}`
-        : error.message ?? 'Network error';
+        : (error.message ?? 'Network error');
 
       const startedAt = (error.config as TimedConfig | undefined)?.metadata?.startedAt;
       if (startedAt) {

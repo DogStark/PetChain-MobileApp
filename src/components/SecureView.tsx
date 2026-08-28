@@ -1,7 +1,7 @@
-import React from "react";
-import { View, type ViewProps } from "react-native";
+import React from 'react';
+import { View, type ViewProps } from 'react-native';
 
-import { useSecureScreen } from "../utils/secureScreen";
+import { useSecureScreen } from '../utils/secureScreen';
 
 /**
  * Drop-in View replacement that blocks screenshots and screen recording.

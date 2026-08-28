@@ -1,7 +1,16 @@
-import Constants from 'expo-constants';
-
 // Environment type
 type Environment = 'development' | 'staging' | 'production';
+
+function getExpoVersion(): string {
+  try {
+    const Constants = require('expo-constants') as {
+      expoConfig?: { version?: string };
+    };
+    return Constants.expoConfig?.version || '1.0.0';
+  } catch {
+    return '1.0.0';
+  }
+}
 
 // Determine current environment
 const ENV: Environment = (process.env.APP_ENV as Environment) || 'development';
@@ -43,7 +52,7 @@ const config = {
 
   app: {
     name: process.env.APP_NAME || 'PetChain',
-    version: Constants.expoConfig?.version || '1.0.0',
+    version: getExpoVersion(),
     maxImageSizeMB: CONSTANTS.MAX_IMAGE_SIZE_MB,
     paginationLimit: CONSTANTS.PAGINATION_LIMIT,
     tokenExpiryDays: CONSTANTS.TOKEN_EXPIRY_DAYS,

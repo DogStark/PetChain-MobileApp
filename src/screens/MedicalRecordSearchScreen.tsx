@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -12,10 +12,38 @@ import {
 
 import { HeaderOfflineStatus, useOfflineStatus } from '../components/OfflineIndicator';
 import { searchMedicalRecords, type MedicalRecord } from '../services/medicalRecordService';
+import {
+  addRecentSearch,
+  getRecentSearches,
+  removeRecentSearch,
+} from '../services/searchSuggestionsService';
 
 interface Props {
   petId: string;
   onBack: () => void;
+}
+
+const DEBOUNCE_MS = 300;
+const MAX_RECENT = 10;
+
+/** Highlight matching query text within a string. */
+function HighlightedText({ text, query, style }: { text: string; query: string; style?: object }) {
+  if (!query.trim() || !text) return <Text style={style}>{text}</Text>;
+
+  const parts = text.split(new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'));
+  return (
+    <Text style={style}>
+      {parts.map((part, i) =>
+        part.toLowerCase() === query.toLowerCase() ? (
+          <Text key={i} style={styles.highlight}>
+            {part}
+          </Text>
+        ) : (
+          part
+        ),
+      )}
+    </Text>
+  );
 }
 
 const MedicalRecordSearchScreen: React.FC<Props> = ({ petId, onBack }) => {
@@ -23,33 +51,81 @@ const MedicalRecordSearchScreen: React.FC<Props> = ({ petId, onBack }) => {
   const [results, setResults] = useState<MedicalRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const [showRecents, setShowRecents] = useState(false);
   const offlineStatus = useOfflineStatus();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleSearch = async () => {
-    if (!query.trim()) return;
-    setLoading(true);
-    setSearched(true);
-    try {
-      const data = await searchMedicalRecords(petId, query);
-      setResults(data);
-    } catch {
-      Alert.alert('Error', 'Failed to search medical records.');
-    } finally {
-      setLoading(false);
-    }
+  useEffect(() => {
+    getRecentSearches().then((recents) => setRecentSearches(recents.slice(0, MAX_RECENT)));
+  }, []);
+
+  const runSearch = useCallback(
+    async (q: string) => {
+      if (!q.trim()) {
+        setResults([]);
+        setSearched(false);
+        return;
+      }
+      setLoading(true);
+      setSearched(true);
+      setShowRecents(false);
+      try {
+        const data = await searchMedicalRecords(petId, q);
+        setResults(data);
+        await addRecentSearch(q);
+        const updated = await getRecentSearches();
+        setRecentSearches(updated.slice(0, MAX_RECENT));
+      } catch {
+        Alert.alert('Error', 'Failed to search medical records.');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [petId],
+  );
+
+  const handleChangeText = (text: string) => {
+    setQuery(text);
+    setShowRecents(text.length === 0);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => runSearch(text), DEBOUNCE_MS);
   };
 
-  const renderItem = useCallback(({ item }: { item: MedicalRecord }) => (
-    <View style={styles.card} accessibilityRole="text">
-      <View style={styles.cardRow}>
-        <Text style={styles.badge}>{item.type}</Text>
-        <Text style={styles.date}>{new Date(item.date).toLocaleDateString()}</Text>
+  const handleSelectRecent = (q: string) => {
+    setQuery(q);
+    setShowRecents(false);
+    void runSearch(q);
+  };
+
+  const handleRemoveRecent = async (q: string) => {
+    const updated = await removeRecentSearch(q);
+    setRecentSearches(updated.slice(0, MAX_RECENT));
+  };
+
+  const renderItem = useCallback(
+    ({ item }: { item: MedicalRecord }) => (
+      <View style={styles.card} accessibilityRole="text">
+        <View style={styles.cardRow}>
+          <Text style={styles.badge}>{item.type}</Text>
+          <Text style={styles.date}>{new Date(item.date).toLocaleDateString()}</Text>
+        </View>
+        {item.notes ? (
+          <HighlightedText text={item.notes} query={query} style={styles.notes} />
+        ) : null}
+        {item.veterinarian ? (
+          <HighlightedText text={`Vet: ${item.veterinarian}`} query={query} style={styles.meta} />
+        ) : null}
+        {item.documents?.length ? (
+          <Text style={styles.meta}>
+            {item.documents.length} attachment{item.documents.length === 1 ? '' : 's'}
+          </Text>
+        ) : null}
+        {!offlineStatus?.isOnline ? <Text style={styles.cachedChip}>Cached</Text> : null}
       </View>
-      {item.notes ? <Text style={styles.notes}>{item.notes}</Text> : null}
-      {item.veterinarian ? <Text style={styles.meta}>Vet: {item.veterinarian}</Text> : null}
-      {!offlineStatus?.isOnline ? <Text style={styles.cachedChip}>Cached</Text> : null}
-    </View>
-  ), [offlineStatus?.isOnline]);
+    ),
+    [offlineStatus?.isOnline, query],
+  );
 
   return (
     <View style={styles.container}>
@@ -59,6 +135,7 @@ const MedicalRecordSearchScreen: React.FC<Props> = ({ petId, onBack }) => {
           style={styles.backBtn}
           accessibilityRole="button"
           accessibilityLabel="Back"
+          testID="back-button"
         >
           <Text style={styles.backText}>‹ Back</Text>
         </TouchableOpacity>
@@ -67,6 +144,7 @@ const MedicalRecordSearchScreen: React.FC<Props> = ({ petId, onBack }) => {
           <HeaderOfflineStatus />
         </View>
       </View>
+
       {!offlineStatus?.isOnline ? (
         <View style={styles.cachedBanner}>
           <Text style={styles.cachedBannerText}>Showing cached records while offline.</Text>
@@ -78,20 +156,52 @@ const MedicalRecordSearchScreen: React.FC<Props> = ({ petId, onBack }) => {
           style={styles.input}
           placeholder="Search by diagnosis, notes, vet…"
           value={query}
-          onChangeText={setQuery}
-          onSubmitEditing={handleSearch}
+          onChangeText={handleChangeText}
+          onFocus={() => setShowRecents(query.length === 0)}
+          onSubmitEditing={() => runSearch(query)}
           returnKeyType="search"
           accessibilityLabel="Search medical records"
+          testID="search-input"
         />
-        <TouchableOpacity
-          style={styles.searchBtn}
-          onPress={handleSearch}
-          accessibilityRole="button"
-          accessibilityLabel="Search"
-        >
-          <Text style={styles.searchBtnText}>Search</Text>
-        </TouchableOpacity>
+        {query.length > 0 && (
+          <TouchableOpacity
+            style={styles.clearBtn}
+            onPress={() => {
+              setQuery('');
+              setResults([]);
+              setSearched(false);
+              setShowRecents(true);
+            }}
+            accessibilityLabel="Clear search"
+            testID="clear-button"
+          >
+            <Text style={styles.clearText}>✕</Text>
+          </TouchableOpacity>
+        )}
       </View>
+
+      {showRecents && recentSearches.length > 0 && (
+        <View style={styles.recentsContainer}>
+          <Text style={styles.recentsTitle}>Recent Searches</Text>
+          {recentSearches.map((r) => (
+            <View key={r} style={styles.recentRow}>
+              <TouchableOpacity
+                style={styles.recentItem}
+                onPress={() => handleSelectRecent(r)}
+                testID={`recent-${r}`}
+              >
+                <Text style={styles.recentText}>{r}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => handleRemoveRecent(r)}
+                accessibilityLabel={`Remove ${r}`}
+              >
+                <Text style={styles.recentRemove}>✕</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      )}
 
       {loading ? (
         <ActivityIndicator style={styles.loader} size="large" color="#4CAF50" />
@@ -148,6 +258,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#e0e0e0',
+    alignItems: 'center',
   },
   input: {
     flex: 1,
@@ -159,14 +270,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     backgroundColor: '#fafafa',
   },
-  searchBtn: {
-    backgroundColor: '#4CAF50',
+  clearBtn: { padding: 6 },
+  clearText: { fontSize: 14, color: '#999' },
+  recentsContainer: {
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
     paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 8,
-    justifyContent: 'center',
   },
-  searchBtnText: { color: '#fff', fontWeight: '600' },
+  recentsTitle: { fontSize: 12, fontWeight: '700', color: '#999', marginBottom: 6 },
+  recentRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  recentItem: { flex: 1, paddingVertical: 6 },
+  recentText: { fontSize: 14, color: '#333' },
+  recentRemove: { fontSize: 12, color: '#bbb', paddingLeft: 8 },
   loader: { marginTop: 40 },
   list: { padding: 12 },
   card: {
@@ -193,6 +310,7 @@ const styles = StyleSheet.create({
   date: { fontSize: 12, color: '#999' },
   notes: { fontSize: 14, color: '#333', marginBottom: 4 },
   meta: { fontSize: 12, color: '#888' },
+  highlight: { backgroundColor: '#fff176', fontWeight: '700', color: '#1a1a1a' },
   cachedChip: {
     alignSelf: 'flex-start',
     marginTop: 8,

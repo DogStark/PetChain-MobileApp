@@ -1,14 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { 
-  getMedications, 
-  saveMedication, 
-  deleteMedication, 
-  getDoseLogs, 
+
+import {
+  getMedications,
+  saveMedication,
+  deleteMedication,
   logDose,
   getMedicationEndDate,
   isMedicationActive,
   getScheduleForRange,
-  getDaySchedule
+  getDaySchedule,
 } from '../medicationService';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -45,7 +45,7 @@ describe('medicationService', () => {
       await saveMedication(mockMedication);
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(
         '@medications',
-        JSON.stringify([mockMedication])
+        JSON.stringify([mockMedication]),
       );
     });
 
@@ -67,18 +67,19 @@ describe('medicationService', () => {
 
   describe('Date and Schedule helpers', () => {
     it('should get correct end date', () => {
-      expect(getMedicationEndDate({ ...mockMedication, endDate: '2023-01-10T00:00:00.000Z' }))
-        .toEqual(new Date('2023-01-10T00:00:00.000Z'));
+      expect(
+        getMedicationEndDate({ ...mockMedication, endDate: '2023-01-10T00:00:00.000Z' }),
+      ).toEqual(new Date('2023-01-10T00:00:00.000Z'));
       expect(getMedicationEndDate(mockMedication)).toBeNull();
     });
 
     it('should check if medication is active', () => {
       const activeDate = new Date('2023-01-05T00:00:00.000Z');
       const beforeStart = new Date('2022-12-31T23:59:59.000Z');
-      
+
       expect(isMedicationActive(mockMedication, activeDate)).toBe(true);
       expect(isMedicationActive(mockMedication, beforeStart)).toBe(false);
-      
+
       const finishedMed = { ...mockMedication, endDate: '2023-01-02T00:00:00.000Z' };
       expect(isMedicationActive(finishedMed, activeDate)).toBe(false);
     });
@@ -86,7 +87,7 @@ describe('medicationService', () => {
     it('should calculate schedule for range', () => {
       const from = new Date('2023-01-01T00:00:00.000Z');
       const to = new Date('2023-01-01T23:59:59.000Z');
-      
+
       const schedule = getScheduleForRange(mockMedication, from, to);
       // 00:00, 08:00, 16:00
       expect(schedule).toHaveLength(3);

@@ -1,5 +1,4 @@
 import apiClient, { resilientRequest, getCircuitState } from '../apiClient';
-import axios from 'axios';
 
 jest.mock('axios', () => {
   const mockAxios = {
@@ -26,9 +25,9 @@ describe('backend apiClient resilientRequest', () => {
 
   it('should succeed on first attempt', async () => {
     (apiClient.request as jest.Mock).mockResolvedValue({ data: 'success' });
-    
+
     const response = await resilientRequest({ url: '/test' });
-    
+
     expect(response.data).toBe('success');
     expect(apiClient.request).toHaveBeenCalledTimes(1);
   });
@@ -39,10 +38,10 @@ describe('backend apiClient resilientRequest', () => {
       .mockResolvedValueOnce({ data: 'success' });
 
     const promise = resilientRequest({ url: '/test' });
-    
+
     // Fast-forward through delays
     await jest.runAllTimersAsync();
-    
+
     const response = await promise;
     expect(response.data).toBe('success');
     expect(apiClient.request).toHaveBeenCalledTimes(2);
@@ -57,7 +56,7 @@ describe('backend apiClient resilientRequest', () => {
         const p = resilientRequest({ url: '/test' });
         await jest.runAllTimersAsync();
         await p;
-      } catch (e) {
+      } catch {
         // expected
       }
     }
@@ -65,7 +64,9 @@ describe('backend apiClient resilientRequest', () => {
     expect(getCircuitState()).toBe('OPEN');
 
     // Next request should fail immediately without calling apiClient.request
-    await expect(resilientRequest({ url: '/test' })).rejects.toThrow('Service temporarily unavailable');
+    await expect(resilientRequest({ url: '/test' })).rejects.toThrow(
+      'Service temporarily unavailable',
+    );
     expect(apiClient.request).toHaveBeenCalledTimes(5); // Not called for the 6th time
   });
 
@@ -77,7 +78,9 @@ describe('backend apiClient resilientRequest', () => {
         const p = resilientRequest({ url: '/test' });
         await jest.runAllTimersAsync();
         await p;
-      } catch (e) {}
+      } catch {
+        // expected
+      }
     }
     expect(getCircuitState()).toBe('OPEN');
 

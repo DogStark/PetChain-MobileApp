@@ -1,0 +1,89 @@
+name: Daily Backup
+
+on:
+  schedule:
+    # Run at 02:00 UTC every day
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip S3 upload)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: PostgreSQL + File Backup
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install AWS SDK
+        run: npm install --no-save @aws-sdk/client-s3@3.600.0
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client
+
+      - name: Run backup
+        env:
+          DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_PREFIX: backups
+          BACKUP_S3_REGION: ${{ secrets.BACKUP_S3_REGION || 'us-east-1' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_AWS_SECRET_ACCESS_KEY }}
+          BACKUP_RETENTION_DAYS: '30'
+          BACKUP_FILES_DIR: ${{ secrets.BACKUP_FILES_DIR }}
+          PAGERDUTY_ROUTING_KEY: ${{ secrets.PAGERDUTY_ROUTING_KEY }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run — skipping actual backup"
+            exit 0
+          fi
+          npx ts-node backend/scripts/backup.ts
+
+      - name: Upload backup log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-log-${{ github.run_id }}
+          path: logs/
+          retention-days: 14
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          PAGERDUTY_ROUTING_KEY: ${{ secrets.PAGERDUTY_ROUTING_KEY }}
+        run: |
+          if [ -n "$PAGERDUTY_ROUTING_KEY" ]; then
+            curl -s -X POST https://events.pagerduty.com/v2/enqueue \
+              -H 'Content-Type: application/json' \
+              -d "{
+                \"routing_key\": \"$PAGERDUTY_ROUTING_KEY\",
+                \"event_action\": \"trigger\",
+                \"payload\": {
+                  \"summary\": \"PetChain daily backup failed (run ${{ github.run_id }})\",
+                  \"severity\": \"critical\",
+                  \"source\": \"github-actions\"
+                }
+              }"
+          fi

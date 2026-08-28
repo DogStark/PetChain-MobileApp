@@ -65,21 +65,22 @@ export interface ApiResponse<T> {
   message?: string;
 }
 
+type ApiErr = { response?: { data?: { message?: string } }; message?: string };
+
+function errMsg(err: unknown, fallback: string): string {
+  const e = err as ApiErr;
+  return e?.response?.data?.message ?? e?.message ?? fallback;
+}
+
 /**
  * Get a pet by ID.
  */
 export const getPetById = async (petId: string): Promise<ApiResponse<Pet>> => {
   try {
     const response = await apiClient.get<Pet>(`/pets/${petId}`);
-    return {
-      success: true,
-      data: response.data,
-    };
-  } catch (error: any) {
-    return {
-      success: false,
-      error: error.response?.data?.message || error.message || 'Failed to fetch pet',
-    };
+    return { success: true, data: response.data };
+  } catch (err: unknown) {
+    return { success: false, error: errMsg(err, 'Failed to fetch pet') };
   }
 };
 
@@ -90,15 +91,9 @@ export const getAllPets = async (ownerId?: string): Promise<ApiResponse<Pet[]>> 
   try {
     const params = ownerId ? { ownerId } : {};
     const response = await apiClient.get<Pet[]>('/pets', { params });
-    return {
-      success: true,
-      data: response.data,
-    };
-  } catch (error: any) {
-    return {
-      success: false,
-      error: error.response?.data?.message || error.message || 'Failed to fetch pets',
-    };
+    return { success: true, data: response.data };
+  } catch (err: unknown) {
+    return { success: false, error: errMsg(err, 'Failed to fetch pets') };
   }
 };
 
@@ -108,16 +103,9 @@ export const getAllPets = async (ownerId?: string): Promise<ApiResponse<Pet[]>> 
 export const createPet = async (petData: CreatePetInput): Promise<ApiResponse<Pet>> => {
   try {
     const response = await apiClient.post<Pet>('/pets', petData);
-    return {
-      success: true,
-      data: response.data,
-      message: 'Pet created successfully',
-    };
-  } catch (error: any) {
-    return {
-      success: false,
-      error: error.response?.data?.message || error.message || 'Failed to create pet',
-    };
+    return { success: true, data: response.data, message: 'Pet created successfully' };
+  } catch (err: unknown) {
+    return { success: false, error: errMsg(err, 'Failed to create pet') };
   }
 };
 
@@ -130,16 +118,9 @@ export const updatePet = async (
 ): Promise<ApiResponse<Pet>> => {
   try {
     const response = await apiClient.put<Pet>(`/pets/${petId}`, petData);
-    return {
-      success: true,
-      data: response.data,
-      message: 'Pet updated successfully',
-    };
-  } catch (error: any) {
-    return {
-      success: false,
-      error: error.response?.data?.message || error.message || 'Failed to update pet',
-    };
+    return { success: true, data: response.data, message: 'Pet updated successfully' };
+  } catch (err: unknown) {
+    return { success: false, error: errMsg(err, 'Failed to update pet') };
   }
 };
 
@@ -149,15 +130,9 @@ export const updatePet = async (
 export const deletePet = async (petId: string): Promise<ApiResponse<void>> => {
   try {
     await apiClient.delete(`/pets/${petId}`);
-    return {
-      success: true,
-      message: 'Pet deleted successfully',
-    };
-  } catch (error: any) {
-    return {
-      success: false,
-      error: error.response?.data?.message || error.message || 'Failed to delete pet',
-    };
+    return { success: true, message: 'Pet deleted successfully' };
+  } catch (err: unknown) {
+    return { success: false, error: errMsg(err, 'Failed to delete pet') };
   }
 };
 
@@ -167,14 +142,8 @@ export const deletePet = async (petId: string): Promise<ApiResponse<void>> => {
 export const getPetByQRCode = async (qrCode: string): Promise<ApiResponse<Pet>> => {
   try {
     const response = await apiClient.get<Pet>(`/pets/qr/${qrCode}`);
-    return {
-      success: true,
-      data: response.data,
-    };
-  } catch (error: any) {
-    return {
-      success: false,
-      error: error.response?.data?.message || error.message || 'Failed to fetch pet by QR code',
-    };
+    return { success: true, data: response.data };
+  } catch (err: unknown) {
+    return { success: false, error: errMsg(err, 'Failed to fetch pet by QR code') };
   }
 };

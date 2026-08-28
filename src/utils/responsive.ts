@@ -1,8 +1,5 @@
-import { Dimensions, Platform, PixelRatio, ScaledSize } from 'react-native';
-
-// ─────────────────────────────────────────────────────────────
-// DEVICE TYPE DETECTION
-// ─────────────────────────────────────────────────────────────
+import { useEffect, useState } from 'react';
+import { Dimensions, PixelRatio, Platform, type ScaledSize } from 'react-native';
 
 /** Reference design dimensions (iPhone 14 Pro) */
 const BASE_WIDTH = 393;
@@ -91,8 +88,6 @@ export function breakpoint<T>(values: BreakpointValues<T>): T {
 // HOOK — useResponsive
 // ─────────────────────────────────────────────────────────────
 
-import { useState, useEffect } from 'react';
-
 export interface ResponsiveInfo {
   width: number;
   height: number;
@@ -150,8 +145,7 @@ export function useResponsive(): ResponsiveInfo {
  * @example
  * const numColumns = gridColumns({ phone: 2, tablet: 3 });
  */
-export const gridColumns = (values: BreakpointValues<number>): number =>
-  breakpoint(values);
+export const gridColumns = (values: BreakpointValues<number>): number => breakpoint(values);
 
 /**
  * Calculate item width for a grid with configurable columns and gutter.

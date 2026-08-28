@@ -1,4 +1,5 @@
 import apiClient from './apiClient';
+import emergencyService, { type EmergencyContact } from './emergencyService';
 import {
   addDoseLog,
   clearDoseLogs,
@@ -10,16 +11,15 @@ import {
   setItem,
   upsertMedication,
 } from './localDB';
-import { getUserProfile, saveUserProfile } from './userService';
+import type { Medication } from './medicationService';
 import { getPreferences, savePreferences } from './notificationService';
 import petService, { type Pet } from './petService';
-import emergencyService, { type EmergencyContact } from './emergencyService';
-import { getPhoto } from '../utils/petPhotoStore';
+import { getUserProfile, saveUserProfile } from './userService';
 import type { User, NotificationPreferences } from '../models/User';
-import type { Medication } from './medicationService';
+import { getPhoto } from '../utils/petPhotoStore';
 
-const USER_PROFILE_KEY = '@user_profile';
-const NOTIFICATION_PREFS_KEY = '@notification_preferences';
+const _USER_PROFILE_KEY = '@user_profile';
+const _NOTIFICATION_PREFS_KEY = '@notification_preferences';
 const NOTIFICATION_MAP_KEY = '@notification_map';
 const PETS_LIST_KEY = '@pets_list';
 const PET_PREFIX_KEY = '@pet_';
@@ -89,17 +89,20 @@ async function replacePets(pets: Pet[]): Promise<void> {
 }
 
 async function replaceMedications(medications: Medication[]): Promise<void> {
-  const current = await getAllMedications().catch(() => [] as Medication[]);
+  const current = await getAllMedications<Medication>().catch(() => [] as Medication[]);
   await Promise.all(current.map((medication) => deleteMedicationById(medication.id)));
   await Promise.all(medications.map((medication) => upsertMedication(medication)));
 }
 
 async function replaceDoseLogs(doseLogs: Array<Record<string, unknown>>): Promise<void> {
   await clearDoseLogs();
-  await Promise.all(doseLogs.map((log) => addDoseLog(log)));
+  await Promise.all(doseLogs.map((log) => addDoseLog(log as Parameters<typeof addDoseLog>[0])));
 }
 
-async function replaceContacts(contacts: EmergencyContact[], favorites: EmergencyContact[]): Promise<void> {
+async function replaceContacts(
+  contacts: EmergencyContact[],
+  favorites: EmergencyContact[],
+): Promise<void> {
   await writeJson(EMERGENCY_CONTACTS_KEY, contacts);
   await writeJson(EMERGENCY_FAVORITES_KEY, favorites);
 }
@@ -117,8 +120,8 @@ export async function createBackupSnapshot(): Promise<BackupSnapshot> {
     getUserProfile().catch(() => null),
     getPreferences().catch(() => DEFAULT_NOTIFICATION_PREFERENCES),
     petService.getAllPets().catch(() => [] as Pet[]),
-    getAllMedications().catch(() => [] as Medication[]),
-    getDoseLogs().catch(() => [] as Array<Record<string, unknown>>),
+    getAllMedications<Medication>().catch(() => [] as Medication[]),
+    getDoseLogs<Record<string, unknown>>().catch(() => [] as Array<Record<string, unknown>>),
   ]);
 
   const [emergencyContacts, favoriteEmergencyContacts] = await Promise.all([

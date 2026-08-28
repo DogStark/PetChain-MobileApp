@@ -39,7 +39,9 @@ describe('backend petService', () => {
       const response = await getAllPets('owner-123');
       expect(response.success).toBe(true);
       expect(response.data).toHaveLength(1);
-      expect(mockedApiClient.get).toHaveBeenCalledWith('/pets', { params: { ownerId: 'owner-123' } });
+      expect(mockedApiClient.get).toHaveBeenCalledWith('/pets', {
+        params: { ownerId: 'owner-123' },
+      });
     });
   });
 
@@ -47,7 +49,7 @@ describe('backend petService', () => {
     it('should create a new pet', async () => {
       const input = { name: 'Buddy', species: 'Dog', ownerId: 'owner-123' };
       mockedApiClient.post.mockResolvedValue({ data: { ...mockPet, ...input } });
-      
+
       const response = await createPet(input);
       expect(response.success).toBe(true);
       expect(response.data?.name).toBe('Buddy');
@@ -58,7 +60,7 @@ describe('backend petService', () => {
     it('should update an existing pet', async () => {
       const input = { name: 'Max' };
       mockedApiClient.patch.mockResolvedValue({ data: { ...mockPet, ...input } });
-      
+
       const response = await updatePet('pet-123', input);
       expect(response.success).toBe(true);
       expect(response.data?.name).toBe('Max');

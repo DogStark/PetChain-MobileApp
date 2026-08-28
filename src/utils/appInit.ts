@@ -1,5 +1,7 @@
+import * as SQLite from 'expo-sqlite';
+
 import { startNetworkMonitoring } from './networkMonitor';
-import { runMigrations } from '../migrations/migrationRunner';
+import { ALL_SQLITE_MIGRATIONS, runSqliteMigrations } from '../migrations/index';
 import { requestPermissions } from '../services/notificationService';
 
 export interface InitResult {
@@ -12,14 +14,12 @@ export interface InitResult {
  * Everything else is deferred to after the UI is interactive.
  */
 async function runCriticalInit(): Promise<void> {
-  // Network monitor is lightweight — start it synchronously
   startNetworkMonitoring();
 
-  // Run any pending data migrations before the UI renders
-  const result = await runMigrations();
+  const db = SQLite.openDatabaseSync('petchain.db');
+  const result = await runSqliteMigrations(db, ALL_SQLITE_MIGRATIONS);
   if (!result.success) {
-    // Log but do not crash — app can still function on the last good version
-    console.warn('[migrations] failed:', result.error);
+    console.warn('[migrations] SQLite migration failed:', result.error);
   }
 }
 

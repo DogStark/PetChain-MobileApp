@@ -26,6 +26,7 @@ const RegisterScreen: React.FC<Props> = ({ onSuccess, onLogin }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [referralCode, setReferralCode] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleRegister = async () => {
@@ -63,6 +64,7 @@ const RegisterScreen: React.FC<Props> = ({ onSuccess, onLogin }) => {
         name: name.trim(),
         email: email.trim(),
         password,
+        referralCode: referralCode.trim() || undefined,
       });
 
       onSuccess(session);
@@ -77,6 +79,7 @@ const RegisterScreen: React.FC<Props> = ({ onSuccess, onLogin }) => {
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      testID="register-screen"
     >
       <ScrollView contentContainerStyle={styles.inner} keyboardShouldPersistTaps="handled">
         <Text style={styles.logo}>🐾</Text>
@@ -89,6 +92,7 @@ const RegisterScreen: React.FC<Props> = ({ onSuccess, onLogin }) => {
           placeholderTextColor="#aaa"
           value={name}
           onChangeText={setName}
+          testID="register-name-input"
         />
 
         <TextInput
@@ -99,6 +103,7 @@ const RegisterScreen: React.FC<Props> = ({ onSuccess, onLogin }) => {
           keyboardType="email-address"
           value={email}
           onChangeText={setEmail}
+          testID="register-email-input"
         />
 
         <TextInput
@@ -108,6 +113,7 @@ const RegisterScreen: React.FC<Props> = ({ onSuccess, onLogin }) => {
           secureTextEntry
           value={password}
           onChangeText={setPassword}
+          testID="register-password-input"
         />
 
         <TextInput
@@ -120,10 +126,21 @@ const RegisterScreen: React.FC<Props> = ({ onSuccess, onLogin }) => {
           onSubmitEditing={() => void handleRegister()}
         />
 
+        <TextInput
+          style={styles.input}
+          placeholder="Referral Code (optional)"
+          placeholderTextColor="#aaa"
+          autoCapitalize="characters"
+          value={referralCode}
+          onChangeText={setReferralCode}
+          testID="register-referral-input"
+        />
+
         <TouchableOpacity
           style={[styles.btn, loading && styles.btnDisabled]}
           onPress={() => void handleRegister()}
           disabled={loading}
+          testID="register-submit-button"
         >
           {loading ? (
             <ActivityIndicator color="#fff" />

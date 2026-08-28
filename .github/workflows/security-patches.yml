@@ -1,0 +1,209 @@
+name: Security — Auto-create PRs for Patches
+
+on:
+  schedule:
+    # Run daily at 3 AM UTC to check for available patches
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # ─── Check for available security patches ────────────────────────────────
+  check-patches:
+    name: Check for Available Security Patches
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check for available updates
+        id: check-updates
+        run: |
+          npm outdated --json > outdated.json || true
+          
+          # Count packages with available updates
+          UPDATES=$(jq 'length' outdated.json)
+          echo "available-updates=$UPDATES" >> $GITHUB_OUTPUT
+          
+          # Check for security-related updates
+          SECURITY_UPDATES=$(jq '[.[] | select(.latest | contains("security") or contains("patch"))] | length' outdated.json)
+          echo "security-updates=$SECURITY_UPDATES" >> $GITHUB_OUTPUT
+          
+          cat outdated.json
+
+      - name: Run npm audit fix (dry-run)
+        id: audit-fix-dry
+        run: |
+          npm audit fix --dry-run --json > audit-fix-dry.json || true
+          cat audit-fix-dry.json
+
+      - name: Check if patches are available
+        id: has-patches
+        run: |
+          if [ -s audit-fix-dry.json ]; then
+            PATCHES=$(jq '.added // 0' audit-fix-dry.json)
+            if [ "$PATCHES" -gt 0 ]; then
+              echo "has-patches=true" >> $GITHUB_OUTPUT
+              echo "patch-count=$PATCHES" >> $GITHUB_OUTPUT
+            else
+              echo "has-patches=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "has-patches=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload outdated packages report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: outdated-packages
+          path: outdated.json
+          retention-days: 30
+
+  # ─── Create PR for security patches ──────────────────────────────────────
+  create-patch-pr:
+    name: Create PR for Security Patches
+    runs-on: ubuntu-latest
+    needs: check-patches
+    if: needs.check-patches.outputs.has-patches == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Configure Git
+        run: |
+          git config --local user.email "security@petchain.app"
+          git config --local user.name "PetChain Security Bot"
+
+      - name: Create feature branch
+        id: create-branch
+        run: |
+          BRANCH_NAME="chore/security-patches-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH_NAME"
+          echo "branch-name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit fix
+        id: audit-fix
+        run: |
+          npm audit fix --json > audit-fix-result.json || true
+          
+          FIXED=$(jq '.fixed // 0' audit-fix-result.json)
+          REMOVED=$(jq '.removed // 0' audit-fix-result.json)
+          
+          echo "fixed=$FIXED" >> $GITHUB_OUTPUT
+          echo "removed=$REMOVED" >> $GITHUB_OUTPUT
+          
+          cat audit-fix-result.json
+
+      - name: Check if package.json changed
+        id: check-changes
+        run: |
+          if git diff --quiet package.json package-lock.json; then
+            echo "has-changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has-changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit changes
+        if: steps.check-changes.outputs.has-changes == 'true'
+        run: |
+          git add package.json package-lock.json
+          git commit -m "chore: apply security patches via npm audit fix
+
+- Fixed ${{ steps.audit-fix.outputs.fixed }} vulnerabilities
+- Removed ${{ steps.audit-fix.outputs.removed }} packages
+- Closes #59"
+
+      - name: Push branch
+        if: steps.check-changes.outputs.has-changes == 'true'
+        run: |
+          git push origin ${{ steps.create-branch.outputs.branch-name }}
+
+      - name: Create Pull Request
+        if: steps.check-changes.outputs.has-changes == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🔒 chore: apply security patches via npm audit fix',
+              head: '${{ steps.create-branch.outputs.branch-name }}',
+              base: 'main',
+              body: `## Security Patches
+
+This PR automatically applies security patches detected by \`npm audit fix\`.
+
+### Changes
+- Fixed vulnerabilities: ${{ steps.audit-fix.outputs.fixed }}
+- Removed packages: ${{ steps.audit-fix.outputs.removed }}
+
+### Checklist
+- [ ] Review dependency changes
+- [ ] Run tests locally: \`npm run test:ci\`
+- [ ] Verify no breaking changes
+- [ ] Merge after CI passes
+
+### Related
+- Closes #59
+
+---
+*This PR was automatically created by the Security Patches workflow.*`,
+              labels: ['security', 'dependencies', 'automated'],
+              draft: false
+            });
+            
+            console.log('Created PR:', pr.html_url);
+            
+            // Add comment with details
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: `## 🔒 Security Patch Details
+
+**Vulnerabilities Fixed:** ${{ steps.audit-fix.outputs.fixed }}
+**Packages Removed:** ${{ steps.audit-fix.outputs.removed }}
+
+Please review the changes and ensure all tests pass before merging.`
+            });
+
+      - name: Upload audit fix result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-fix-result
+          path: audit-fix-result.json
+          retention-days: 30
+
+      - name: Notify if no changes
+        if: steps.check-changes.outputs.has-changes == 'false'
+        run: |
+          echo "✅ No changes needed - dependencies are up to date"

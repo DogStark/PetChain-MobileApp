@@ -1,0 +1,93 @@
+module.exports = {
+  testEnvironment: 'node',
+  testMatch: ['**/__tests__/**/*.test.ts', '**/__tests__/**/*.test.tsx'],
+  transform: {
+    // Includes .mjs/.cjs: MSW's dependency graph ships .mjs, which the
+    // narrower [jt]sx? pattern silently skipped even once it was allowed
+    // through transformIgnorePatterns.
+    '^.+\\.(js|jsx|ts|tsx|mjs|cjs)$': 'babel-jest',
+  },
+  // MSW and its dependency graph ship ESM only. Without transforming them,
+  // `jest.setup.js` throws "Cannot use import statement outside a module" while
+  // loading src/__mocks__/server.ts, which fails every suite in the repo before
+  // a single test runs.
+  transformIgnorePatterns: [
+    '/node_modules/(?!(otplib|@otplib|expo-updates|expo-constants|msw|@mswjs|rettime|until-async|outvariant|strict-event-emitter|headers-polyfill|is-node-process|@open-draft|@bundled-es-modules|graphql|tough-cookie|universalify|psl|punycode)/)',
+  ],
+  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'json'],
+  moduleNameMapper: {
+    '^test-renderer$': 'react-test-renderer',
+    '^react-native$': '<rootDir>/src/__mocks__/react-native.ts',
+    '^react-native-keychain$': '<rootDir>/src/__mocks__/react-native-keychain.ts',
+    '^react-native-image-picker$': '<rootDir>/src/__mocks__/react-native-image-picker.ts',
+    '^react-native-image-resizer$': '<rootDir>/src/__mocks__/react-native-image-resizer.ts',
+    '^@react-native-community/netinfo$':
+      '<rootDir>/src/__mocks__/@react-native-community/netinfo.ts',
+    '^expo-constants$': '<rootDir>/src/__mocks__/expo-constants.ts',
+    '^expo-crypto$': '<rootDir>/src/__mocks__/expo-crypto.ts',
+    '^expo-sqlite$': '<rootDir>/src/__mocks__/expo-sqlite.ts',
+    '^expo-notifications$': '<rootDir>/src/__mocks__/expo-notifications.ts',
+    '^expo-updates$': '<rootDir>/src/__mocks__/expo-updates.ts',
+    '^expo-calendar$': '<rootDir>/src/__mocks__/expo-calendar.ts',
+    '^expo-secure-store$': '<rootDir>/src/__mocks__/expo-secure-store.ts',
+    '^expo-in-app-purchases$': '<rootDir>/src/__mocks__/expo-in-app-purchases.ts',
+    '^@sentry/react-native$': '<rootDir>/src/__mocks__/@sentry/react-native.ts',
+    '^expo-splash-screen$': '<rootDir>/src/__mocks__/expo-splash-screen.ts',
+    '^pg$': '<rootDir>/src/__mocks__/pg.js',
+    '^archiver$': '<rootDir>/src/__mocks__/archiver.js',
+    '^@elastic/elasticsearch$': '<rootDir>/src/__mocks__/@elastic/elasticsearch.js',
+    '^socket\\.io$': '<rootDir>/src/__mocks__/socket.io.js',
+    '^socket\\.io-client$': '<rootDir>/src/__mocks__/socket.io-client.js',
+    '^sharp$': '<rootDir>/src/__mocks__/sharp.js',
+    '^multer$': '<rootDir>/src/__mocks__/multer.js',
+    '^expo-document-picker$': '<rootDir>/src/__mocks__/expo-document-picker.ts',
+    '^expo-image-manipulator$': '<rootDir>/src/__mocks__/expo-image-manipulator.ts',
+    '^expo-image-picker$': '<rootDir>/src/__mocks__/expo-image-picker.ts',
+    '^node-fetch$': '<rootDir>/src/__mocks__/node-fetch.js',
+    '^react-i18next$': '<rootDir>/src/__mocks__/react-i18next.js',
+    '^otplib$': '<rootDir>/src/__mocks__/otplib.ts',
+    '^react-native-ssl-pinning$': '<rootDir>/src/__mocks__/react-native-ssl-pinning.ts',
+    '^@storybook/addon-actions$': '<rootDir>/src/__mocks__/@storybook/addon-actions.ts',
+    '^react-native-reanimated$': '<rootDir>/src/__mocks__/react-native-reanimated.ts',
+    '^@expo/vector-icons$': '<rootDir>/src/__mocks__/@expo/vector-icons.ts',
+  },
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    'src/**/*.tsx',
+    'backend/**/*.ts',
+    '!src/**/__tests__/**',
+    '!src/**/__mocks__/**',
+    '!backend/**/__tests__/**',
+    '!**/node_modules/**',
+    '!**/dist/**',
+  ],
+  coverageThreshold: {
+    global: {
+      branches: 80,
+      functions: 80,
+      lines: 80,
+      statements: 80,
+    },
+    './backend/services/': {
+      branches: 85,
+      functions: 85,
+      lines: 85,
+      statements: 85,
+    },
+    './backend/server/routes/': {
+      branches: 80,
+      functions: 80,
+      lines: 80,
+      statements: 80,
+    },
+    './src/screens/': {
+      branches: 75,
+      functions: 75,
+      lines: 75,
+      statements: 75,
+    },
+  },
+  setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
+  testTimeout: 10000,
+  verbose: true,
+};

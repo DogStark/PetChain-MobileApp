@@ -1,8 +1,8 @@
+import apiClient from './apiClient';
 import { getItem, setItem, removeItem } from './localDB';
 import { savePreferences, cancelAllNotifications } from './notificationService';
-import apiClient from './apiClient';
-import { clearSecureTokens } from '../utils/encryption/keychain';
 import type { NotificationPreferences, User } from '../models/User';
+import { clearSecureTokens } from '../utils/encryption/keychain';
 
 const USER_PROFILE_KEY = '@user_profile';
 
@@ -43,6 +43,11 @@ export async function updateUserProfile(updates: Partial<Omit<User, 'id'>>): Pro
   const updated: User = {
     ...current,
     ...updates,
+    address: {
+      ...(current.address ?? {}),
+      ...(updates.address ?? {}),
+    },
+    emergencyContact: updates.emergencyContact || current.emergencyContact,
     notificationPreferences: {
       ...current.notificationPreferences,
       ...(updates.notificationPreferences ?? {}),

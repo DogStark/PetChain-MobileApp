@@ -20,25 +20,44 @@ export type AuditAction =
   | 'appointment.deleted'
   | 'medication.created'
   | 'medication.updated'
-  | 'medication.deleted';
+  | 'medication.deleted'
+  // Access grant lifecycle
+  | 'access_grant.created'
+  | 'access_grant.revoked'
+  | 'access_grant.renewed'
+  | 'access_grant.expired'
+  | 'access_grant.used'
+  // RBAC permission decisions
+  | 'rbac.access_denied'
+  | 'rbac.access_granted'
+  | 'rbac.token_invalid'
+  | 'rbac.token_expired'
+  | 'rbac.token_revoked'
+  | (string & {});
 
 export type AuditResourceType =
   | 'user'
   | 'pet'
   | 'medical_record'
   | 'appointment'
-  | 'medication';
+  | 'medication'
+  | 'access_grant'
+  | (string & {});
+
+export type AuditOutcome = 'success' | 'denied' | 'error';
 
 export interface AuditLog {
   id: string;
   actorId: string;
-  actorEmail: string;
+  actorEmail?: string;
+  role?: string;
   action: AuditAction;
   resourceType: AuditResourceType;
   resourceId?: string;
   meta?: Record<string, unknown>;
   ipAddress?: string;
   userAgent?: string;
+  outcome: AuditOutcome;
   createdAt: string;
 }
 
@@ -51,4 +70,6 @@ export interface AuditLogQuery {
   endDate?: string;
   page?: number;
   limit?: number;
+  role?: string;
+  outcome?: string;
 }

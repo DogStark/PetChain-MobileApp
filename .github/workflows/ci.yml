@@ -1,4 +1,4 @@
-name: CI
+name: CI — Lint, Typecheck & Tests
 
 on:
   push:
@@ -6,38 +6,280 @@ on:
   pull_request:
     branches: [main, master, develop]
 
-jobs:
-  lint:
-    name: Lint & Typecheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
-      - uses: actions/setup-node@v4
+jobs:
+  # ─── Quality gates (lint + format + types) ────────────────────────────────
+  quality:
+    name: Lint, Format & Typecheck
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
-      - run: npm ci
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Validate migrations
+        run: npm run migrations:validate
+
+      - name: Check for empty test files
+        run: npm run check:empty-tests
+
+      - name: Check translations (no missing Spanish keys)
+        run: npm run check:translations
 
       - name: Lint
         run: npm run lint
 
+      - name: Check formatting (Prettier)
+        run: npm run format:check
+
       - name: Typecheck
         run: npm run typecheck
 
-  test:
-    name: Test
+  # ─── Migration rollback testing ───────────────────────────────────────────
+  migration-rollback:
+    name: Migration Rollback Tests
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
 
-      - uses: actions/setup-node@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
-      - run: npm ci
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
 
-      - name: Run tests
+      - name: Run migration rollback tests
+        run: npm run test:migrations
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+
+  # ─── Unit + Integration tests ─────────────────────────────────────────────
+  test:
+    name: Unit & Integration Tests
+    runs-on: ubuntu-latest
+    needs: quality
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Run tests with coverage
         run: npm run test:ci
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+  # ─── Security audit (dependency vulnerabilities) ──────────────────────────
+  security:
+    name: Security — Dependency Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Run npm audit (fail on high/critical)
+        id: audit
+        run: |
+          # Capture full JSON report for summary output
+          npm audit --audit-level=high --json > audit-report.json || true
+
+          # Parse severity counts
+          CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' audit-report.json)
+          HIGH=$(jq '.metadata.vulnerabilities.high // 0' audit-report.json)
+          MODERATE=$(jq '.metadata.vulnerabilities.moderate // 0' audit-report.json)
+          LOW=$(jq '.metadata.vulnerabilities.low // 0' audit-report.json)
+
+          # Print summary to CI output
+          echo ""
+          echo "══════════════════════════════════════════"
+          echo "       npm audit — Vulnerability Summary  "
+          echo "══════════════════════════════════════════"
+          echo "  🔴 Critical : $CRITICAL"
+          echo "  🟠 High     : $HIGH"
+          echo "  🟡 Moderate : $MODERATE"
+          echo "  🔵 Low      : $LOW"
+          echo "══════════════════════════════════════════"
+
+          # Write to GitHub Actions step summary
+          echo "## 🔒 npm audit Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔴 Critical | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟠 High | $HIGH |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟡 Moderate | $MODERATE |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔵 Low | $LOW |" >> $GITHUB_STEP_SUMMARY
+
+          # Fail the build if high or critical vulnerabilities are found
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo ""
+            echo "❌ Build failed: $CRITICAL critical and $HIGH high severity vulnerabilities detected."
+            echo "   Run 'npm audit fix' locally to resolve them."
+            exit 1
+          fi
+
+          echo "✅ No high or critical vulnerabilities found."
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-report
+          path: audit-report.json
+          retention-days: 30
+
+      - name: Snyk scan (optional)
+        if: env.SNYK_TOKEN != ''
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+  # ─── Storybook build validation ───────────────────────────────────────────
+  storybook:
+    name: Storybook — Build & Validate
+    runs-on: ubuntu-latest
+    needs: quality
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Build Storybook
+        run: npm run storybook:ci
+
+      - name: Verify story files exist
+        run: |
+          if [ ! -f ".storybook/storybook.requires.js" ]; then
+            echo "Error: Storybook requires file not generated"
+            exit 1
+          fi
+          echo "✓ Storybook build successful"
+
+  # ─── Seed validation ──────────────────────────────────────────────────────
+  seed-validation:
+    name: Seed — Migration & Data Validation
+    runs-on: ubuntu-latest
+    needs: quality
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: petchain_seed_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/petchain_seed_test
+      NODE_ENV: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Apply migrations
+        run: npm run migrate
+
+      - name: Run seed (first pass)
+        run: npm run seed:test
+
+      - name: Run seed (second pass — idempotency check)
+        run: npm run seed:test
+
+      - name: Run seed data tests
+        run: npm test -- --testPathPattern="backend/seeds/__tests__/seedData.test.ts" --verbose

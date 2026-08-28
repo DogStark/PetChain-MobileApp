@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
 import * as SplashScreen from 'expo-splash-screen';
+import { useEffect, useState } from 'react';
+
 import { initApp } from '../utils/appInit';
 
 // Keep splash visible until we explicitly hide it
@@ -32,7 +33,9 @@ export function useSplashGuard(): SplashGuardState {
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return { appReady };

@@ -38,7 +38,7 @@ export const setupInterceptors = (apiClient: AxiosInstance): void => {
 
   // Response Interceptor: Handle 401 errors and automatic token refresh
   apiClient.interceptors.response.use(
-    (response: any) => response,
+    (response) => response,
     async (error: AxiosError) => {
       // Typing for retry state to avoid infinite loops
       const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };

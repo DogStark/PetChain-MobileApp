@@ -1,16 +1,20 @@
 import http from 'http';
 
+import { UserRole } from '../../models/UserRole';
 import { createApp } from '../app';
 import { store } from '../store';
-import { UserRole } from '../../models/UserRole';
 
-function getJson(port: number, path: string, token?: string): Promise<{ status: number; body: string }> {
+function getJson(
+  port: number,
+  path: string,
+  token?: string,
+): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
-    
+
     const req = http.request(
       { hostname: '127.0.0.1', port, path, method: 'GET', headers },
       (res) => {

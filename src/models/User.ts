@@ -35,7 +35,7 @@ export interface NotificationPreferences {
   // Quiet hours
   quietHoursEnabled?: boolean;
   quietHoursStart?: string; // "HH:MM" 24-hour
-  quietHoursEnd?: string;   // "HH:MM" 24-hour
+  quietHoursEnd?: string; // "HH:MM" 24-hour
   // Per-pet overrides
   petOverrides?: PetNotificationOverride[];
 }

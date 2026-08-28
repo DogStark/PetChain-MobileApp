@@ -32,9 +32,7 @@ export const generatePetShareLink = async (petId: string): Promise<PetShareLink>
   if (!petId) throw new PetSharingError('Pet ID is required', 'INVALID_PARAMS');
 
   try {
-    const response = await axios.post<PetShareLink>(
-      `${API_BASE_URL}/pets/${petId}/share-link`,
-    );
+    const response = await axios.post<PetShareLink>(`${API_BASE_URL}/pets/${petId}/share-link`);
     return response.data;
   } catch (error) {
     if (axios.isAxiosError(error)) {
@@ -55,9 +53,7 @@ export const generatePetQRCode = async (petId: string): Promise<PetQRCode> => {
   if (!petId) throw new PetSharingError('Pet ID is required', 'INVALID_PARAMS');
 
   try {
-    const response = await axios.post<PetQRCode>(
-      `${API_BASE_URL}/pets/${petId}/qr-code`,
-    );
+    const response = await axios.post<PetQRCode>(`${API_BASE_URL}/pets/${petId}/qr-code`);
     return response.data;
   } catch (error) {
     if (axios.isAxiosError(error)) {
@@ -74,10 +70,7 @@ export const generatePetQRCode = async (petId: string): Promise<PetQRCode> => {
  * Trigger the native OS share sheet with the pet profile link.
  * Works for both share link and social media sharing.
  */
-export const nativeSharePetProfile = async (
-  url: string,
-  petName: string,
-): Promise<void> => {
+export const nativeSharePetProfile = async (url: string, petName: string): Promise<void> => {
   await Share.share({
     message: `Check out ${petName}'s profile on PetChain!\n${url}`,
     url,

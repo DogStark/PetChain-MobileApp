@@ -34,6 +34,7 @@ export interface User {
   authProvider: AuthProvider;
   isEmailVerified: boolean;
   lastLoginAt?: string;
+  timezone?: string;
 }
 
 /**
@@ -65,4 +66,5 @@ export interface UpdateUserInput {
   role?: UserRole;
   pets?: PetReference[];
   isEmailVerified?: boolean;
+  timezone?: string;
 }

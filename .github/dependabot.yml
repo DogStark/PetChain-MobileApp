@@ -1,0 +1,57 @@
+version: 2
+
+updates:
+  # ─── npm dependencies ────────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    pull-request-branch-name:
+      separator: "/"
+    reviewers:
+      - DogStark
+    assignees:
+      - DogStark
+    labels:
+      - dependencies
+      - security
+    commit-message:
+      prefix: "chore"
+      prefix-scope: "deps"
+      include: "scope"
+    allow:
+      - dependency-type: "all"
+    ignore:
+      # Ignore major version updates for critical packages
+      - dependency-name: "react-native"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "expo"
+        update-types: ["version-update:semver-major"]
+    rebase-strategy: auto
+    versioning-strategy: auto
+
+  # ─── GitHub Actions ─────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    pull-request-branch-name:
+      separator: "/"
+    reviewers:
+      - DogStark
+    labels:
+      - ci-cd
+      - github-actions
+    commit-message:
+      prefix: "ci"
+      prefix-scope: "actions"
+      include: "scope"
+    rebase-strategy: auto

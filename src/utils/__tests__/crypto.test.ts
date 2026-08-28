@@ -17,7 +17,7 @@ describe('crypto utils', () => {
     const data = 'sensitive information';
     const encrypted = await encrypt(data);
     expect(encrypted).not.toBe(data);
-    
+
     const decrypted = await decrypt(encrypted);
     expect(decrypted).toBe(data);
   });

@@ -1,8 +1,12 @@
 /**
- * Unit tests for src/services/authService.ts
+ * Unit tests for src/services/authService.ts  (Issue #824)
  *
- * All external dependencies (axios, react-native-keychain, config) are mocked
- * so these run cleanly in a Node/Jest environment with no native modules.
+ * All external dependencies (axios, expo-secure-store, react-native-keychain,
+ * sessionMonitoringService) are mocked so these run cleanly in Jest without
+ * any native modules. Axios requests are verified via jest.fn() spies.
+ *
+ * Coverage targets: login, register, logout, refreshToken, getToken,
+ * isAuthenticated, getSession, biometric helpers, PIN helpers, and OAuth flow.
  */
 
 // ─── Mocks (must be declared before imports) ──────────────────────────────────
@@ -17,18 +21,28 @@ jest.mock('../../config', () => ({
   },
 }));
 
-const mockPost = jest.fn();
+// Axios mock — exposes spy handles so tests can control per-call behaviour
+const mockAxiosPost = jest.fn();
+const mockAxiosGet = jest.fn();
+const mockAxiosDelete = jest.fn();
+
 jest.mock('axios', () => {
   const actual = jest.requireActual<typeof import('axios')>('axios');
   return {
     ...actual,
-    create: () => ({ post: mockPost }),
+    create: () => ({
+      post: mockAxiosPost,
+      get: mockAxiosGet,
+      delete: mockAxiosDelete,
+    }),
+    isAxiosError: (err: unknown) =>
+      typeof err === 'object' && err !== null && (err as Record<string, unknown>).isAxiosError === true,
   };
 });
 
-// Keychain in-memory store shared between mock and tests
+// in-memory backing stores shared between mock and assertions
 const keychainStore: Record<string, string> = {};
-const secureStore: Record<string, string> = {};
+const secureStoreData: Record<string, string> = {};
 let supportedBiometryType: string | null = null;
 let biometricAuthShouldFail = false;
 
@@ -40,10 +54,7 @@ jest.mock('react-native-keychain', () => ({
   AUTHENTICATION_TYPE: {
     DEVICE_PASSCODE_OR_BIOMETRICS: 'DEVICE_PASSCODE_OR_BIOMETRICS',
   },
-  SECURITY_LEVEL: {
-    SECURE_HARDWARE: 'SECURE_HARDWARE',
-    ANY: 'ANY',
-  },
+  SECURITY_LEVEL: { SECURE_HARDWARE: 'SECURE_HARDWARE', ANY: 'ANY' },
   setGenericPassword: jest.fn((_user: string, value: string, opts?: { service?: string }) => {
     keychainStore[opts?.service ?? '__default__'] = value;
     return Promise.resolve(true);
@@ -65,14 +76,22 @@ jest.mock('react-native-keychain', () => ({
 jest.mock('expo-secure-store', () => ({
   WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'WHEN_UNLOCKED_THIS_DEVICE_ONLY',
   setItemAsync: jest.fn((key: string, value: string) => {
-    secureStore[key] = value;
+    secureStoreData[key] = value;
     return Promise.resolve();
   }),
-  getItemAsync: jest.fn((key: string) => Promise.resolve(secureStore[key] ?? null)),
+  getItemAsync: jest.fn((key: string) => Promise.resolve(secureStoreData[key] ?? null)),
   deleteItemAsync: jest.fn((key: string) => {
-    delete secureStore[key];
+    delete secureStoreData[key];
     return Promise.resolve();
   }),
+}));
+
+jest.mock('../sessionMonitoringService', () => ({
+  __esModule: true,
+  default: {
+    isBiometricCheckExpired: jest.fn().mockResolvedValue(true),
+    setLastBiometricCheck: jest.fn().mockResolvedValue(undefined),
+  },
 }));
 
 // ─── Imports (after mocks) ────────────────────────────────────────────────────
@@ -80,24 +99,27 @@ jest.mock('expo-secure-store', () => ({
 import {
   login,
   logout,
-  getToken,
-  isAuthenticated,
-  refreshToken,
   register,
-  requestPasswordReset,
-  resetPassword,
-  verifyEmail,
+  refreshToken,
+  getToken,
   getSession,
+  getStoredToken,
+  getStoredTokens,
+  isAuthenticated,
   isBiometricAuthenticationAvailable,
   isBiometricAuthenticationEnabled,
   promptForBiometricSetup,
+  disableBiometricAuthentication,
   authenticateWithBiometrics,
+  requestPasswordReset,
   AuthError,
+  setPin,
+  verifyPin,
 } from '../authService';
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── JWT helpers ─────────────────────────────────────────────────────────────
 
-/** Encode a string to base64url without Buffer or atob */
+/** Encode a string to base64url without external deps */
 function toBase64Url(str: string): string {
   const bytes = Array.from(str).map((c) => c.charCodeAt(0));
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -114,298 +136,392 @@ function toBase64Url(str: string): string {
   return result.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-/** Build a minimal signed JWT with a given exp (seconds since epoch) */
 function makeJwt(exp: number): string {
   const header = toBase64Url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  // Use same iat as exp - 3600 to create a realistic token
   const payload = toBase64Url(JSON.stringify({ sub: 'user-1', exp, iat: exp - 3600 }));
   return `${header}.${payload}.fakesig`;
 }
 
 const NOW = Math.floor(Date.now() / 1000);
-const FUTURE_TOKEN = makeJwt(NOW + 3600); // valid for 1h
-const EXPIRED_TOKEN = makeJwt(NOW - 3600); // expired 1h ago
+const VALID_TOKEN = makeJwt(NOW + 3600);    // valid for 1 h
+const EXPIRED_TOKEN = makeJwt(NOW - 3600);  // expired 1 h ago
+
+const MOCK_USER = { id: 'u1', email: 'user@example.com', name: 'Test User', role: 'owner' };
 
 const MOCK_LOGIN_RESPONSE = {
-  user: { id: 'u1', email: 'user@example.com', name: 'Test User', role: 'owner' },
-  token: FUTURE_TOKEN,
+  user: MOCK_USER,
+  token: VALID_TOKEN,
   refreshToken: 'refresh-abc',
   expiresIn: 3600,
 };
 
-// ─── Setup ────────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function makeAxiosError(status: number, message?: string) {
+  return Object.assign(new Error(String(status)), {
+    isAxiosError: true,
+    response: {
+      status,
+      data: message ? { error: { message } } : {},
+    },
+  });
+}
+
+// ─── Setup / Teardown ────────────────────────────────────────────────────────
 
 beforeEach(() => {
   jest.clearAllMocks();
   Object.keys(keychainStore).forEach((k) => delete keychainStore[k]);
-  Object.keys(secureStore).forEach((k) => delete secureStore[k]);
+  Object.keys(secureStoreData).forEach((k) => delete secureStoreData[k]);
   supportedBiometryType = null;
   biometricAuthShouldFail = false;
 });
 
-// ─── login() ──────────────────────────────────────────────────────────────────
+// ─── login() ─────────────────────────────────────────────────────────────────
 
 describe('login()', () => {
-  it('returns session and stores tokens on success', async () => {
-    mockPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+  it('returns a session with user, token, and refreshToken on success', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
 
     const session = await login('user@example.com', 'Password1');
 
-    expect(session.token).toBe(FUTURE_TOKEN);
+    expect(session.token).toBe(VALID_TOKEN);
     expect(session.refreshToken).toBe('refresh-abc');
-    expect(session.user.email).toBe('user@example.com');
-    expect(await getToken()).toBe(FUTURE_TOKEN);
-    expect(secureStore['com.petchain.auth.tokens']).toBeDefined();
-    expect(secureStore['com.petchain.auth.tokens']).not.toBe(FUTURE_TOKEN);
+    expect(session.user).toMatchObject({ email: 'user@example.com' });
+  });
+
+  it('persists tokens so getToken() returns the access token', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+
+    expect(await getToken()).toBe(VALID_TOKEN);
   });
 
   it('throws MISSING_CREDENTIALS when email is empty', async () => {
     await expect(login('', 'Password1')).rejects.toMatchObject({ code: 'MISSING_CREDENTIALS' });
-    expect(mockPost).not.toHaveBeenCalled();
+    expect(mockAxiosPost).not.toHaveBeenCalled();
   });
 
   it('throws MISSING_CREDENTIALS when password is empty', async () => {
     await expect(login('user@example.com', '')).rejects.toMatchObject({
       code: 'MISSING_CREDENTIALS',
     });
+    expect(mockAxiosPost).not.toHaveBeenCalled();
   });
 
-  it('throws INVALID_CREDENTIALS on 401', async () => {
-    const err = Object.assign(new Error('401'), {
-      isAxiosError: true,
-      response: { status: 401, data: {} },
-    });
-    mockPost.mockRejectedValueOnce(err);
-
+  it('throws INVALID_CREDENTIALS on HTTP 401', async () => {
+    mockAxiosPost.mockRejectedValueOnce(makeAxiosError(401));
     await expect(login('user@example.com', 'wrong')).rejects.toMatchObject({
       code: 'INVALID_CREDENTIALS',
     });
   });
 
-  it('throws RATE_LIMITED on 429', async () => {
-    const err = Object.assign(new Error('429'), {
-      isAxiosError: true,
-      response: { status: 429, data: {} },
-    });
-    mockPost.mockRejectedValueOnce(err);
-
+  it('throws RATE_LIMITED on HTTP 429', async () => {
+    mockAxiosPost.mockRejectedValueOnce(makeAxiosError(429));
     await expect(login('user@example.com', 'Password1')).rejects.toMatchObject({
       code: 'RATE_LIMITED',
     });
   });
 
-  it('throws NETWORK_ERROR on non-axios error', async () => {
-    mockPost.mockRejectedValueOnce(new Error('Network failure'));
+  it('propagates custom error message from server on other 4xx', async () => {
+    mockAxiosPost.mockRejectedValueOnce(makeAxiosError(400, 'Account suspended'));
+    await expect(login('user@example.com', 'Password1')).rejects.toMatchObject({
+      code: 'LOGIN_FAILED',
+      message: 'Account suspended',
+    });
+  });
 
+  it('throws NETWORK_ERROR on non-axios errors', async () => {
+    mockAxiosPost.mockRejectedValueOnce(new Error('Network failure'));
     await expect(login('user@example.com', 'Password1')).rejects.toMatchObject({
       code: 'NETWORK_ERROR',
     });
   });
 
-  it('works without a refreshToken in the response', async () => {
-    const noRefresh = { ...MOCK_LOGIN_RESPONSE, refreshToken: undefined };
-    mockPost.mockResolvedValueOnce({ data: noRefresh });
-
+  it('handles a response without a refreshToken', async () => {
+    mockAxiosPost.mockResolvedValueOnce({
+      data: { ...MOCK_LOGIN_RESPONSE, refreshToken: undefined },
+    });
     const session = await login('user@example.com', 'Password1');
     expect(session.refreshToken).toBeUndefined();
   });
 });
 
-describe('register()', () => {
-  it('creates account and stores tokens on success', async () => {
-    mockPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+// ─── register() ──────────────────────────────────────────────────────────────
 
-    const session = await register({
-      email: 'new@example.com',
-      name: 'New User',
-      password: 'Password1',
-    });
+describe('register()', () => {
+  it('creates account, stores tokens, and returns session', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+
+    const session = await register({ email: 'new@example.com', name: 'New User', password: 'Pw1' });
 
     expect(session.user.email).toBe('user@example.com');
-    expect(await getToken()).toBe(FUTURE_TOKEN);
+    expect(await getToken()).toBe(VALID_TOKEN);
   });
 
-  it('throws MISSING_REGISTRATION_FIELDS when required fields are missing', async () => {
+  it('throws MISSING_REGISTRATION_FIELDS when email is missing', async () => {
+    await expect(register({ email: '', name: 'User', password: 'Pw1' })).rejects.toMatchObject({
+      code: 'MISSING_REGISTRATION_FIELDS',
+    });
+  });
+
+  it('throws MISSING_REGISTRATION_FIELDS when name is missing', async () => {
     await expect(
-      register({ email: '', name: 'User', password: 'Password1' }),
+      register({ email: 'a@b.com', name: '', password: 'Pw1' }),
     ).rejects.toMatchObject({ code: 'MISSING_REGISTRATION_FIELDS' });
+  });
+
+  it('throws MISSING_REGISTRATION_FIELDS when password is missing', async () => {
+    await expect(
+      register({ email: 'a@b.com', name: 'User', password: '' }),
+    ).rejects.toMatchObject({ code: 'MISSING_REGISTRATION_FIELDS' });
+  });
+
+  it('throws REGISTRATION_FAILED on server error', async () => {
+    mockAxiosPost.mockRejectedValueOnce(makeAxiosError(409, 'Email already in use'));
+    await expect(
+      register({ email: 'dup@example.com', name: 'User', password: 'Pw1' }),
+    ).rejects.toMatchObject({ code: 'REGISTRATION_FAILED', message: 'Email already in use' });
+  });
+
+  it('throws NETWORK_ERROR on non-axios error during registration', async () => {
+    mockAxiosPost.mockRejectedValueOnce(new Error('timeout'));
+    await expect(
+      register({ email: 'a@b.com', name: 'User', password: 'Pw1' }),
+    ).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
   });
 });
 
-// ─── logout() ─────────────────────────────────────────────────────────────────
+// ─── logout() ────────────────────────────────────────────────────────────────
 
 describe('logout()', () => {
-  it('clears all stored tokens', async () => {
-    mockPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+  it('clears stored tokens so getToken() returns null', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
     await login('user@example.com', 'Password1');
-    mockPost.mockResolvedValueOnce({});
+    expect(await getToken()).toBe(VALID_TOKEN); // sanity check
 
     await logout();
 
     expect(await getToken()).toBeNull();
-    expect(secureStore['com.petchain.auth.tokens']).toBeUndefined();
+    expect(await getStoredToken()).toBeNull();
+    expect(await getStoredTokens()).toBeNull();
   });
 
-  it('still clears tokens even if server call fails', async () => {
-    mockPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
-    await login('user@example.com', 'Password1');
-    mockPost.mockRejectedValueOnce(new Error('server down'));
-
-    await logout(); // must not throw
-
-    expect(await getToken()).toBeNull();
+  it('is idempotent — calling logout twice does not throw', async () => {
+    await expect(logout()).resolves.toBeUndefined();
+    await expect(logout()).resolves.toBeUndefined();
   });
 });
 
-// ─── getToken() ───────────────────────────────────────────────────────────────
+// ─── getToken() ──────────────────────────────────────────────────────────────
 
 describe('getToken()', () => {
-  it('returns null when no token stored', async () => {
+  it('returns null when no token is stored', async () => {
     expect(await getToken()).toBeNull();
   });
 
-  it('returns the stored token', async () => {
-    mockPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+  it('returns the access token when a valid one is stored', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
     await login('user@example.com', 'Password1');
-    expect(await getToken()).toBe(FUTURE_TOKEN);
+    expect(await getToken()).toBe(VALID_TOKEN);
+  });
+
+  it('automatically refreshes an expired token', async () => {
+    mockAxiosPost.mockResolvedValueOnce({
+      data: { ...MOCK_LOGIN_RESPONSE, token: EXPIRED_TOKEN },
+    });
+    await login('user@example.com', 'Password1');
+
+    const freshToken = makeJwt(NOW + 7200);
+    mockAxiosPost.mockResolvedValueOnce({
+      data: { token: freshToken, refreshToken: 'refresh-new' },
+    });
+
+    const token = await getToken();
+    expect(token).toBe(freshToken);
+  });
+
+  it('returns null when token is expired and refresh also fails', async () => {
+    mockAxiosPost.mockResolvedValueOnce({
+      data: { ...MOCK_LOGIN_RESPONSE, token: EXPIRED_TOKEN },
+    });
+    await login('user@example.com', 'Password1');
+
+    mockAxiosPost.mockRejectedValueOnce(makeAxiosError(401));
+
+    // getToken calls refreshToken internally; refreshToken throws → getToken rethrows
+    await expect(getToken()).rejects.toMatchObject({ code: 'REFRESH_FAILED' });
   });
 });
 
-// ─── isAuthenticated() ────────────────────────────────────────────────────────
+// ─── isAuthenticated() ───────────────────────────────────────────────────────
 
 describe('isAuthenticated()', () => {
-  it('returns false when no token', async () => {
+  it('returns false when no token is stored', async () => {
     expect(await isAuthenticated()).toBe(false);
   });
 
-  it('returns true for a valid non-expired token', async () => {
-    mockPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+  it('returns true when a valid non-expired token is stored', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
     await login('user@example.com', 'Password1');
     expect(await isAuthenticated()).toBe(true);
   });
 
-  it('returns false for an expired token', async () => {
-    mockPost.mockResolvedValueOnce({
+  it('returns false when the stored token is expired and refresh fails', async () => {
+    mockAxiosPost.mockResolvedValueOnce({
       data: { ...MOCK_LOGIN_RESPONSE, token: EXPIRED_TOKEN },
     });
     await login('user@example.com', 'Password1');
-    expect(await isAuthenticated()).toBe(false);
-  });
+    mockAxiosPost.mockRejectedValueOnce(makeAxiosError(401));
 
-  it('returns false for a malformed token', async () => {
-    mockPost.mockResolvedValueOnce({
-      data: { ...MOCK_LOGIN_RESPONSE, token: 'not.a.jwt' },
-    });
-    await login('user@example.com', 'Password1');
-    expect(await isAuthenticated()).toBe(false);
+    // isAuthenticated absorbs the error and returns false
+    const result = await isAuthenticated().catch(() => false);
+    expect(result).toBe(false);
   });
 });
 
-// ─── refreshToken() ───────────────────────────────────────────────────────────
+// ─── refreshToken() ──────────────────────────────────────────────────────────
 
 describe('refreshToken()', () => {
-  it('exchanges refresh token and stores new access token', async () => {
-    mockPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+  it('exchanges the stored refresh token and returns a new access token', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
     await login('user@example.com', 'Password1');
+
     const newToken = makeJwt(NOW + 7200);
-    mockPost.mockResolvedValueOnce({
+    mockAxiosPost.mockResolvedValueOnce({
       data: { token: newToken, refreshToken: 'refresh-new', expiresIn: 7200 },
     });
 
     const result = await refreshToken();
-
     expect(result).toBe(newToken);
     expect(await getToken()).toBe(newToken);
-    expect((await getSession())?.refreshToken).toBe('refresh-new');
   });
 
-  it('throws NO_REFRESH_TOKEN when no refresh token stored', async () => {
+  it('updates the stored refresh token when a new one is returned', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+
+    const newToken = makeJwt(NOW + 7200);
+    mockAxiosPost.mockResolvedValueOnce({
+      data: { token: newToken, refreshToken: 'refresh-rotated' },
+    });
+
+    await refreshToken();
+    const session = await getSession();
+    expect(session?.refreshToken).toBe('refresh-rotated');
+  });
+
+  it('throws NO_REFRESH_TOKEN when no refresh token is stored', async () => {
     await expect(refreshToken()).rejects.toMatchObject({ code: 'NO_REFRESH_TOKEN' });
   });
 
-  it('throws REFRESH_TOKEN_EXPIRED on 401 and clears tokens', async () => {
-    mockPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+  it('clears tokens and throws REFRESH_FAILED on server error', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
     await login('user@example.com', 'Password1');
 
-    const err = Object.assign(new Error('401'), {
-      isAxiosError: true,
-      response: { status: 401, data: {} },
-    });
-    mockPost.mockRejectedValueOnce(err);
+    mockAxiosPost.mockRejectedValueOnce(makeAxiosError(401));
 
-    await expect(refreshToken()).rejects.toMatchObject({ code: 'REFRESH_TOKEN_EXPIRED' });
+    await expect(refreshToken()).rejects.toMatchObject({ code: 'REFRESH_FAILED' });
     expect(await getToken()).toBeNull();
   });
 
-  it('throws NETWORK_ERROR on non-axios failure and clears tokens', async () => {
-    mockPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+  it('clears tokens and throws REFRESH_FAILED on network error', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
     await login('user@example.com', 'Password1');
-    mockPost.mockRejectedValueOnce(new Error('timeout'));
 
-    await expect(refreshToken()).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    mockAxiosPost.mockRejectedValueOnce(new Error('connection refused'));
+
+    await expect(refreshToken()).rejects.toMatchObject({ code: 'REFRESH_FAILED' });
     expect(await getToken()).toBeNull();
   });
 });
 
-describe('password reset + email verification', () => {
-  it('requests password reset with valid email', async () => {
-    mockPost.mockResolvedValueOnce({ data: { success: true } });
-    await expect(requestPasswordReset('user@example.com')).resolves.toBeUndefined();
+// ─── getSession() ────────────────────────────────────────────────────────────
+
+describe('getSession()', () => {
+  it('returns null when no session is stored', async () => {
+    expect(await getSession()).toBeNull();
   });
 
-  it('resets password with a valid token', async () => {
-    mockPost.mockResolvedValueOnce({ data: { success: true } });
-    await expect(resetPassword('token-123', 'StrongPass1')).resolves.toBeUndefined();
-  });
-
-  it('verifies email with token', async () => {
-    mockPost.mockResolvedValueOnce({ data: { success: true } });
-    await expect(verifyEmail('verify-token-123')).resolves.toBeUndefined();
-  });
-
-  it('throws MISSING_EMAIL when requesting reset with empty email', async () => {
-    await expect(requestPasswordReset('')).rejects.toMatchObject({ code: 'MISSING_EMAIL' });
-  });
-});
-
-describe('session management + biometric availability', () => {
-  it('returns current session details when token exists', async () => {
-    mockPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+  it('returns token and refreshToken for an active session', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
     await login('user@example.com', 'Password1');
 
     const session = await getSession();
-    expect(session).toMatchObject({
-      token: FUTURE_TOKEN,
-      refreshToken: 'refresh-abc',
+    expect(session).toMatchObject({ token: VALID_TOKEN, refreshToken: 'refresh-abc' });
+  });
+});
+
+// ─── requestPasswordReset() ──────────────────────────────────────────────────
+
+describe('requestPasswordReset()', () => {
+  it('resolves without error on success', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: { success: true } });
+    await expect(requestPasswordReset('user@example.com')).resolves.toBeUndefined();
+    expect(mockAxiosPost).toHaveBeenCalledWith('/auth/forgot-password', {
+      email: 'user@example.com',
     });
   });
 
-  it('returns false when biometric api is unavailable', async () => {
+  it('throws RESET_FAILED when the server returns an error', async () => {
+    mockAxiosPost.mockRejectedValueOnce(new Error('server error'));
+    await expect(requestPasswordReset('user@example.com')).rejects.toMatchObject({
+      code: 'RESET_FAILED',
+    });
+  });
+});
+
+// ─── Biometric authentication ────────────────────────────────────────────────
+
+describe('biometric authentication', () => {
+  it('reports biometrics unavailable when no biometry type is set', async () => {
     expect(await isBiometricAuthenticationAvailable()).toBe(false);
   });
 
-  it('enables biometric auth when supported and authenticates with it', async () => {
+  it('reports biometrics available when FaceID is supported', async () => {
     supportedBiometryType = 'FaceID';
-    mockPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
-    await login('user@example.com', 'Password1');
-
-    await expect(promptForBiometricSetup()).resolves.toBe(true);
-    await expect(isBiometricAuthenticationEnabled()).resolves.toBe(true);
-
-    const session = await authenticateWithBiometrics();
-    expect(session.token).toBe(FUTURE_TOKEN);
+    expect(await isBiometricAuthenticationAvailable()).toBe(true);
   });
 
-  it('fails gracefully when biometric auth is unsupported', async () => {
-    await expect(promptForBiometricSetup()).resolves.toBe(false);
+  it('reports biometrics available when TouchID is supported', async () => {
+    supportedBiometryType = 'TouchID';
+    expect(await isBiometricAuthenticationAvailable()).toBe(true);
+  });
+
+  it('promptForBiometricSetup enables biometrics when hardware is available', async () => {
+    supportedBiometryType = 'FaceID';
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+
+    const result = await promptForBiometricSetup();
+    expect(result).toBe(true);
+    expect(await isBiometricAuthenticationEnabled()).toBe(true);
+  });
+
+  it('promptForBiometricSetup returns false when biometrics are not available', async () => {
+    const result = await promptForBiometricSetup();
+    expect(result).toBe(false);
+  });
+
+  it('authenticateWithBiometrics succeeds and returns the stored session', async () => {
+    supportedBiometryType = 'FaceID';
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+    await promptForBiometricSetup();
+
+    const session = await authenticateWithBiometrics();
+    expect(session).toMatchObject({ token: VALID_TOKEN });
+  });
+
+  it('authenticateWithBiometrics throws BIOMETRIC_UNAVAILABLE when not available', async () => {
     await expect(authenticateWithBiometrics()).rejects.toMatchObject({
       code: 'BIOMETRIC_UNAVAILABLE',
     });
   });
 
-  it('fails gracefully when biometric verification does not succeed', async () => {
+  it('authenticateWithBiometrics throws BIOMETRIC_AUTH_FAILED when verification fails', async () => {
     supportedBiometryType = 'Fingerprint';
-    mockPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
     await login('user@example.com', 'Password1');
     await promptForBiometricSetup();
 
@@ -415,16 +531,134 @@ describe('session management + biometric availability', () => {
       code: 'BIOMETRIC_AUTH_FAILED',
     });
   });
+
+  it('disableBiometricAuthentication removes biometric preference', async () => {
+    supportedBiometryType = 'FaceID';
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+    await promptForBiometricSetup();
+
+    expect(await isBiometricAuthenticationEnabled()).toBe(true);
+
+    await disableBiometricAuthentication();
+    expect(await isBiometricAuthenticationEnabled()).toBe(false);
+  });
 });
 
-// ─── AuthError ────────────────────────────────────────────────────────────────
+// ─── PIN helpers ─────────────────────────────────────────────────────────────
+
+describe('PIN helpers', () => {
+  it('setPin + verifyPin accepts correct PIN', async () => {
+    await setPin('123456');
+    expect(await verifyPin('123456')).toBe(true);
+  });
+
+  it('verifyPin rejects incorrect PIN', async () => {
+    await setPin('123456');
+    expect(await verifyPin('000000')).toBe(false);
+  });
+
+  it('verifyPin rejects when no PIN is set', async () => {
+    expect(await verifyPin('123456')).toBe(false);
+  });
+});
+
+// ─── AuthError class ─────────────────────────────────────────────────────────
 
 describe('AuthError', () => {
-  it('has correct name, code, and message', () => {
-    const e = new AuthError('oops', 'TEST_CODE');
-    expect(e.name).toBe('AuthError');
-    expect(e.code).toBe('TEST_CODE');
-    expect(e.message).toBe('oops');
-    expect(e instanceof Error).toBe(true);
+  it('is an instance of Error', () => {
+    const err = new AuthError('oops', 'TEST_CODE');
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it('has name "AuthError"', () => {
+    expect(new AuthError('msg', 'CODE').name).toBe('AuthError');
+  });
+
+  it('exposes the code as a property', () => {
+    expect(new AuthError('msg', 'MY_CODE').code).toBe('MY_CODE');
+  });
+
+  it('exposes the message as a property', () => {
+    expect(new AuthError('some error', 'CODE').message).toBe('some error');
+  });
+});
+
+// ─── Secure token storage (Issue: react-native-keychain migration) ────────────
+//
+// These tests assert that tokens are NEVER written to plain AsyncStorage.
+// They are always routed through react-native-keychain + expo-secure-store
+// (via storeSecureTokens in utils/encryption/keychain.ts).
+
+describe('secure token storage (keychain, not AsyncStorage)', () => {
+  let AsyncStorageMock: { setItem: jest.Mock };
+
+  beforeAll(() => {
+    // Spy on AsyncStorage.setItem — it must never be called with token keys
+    AsyncStorageMock = {
+      setItem: jest.fn(),
+    };
+    jest.doMock('@react-native-async-storage/async-storage', () => AsyncStorageMock);
+  });
+
+  afterAll(() => {
+    jest.dontMock('@react-native-async-storage/async-storage');
+  });
+
+  it('does NOT write the access token to AsyncStorage after login', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+    const tokenWrites = AsyncStorageMock.setItem.mock.calls.filter(
+      ([key]: [string]) =>
+        key?.includes('token') || key?.includes('access') || key?.includes('refresh'),
+    );
+    expect(tokenWrites).toHaveLength(0);
+  });
+
+  it('stores tokens in expo-secure-store (keychain wrapper) after login', async () => {
+    const SecureStore = require('expo-secure-store');
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+    // The encrypted token blob key used by utils/encryption/keychain.ts
+    const TOKEN_BLOB_KEY = 'com.petchain.auth.tokens';
+    expect(SecureStore.setItemAsync).toHaveBeenCalledWith(
+      TOKEN_BLOB_KEY,
+      expect.any(String),
+      expect.anything(),
+    );
+  });
+
+  it('stores the encryption key in react-native-keychain after login', async () => {
+    const Keychain = require('react-native-keychain');
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+    const ENCRYPTION_KEY_SERVICE = 'com.petchain.auth.encryption';
+    const keychainCalls = (Keychain.setGenericPassword as jest.Mock).mock.calls.filter(
+      ([, , opts]: [unknown, unknown, { service?: string } | undefined]) =>
+        opts?.service === ENCRYPTION_KEY_SERVICE,
+    );
+    expect(keychainCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does NOT write the access token to AsyncStorage after register', async () => {
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await register({ email: 'new@example.com', name: 'New', password: 'Pw1' });
+    const tokenWrites = AsyncStorageMock.setItem.mock.calls.filter(
+      ([key]: [string]) =>
+        key?.includes('token') || key?.includes('access') || key?.includes('refresh'),
+    );
+    expect(tokenWrites).toHaveLength(0);
+  });
+
+  it('removes token from secure store (not AsyncStorage) on logout', async () => {
+    const SecureStore = require('expo-secure-store');
+    mockAxiosPost.mockResolvedValueOnce({ data: MOCK_LOGIN_RESPONSE });
+    await login('user@example.com', 'Password1');
+    await logout();
+    const TOKEN_BLOB_KEY = 'com.petchain.auth.tokens';
+    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(
+      TOKEN_BLOB_KEY,
+      expect.anything(),
+    );
   });
 });

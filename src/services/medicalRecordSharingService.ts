@@ -71,10 +71,9 @@ export const shareRecordWithVet = async (
   }
 
   try {
-    await axios.post(
-      `${API_BASE_URL}/pets/${petId}/medical-records/${recordId}/share-with-vet`,
-      { vetId },
-    );
+    await axios.post(`${API_BASE_URL}/pets/${petId}/medical-records/${recordId}/share-with-vet`, {
+      vetId,
+    });
   } catch (error) {
     if (axios.isAxiosError(error)) {
       throw new MedicalRecordError('Failed to share with vet', 'VET_SHARE_ERROR');

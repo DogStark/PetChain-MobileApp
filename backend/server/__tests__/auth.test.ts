@@ -32,7 +32,7 @@ describe('Authentication Middleware', () => {
   it('should allow access with a valid token', async () => {
     const token = jwt.sign(
       { sub: testUser.id, email: testUser.email, role: testUser.role },
-      secret
+      secret,
     );
 
     const response = await request(app)
@@ -72,12 +72,10 @@ describe('Authentication Middleware', () => {
     // Admin route
     const token = jwt.sign(
       { sub: testUser.id, email: testUser.email, role: UserRole.OWNER },
-      secret
+      secret,
     );
 
-    const response = await request(app)
-      .get('/api/users')
-      .set('Authorization', `Bearer ${token}`);
+    const response = await request(app).get('/api/users').set('Authorization', `Bearer ${token}`);
 
     expect(response.status).toBe(403);
     expect(response.body.error.code).toBe('FORBIDDEN');
@@ -92,14 +90,9 @@ describe('Authentication Middleware', () => {
     };
     store.users.set(adminId, adminUser);
 
-    const token = jwt.sign(
-      { sub: adminId, email: adminUser.email, role: UserRole.ADMIN },
-      secret
-    );
+    const token = jwt.sign({ sub: adminId, email: adminUser.email, role: UserRole.ADMIN }, secret);
 
-    const response = await request(app)
-      .get('/api/users')
-      .set('Authorization', `Bearer ${token}`);
+    const response = await request(app).get('/api/users').set('Authorization', `Bearer ${token}`);
 
     expect(response.status).toBe(200);
     expect(response.body.success).toBe(true);

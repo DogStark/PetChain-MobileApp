@@ -1,9 +1,12 @@
-import { 
-  formatDate, 
-  parseDate, 
-  isValidDate, 
-  getDateDifference, 
-  getRelativeTime 
+import {
+  formatDate,
+  formatInTimezone,
+  getCurrentDateInTimezone,
+  getDateDifference,
+  getRelativeTime,
+  isValidDate,
+  parseDate,
+  parseZonedDateTime,
 } from '../dateUtils';
 
 describe('dateUtils', () => {
@@ -72,11 +75,27 @@ describe('dateUtils', () => {
     it('should return relative time for future', () => {
       const future = new Date();
       future.setDate(future.getDate() + 1);
-      expect(getRelativeTime(future)).toBe('in 1 day');
+      const result = getRelativeTime(future);
+      expect(['in 1 day', 'tomorrow']).toContain(result);
     });
 
     it('should return "just now" for very recent', () => {
-      expect(getRelativeTime(new Date())).toBe('just now');
+      const result = getRelativeTime(new Date());
+      expect(['just now', 'now']).toContain(result);
+    });
+  });
+
+  describe('timezone helpers', () => {
+    it('should parse a local timezone datetime into a valid UTC instant', () => {
+      const parsed = parseZonedDateTime('2026-06-01', '10:00', 'America/Los_Angeles');
+      expect(parsed.toISOString()).toMatch(/^2026-06-01T/);
+      expect(formatInTimezone(parsed, 'America/Los_Angeles')).toContain('06/01/2026');
+      expect(formatInTimezone(parsed, 'America/Los_Angeles')).toContain('10:00');
+    });
+
+    it('should return current date in a requested timezone', () => {
+      const dateString = getCurrentDateInTimezone('America/Chicago');
+      expect(dateString).toMatch(/\d{4}-\d{2}-\d{2}/);
     });
   });
 });

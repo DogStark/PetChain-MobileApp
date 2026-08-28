@@ -5,46 +5,33 @@ import { type AxiosResponse } from 'axios';
  * This allows the app to handle legacy data formats gracefully.
  */
 
-type MapperFunction = (data: any) => any;
+type MapperFunction = (data: unknown) => unknown;
 
 const mappers: Record<string, MapperFunction> = {
-  /**
-   * Example: Normalize Pet object.
-   * Handles legacy field names like 'pet_name' or missing 'species'.
-   */
-  '/pets': (data: any) => {
+  '/pets': (data: unknown) => {
     if (Array.isArray(data)) {
       return data.map(mapPet);
     }
     return mapPet(data);
   },
 
-  '/pets/:id': (data: any) => mapPet(data),
-
-  /**
-   * Add more mappers as the API evolves...
-   */
+  '/pets/:id': (data: unknown) => mapPet(data),
 };
 
-function mapPet(pet: any) {
-  if (!pet) return pet;
+function mapPet(pet: unknown) {
+  if (!pet || typeof pet !== 'object') return pet;
+  const p = pet as Record<string, unknown>;
 
-  // Backward compatibility: pet_name -> name
-  if (pet.pet_name && !pet.name) {
-    pet.name = pet.pet_name;
+  if (p.pet_name && !p.name) {
+    p.name = p.pet_name;
   }
-
-  // Ensure mandatory fields have defaults if missing in older API versions
-  if (!pet.species) {
-    pet.species = 'other';
+  if (!p.species) {
+    p.species = 'other';
   }
-
-  // Resilient parsing: Ensure dates are handled or defaulted
-  if (!pet.createdAt) {
-    pet.createdAt = new Date().toISOString();
+  if (!p.createdAt) {
+    p.createdAt = new Date().toISOString();
   }
-
-  return pet;
+  return p;
 }
 
 /**
@@ -57,11 +44,12 @@ export const applySchemaMapping = (response: AxiosResponse): AxiosResponse => {
   // Find a matching mapper for the URL
   // (Simplistic matching for demo: exact match or startsWith)
   const mapperKey = Object.keys(mappers).find(
-    (key) => url.endsWith(key) || (key.includes(':id') && url.match(new RegExp(key.replace(':id', '[^/]+'))))
+    (key) =>
+      url.endsWith(key) ||
+      (key.includes(':id') && url.match(new RegExp(key.replace(':id', '[^/]+')))),
   );
 
   if (mapperKey && data) {
-    console.log(`[SchemaMapper] Applying mapper for ${mapperKey}`);
     response.data = mappers[mapperKey](data);
   }
 

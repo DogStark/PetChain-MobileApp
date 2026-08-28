@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -12,12 +12,19 @@ import {
   View,
 } from 'react-native';
 
+import MedicalRecordAttachments from '../components/MedicalRecordAttachments';
+import { requireBiometric, verifyPin } from '../services/authService';
 import {
   getMedicalRecords,
   searchMedicalRecords,
   type MedicalRecord,
   type RecordFilters,
 } from '../services/medicalRecordService';
+import sessionMonitoringService from '../services/sessionMonitoringService';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const PAGE_SIZE = 20;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -44,11 +51,26 @@ interface Props {
   onBack: () => void;
 }
 
+type AuthGateState = 'checking' | 'authenticated' | 'pin_required' | 'failed';
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
+  const [authState, setAuthState] = useState<AuthGateState>('checking');
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState('');
+
   const [records, setRecords] = useState<MedicalRecord[]>([]);
+  // initial load state — shows full-screen spinner
   const [loading, setLoading] = useState(false);
+  // next-page fetch state — shows footer spinner
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  // page acts as our cursor: next page to load
+  const nextPageRef = useRef(1);
+  // prevent duplicate onEndReached fires
+  const isFetchingRef = useRef(false);
+
   const [selectedType, setSelectedType] = useState<RecordType>(undefined);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -57,24 +79,145 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
   const [detailRecord, setDetailRecord] = useState<MedicalRecord | null>(null);
   const [filtersVisible, setFiltersVisible] = useState(false);
 
-  const loadRecords = useCallback(async () => {
-    setLoading(true);
+  // ─── Helpers ─────────────────────────────────────────────────────────────
+
+  const mapRecord = (r: MedicalRecord): MedicalRecord => ({
+    ...r,
+    verificationStatus: (r.isBlockchainVerified ? 'verified' : 'unknown') as
+      | 'verified'
+      | 'unknown'
+      | 'pending',
+  });
+
+  // ─── Biometric auth gate ────────────────────────────────────────────────
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const checkAuth = async () => {
+      try {
+        const result = await requireBiometric();
+        if (cancelled) return;
+
+        if (result === 'authenticated') {
+          setAuthState('authenticated');
+        } else {
+          // Biometric failed or unavailable — PIN fallback
+          setAuthState('pin_required');
+        }
+      } catch {
+        if (!cancelled) {
+          setAuthState('failed');
+        }
+      }
+    };
+
+    void checkAuth();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handlePinSubmit = useCallback(async () => {
+    if (!pinInput.trim()) {
+      setPinError('Please enter your PIN.');
+      return;
+    }
+
     try {
-      const filters: RecordFilters = { type: selectedType };
+      const valid = await verifyPin(pinInput.trim());
+      if (valid) {
+        await sessionMonitoringService.setLastBiometricCheck();
+        setAuthState('authenticated');
+        setPinInput('');
+        setPinError('');
+      } else {
+        setPinError('Incorrect PIN. Please try again.');
+        setPinInput('');
+      }
+    } catch {
+      setPinError('Failed to verify PIN. Please try again.');
+    }
+  }, [pinInput]);
+
+  const handleAuthCancel = useCallback(() => {
+    Alert.alert(
+      'Authentication required to view records',
+      'You must authenticate to view medical records.',
+      [{ text: 'OK', onPress: onBack }],
+    );
+  }, [onBack]);
+
+  // ─── Initial / reset load ─────────────────────────────────────────────────
+
+  const loadFirstPage = useCallback(async () => {
+    setLoading(true);
+    setRecords([]);
+    setHasMore(true);
+    nextPageRef.current = 1;
+    isFetchingRef.current = true;
+    try {
+      const filters: RecordFilters = {
+        type: selectedType,
+        page: 1,
+        limit: PAGE_SIZE,
+      };
       if (startDate) filters.startDate = startDate;
       if (endDate) filters.endDate = endDate;
+
       const res = await getMedicalRecords(petId, filters);
-      setRecords(res.data);
+      const { data: payload } = res;
+      const mapped = payload.data.map(mapRecord);
+
+      setRecords(mapped);
+      // If the API returned fewer records than requested, we've hit the end
+      setHasMore(payload.data.length === PAGE_SIZE && payload.page < payload.totalPages);
+      nextPageRef.current = 2;
     } catch {
       Alert.alert('Error', 'Failed to load medical records.');
     } finally {
       setLoading(false);
+      isFetchingRef.current = false;
     }
   }, [petId, selectedType, startDate, endDate]);
 
   useEffect(() => {
-    if (!isSearchMode) void loadRecords();
-  }, [loadRecords, isSearchMode]);
+    if (!isSearchMode) void loadFirstPage();
+  }, [loadFirstPage, isSearchMode]);
+
+  // ─── Paginated next-page fetch ────────────────────────────────────────────
+
+  const loadNextPage = useCallback(async () => {
+    if (isFetchingRef.current || !hasMore || isSearchMode) return;
+
+    isFetchingRef.current = true;
+    setLoadingMore(true);
+    try {
+      const filters: RecordFilters = {
+        type: selectedType,
+        page: nextPageRef.current,
+        limit: PAGE_SIZE,
+      };
+      if (startDate) filters.startDate = startDate;
+      if (endDate) filters.endDate = endDate;
+
+      const res = await getMedicalRecords(petId, filters);
+      const { data: payload } = res;
+      const mapped = payload.data.map(mapRecord);
+
+      setRecords((prev) => [...prev, ...mapped]);
+      setHasMore(payload.data.length === PAGE_SIZE && payload.page < payload.totalPages);
+      nextPageRef.current += 1;
+    } catch {
+      Alert.alert('Error', 'Failed to load more records.');
+    } finally {
+      setLoadingMore(false);
+      isFetchingRef.current = false;
+    }
+  }, [petId, selectedType, startDate, endDate, hasMore, isSearchMode]);
+
+  // ─── Search ───────────────────────────────────────────────────────────────
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) {
@@ -86,6 +229,7 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
     try {
       const results = await searchMedicalRecords(petId, searchQuery);
       setRecords(results);
+      setHasMore(false); // search returns all results at once
     } catch {
       Alert.alert('Error', 'Search failed.');
     } finally {
@@ -98,10 +242,12 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
     setIsSearchMode(false);
   };
 
+  // ─── Filter actions ───────────────────────────────────────────────────────
+
   const applyFilters = () => {
     setIsSearchMode(false);
     setFiltersVisible(false);
-    void loadRecords();
+    // loadFirstPage will be triggered by the useEffect dependency on selectedType/startDate/endDate
   };
 
   const resetFilters = () => {
@@ -110,26 +256,122 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
     setEndDate('');
   };
 
-  // ─── Render helpers ──────────────────────────────────────────────────────────
+  // ─── FlatList callbacks ───────────────────────────────────────────────────
 
-  const renderItem = useCallback(({ item }: { item: MedicalRecord }) => (
-    <TouchableOpacity style={styles.card} onPress={() => setDetailRecord(item)}>
-      <View style={styles.cardRow}>
-        <View style={[styles.typeBadge, typeBadgeColor(item.type)]}>
-          <Text style={styles.typeBadgeText}>{item.type}</Text>
+  const handleEndReached = useCallback(() => {
+    void loadNextPage();
+  }, [loadNextPage]);
+
+  // ─── Render helpers ───────────────────────────────────────────────────────
+
+  const renderItem = useCallback(
+    ({ item }: { item: MedicalRecord }) => (
+      <TouchableOpacity style={styles.card} onPress={() => setDetailRecord(item)}>
+        <View style={styles.cardRow}>
+          <View style={[styles.typeBadge, typeBadgeColor(item.type)]}>
+            <Text style={styles.typeBadgeText}>{item.type}</Text>
+          </View>
+          <Text style={styles.cardDate}>{new Date(item.date).toLocaleDateString()}</Text>
         </View>
-        <Text style={styles.cardDate}>{new Date(item.date).toLocaleDateString()}</Text>
-      </View>
-      {item.notes ? (
-        <Text style={styles.cardNotes} numberOfLines={2}>
-          {item.notes}
-        </Text>
-      ) : null}
-      {item.veterinarian ? <Text style={styles.cardMeta}>Vet: {item.veterinarian}</Text> : null}
-    </TouchableOpacity>
-  ), []);
+        {item.notes ? (
+          <Text style={styles.cardNotes} numberOfLines={2}>
+            {item.notes}
+          </Text>
+        ) : null}
+        {item.veterinarian ? <Text style={styles.cardMeta}>Vet: {item.veterinarian}</Text> : null}
+        {item.documents?.length ? (
+          <Text style={styles.cardMeta}>
+            {item.documents.length} attachment{item.documents.length === 1 ? '' : 's'}
+          </Text>
+        ) : null}
+      </TouchableOpacity>
+    ),
+    [],
+  );
 
-  // ─── Render ──────────────────────────────────────────────────────────────────
+  const renderFooter = useCallback(() => {
+    if (isSearchMode) return null;
+    if (loadingMore) {
+      return (
+        <View style={styles.footerLoader}>
+          <ActivityIndicator size="small" color="#10B981" />
+        </View>
+      );
+    }
+    if (!hasMore && records.length > 0) {
+      return (
+        <View style={styles.footerEnd}>
+          <Text style={styles.footerEndText}>All records loaded</Text>
+        </View>
+      );
+    }
+    return null;
+  }, [loadingMore, hasMore, records.length, isSearchMode]);
+
+  // ─── Render ───────────────────────────────────────────────────────────────
+
+  // ── Auth gate: show authentication screen until verified ──
+  if (authState === 'checking') {
+    return (
+      <View style={styles.container}>
+        <View style={styles.authGateContainer}>
+          <ActivityIndicator size="large" color="#10B981" />
+          <Text style={styles.authGateText}>Verifying authentication…</Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (authState === 'failed') {
+    return (
+      <View style={styles.container}>
+        <View style={styles.authGateContainer}>
+          <Text style={styles.authGateTitle}>Authentication Required</Text>
+          <Text style={styles.authGateDescription}>
+            You must authenticate to view medical records.
+          </Text>
+          <TouchableOpacity style={styles.authGateButton} onPress={onBack}>
+            <Text style={styles.authGateButtonText}>Go Back</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  if (authState === 'pin_required') {
+    return (
+      <View style={styles.container}>
+        <View style={styles.authGateContainer}>
+          <Text style={styles.authGateTitle}>Enter PIN</Text>
+          <Text style={styles.authGateDescription}>
+            Biometric authentication is unavailable. Please enter your PIN to continue.
+          </Text>
+          <TextInput
+            style={styles.pinInput}
+            placeholder="Enter your PIN"
+            placeholderTextColor="#9CA3AF"
+            value={pinInput}
+            onChangeText={(text) => {
+              setPinInput(text);
+              setPinError('');
+            }}
+            keyboardType="number-pad"
+            secureTextEntry
+            maxLength={10}
+            accessibilityLabel="PIN input"
+            onSubmitEditing={handlePinSubmit}
+          />
+          {pinError ? <Text style={styles.pinErrorText}>{pinError}</Text> : null}
+          <TouchableOpacity style={styles.authGateButton} onPress={handlePinSubmit}>
+            <Text style={styles.authGateButtonText}>Submit PIN</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.authGateCancelButton} onPress={handleAuthCancel}>
+            <Text style={styles.authGateCancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -214,16 +456,22 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
           data={records}
           keyExtractor={(r) => r.id}
           renderItem={renderItem}
+          // Pagination
+          onEndReached={handleEndReached}
+          onEndReachedThreshold={0.4}
+          ListFooterComponent={renderFooter}
+          // Performance
+          initialNumToRender={10}
+          windowSize={5}
+          maxToRenderPerBatch={10}
+          removeClippedSubviews
+          // Layout
           contentContainerStyle={records.length === 0 ? styles.emptyContainer : styles.list}
           ListEmptyComponent={
             <Text style={styles.emptyText}>
               {isSearchMode ? `No results for "${searchQuery}".` : 'No records found.'}
             </Text>
           }
-          removeClippedSubviews
-          maxToRenderPerBatch={10}
-          windowSize={5}
-          initialNumToRender={10}
         />
       )}
 
@@ -311,40 +559,45 @@ const MedicalRecordViewerScreen: React.FC<Props> = ({ petId, petName, onBack }) 
               <View style={{ width: 50 }} />
             </View>
             <ScrollView contentContainerStyle={styles.detailBody}>
-              <DetailRow label="Type" value={detailRecord.type} />
-              <DetailRow label="Date" value={new Date(detailRecord.date).toLocaleDateString()} />
-              {detailRecord.veterinarian ? (
-                <DetailRow label="Vet" value={detailRecord.veterinarian} />
-              ) : null}
-              {detailRecord.notes ? <DetailRow label="Notes" value={detailRecord.notes} /> : null}
-              {detailRecord.nextDueDate ? (
-                <DetailRow
-                  label="Next Due"
-                  value={new Date(detailRecord.nextDueDate).toLocaleDateString()}
-                />
-              ) : null}
-              {(detailRecord as ExtendedRecord).vaccineName ? (
-                <DetailRow label="Vaccine" value={(detailRecord as ExtendedRecord).vaccineName!} />
-              ) : null}
-              {(detailRecord as ExtendedRecord).treatmentName ? (
-                <DetailRow
-                  label="Treatment"
-                  value={(detailRecord as ExtendedRecord).treatmentName!}
-                />
-              ) : null}
-              {(detailRecord as ExtendedRecord).medication ? (
-                <DetailRow
-                  label="Medication"
-                  value={(detailRecord as ExtendedRecord).medication!}
-                />
-              ) : null}
-              {(detailRecord as ExtendedRecord).dosage ? (
-                <DetailRow label="Dosage" value={(detailRecord as ExtendedRecord).dosage!} />
-              ) : null}
-              <DetailRow
-                label="Created"
-                value={new Date(detailRecord.createdAt).toLocaleDateString()}
-              />
+              {(() => {
+                const record = detailRecord as ExtendedRecord;
+                return (
+                  <>
+                    <DetailRow label="Type" value={detailRecord.type} />
+                    <DetailRow
+                      label="Date"
+                      value={new Date(detailRecord.date).toLocaleDateString()}
+                    />
+                    {detailRecord.veterinarian ? (
+                      <DetailRow label="Vet" value={detailRecord.veterinarian} />
+                    ) : null}
+                    {detailRecord.notes ? (
+                      <DetailRow label="Notes" value={detailRecord.notes} />
+                    ) : null}
+                    {detailRecord.nextVisitDate ? (
+                      <DetailRow
+                        label="Next Due"
+                        value={new Date(detailRecord.nextVisitDate).toLocaleDateString()}
+                      />
+                    ) : null}
+                    {record.vaccineName ? (
+                      <DetailRow label="Vaccine" value={record.vaccineName} />
+                    ) : null}
+                    {record.treatmentName ? (
+                      <DetailRow label="Treatment" value={record.treatmentName} />
+                    ) : null}
+                    {record.medication ? (
+                      <DetailRow label="Medication" value={record.medication} />
+                    ) : null}
+                    {record.dosage ? <DetailRow label="Dosage" value={record.dosage} /> : null}
+                    <MedicalRecordAttachments documents={detailRecord.documents} />
+                    <DetailRow
+                      label="Created"
+                      value={new Date(detailRecord.createdAt).toLocaleDateString()}
+                    />
+                  </>
+                );
+              })()}
             </ScrollView>
           </View>
         </Modal>
@@ -378,6 +631,77 @@ const typeBadgeColor = (type: string) => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
+
+  // Auth gate
+  authGateContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
+    backgroundColor: '#F9FAFB',
+  },
+  authGateTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  authGateDescription: {
+    fontSize: 15,
+    color: '#6B7280',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 22,
+  },
+  authGateText: {
+    fontSize: 15,
+    color: '#6B7280',
+    marginTop: 16,
+  },
+  authGateButton: {
+    backgroundColor: '#10B981',
+    paddingHorizontal: 32,
+    paddingVertical: 14,
+    borderRadius: 10,
+    marginBottom: 12,
+    minWidth: 200,
+    alignItems: 'center',
+  },
+  authGateButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  authGateCancelButton: {
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  authGateCancelText: {
+    color: '#6B7280',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  pinInput: {
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 18,
+    color: '#111827',
+    backgroundColor: '#fff',
+    width: '100%',
+    marginBottom: 16,
+    textAlign: 'center',
+    letterSpacing: 8,
+  },
+  pinErrorText: {
+    color: '#EF4444',
+    fontSize: 13,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -447,7 +771,7 @@ const styles = StyleSheet.create({
   },
   chipClearText: { fontSize: 12, color: '#991B1B', fontWeight: '600' },
   loader: { marginTop: 40 },
-  list: { padding: 12 },
+  list: { padding: 12, paddingBottom: 24 },
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 80 },
   emptyText: { color: '#9CA3AF', fontSize: 15, textAlign: 'center' },
   card: {
@@ -471,6 +795,19 @@ const styles = StyleSheet.create({
   cardDate: { fontSize: 12, color: '#6B7280' },
   cardNotes: { fontSize: 14, color: '#374151', marginBottom: 4 },
   cardMeta: { fontSize: 12, color: '#9CA3AF' },
+  // Footer
+  footerLoader: {
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  footerEnd: {
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  footerEndText: {
+    fontSize: 13,
+    color: '#9CA3AF',
+  },
   // Filter sheet
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   filterSheet: {

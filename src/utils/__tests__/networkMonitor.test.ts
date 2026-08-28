@@ -1,4 +1,5 @@
 import NetInfo from '@react-native-community/netinfo';
+
 import { networkMonitor } from '../networkMonitor';
 
 jest.mock('@react-native-community/netinfo', () => ({
@@ -54,7 +55,7 @@ describe('networkMonitor', () => {
 
   it('should fetch current status', async () => {
     (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true, type: 'cellular' });
-    
+
     const status = await networkMonitor.getStatus();
     expect(status.isOnline).toBe(true);
     expect(status.connectionType).toBe('cellular');
@@ -63,10 +64,10 @@ describe('networkMonitor', () => {
   it('should unsubscribe and clear callbacks on stop', () => {
     const unsubscribeMock = jest.fn();
     (NetInfo.addEventListener as jest.Mock).mockReturnValue(unsubscribeMock);
-    
+
     networkMonitor.startNetworkMonitoring();
     networkMonitor.stopNetworkMonitoring();
-    
+
     expect(unsubscribeMock).toHaveBeenCalled();
   });
 });

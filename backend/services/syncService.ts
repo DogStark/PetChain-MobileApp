@@ -158,7 +158,7 @@ class SyncService {
     for (const type of types) {
       try {
         const response = await apiClient.get(`/${type}s`);
-        const serverItems = (response.data as Record<string, unknown>[]);
+        const serverItems = response.data as Record<string, unknown>[];
 
         for (const item of serverItems) {
           const key = `@${type}_${item.id}`;

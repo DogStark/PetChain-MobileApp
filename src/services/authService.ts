@@ -1,5 +1,8 @@
 import axios, { type AxiosInstance } from 'axios';
+import * as SecureStore from 'expo-secure-store';
 
+import sessionMonitoringService from './sessionMonitoringService';
+import { incrementLogoutGeneration } from './apiClient';
 import type {
   LoginRequest,
   LoginResponse,
@@ -9,7 +12,7 @@ import type {
 } from '../../backend/types/api';
 import { API_ENDPOINTS } from '../../backend/types/api';
 import config from '../config';
-import { logError } from '../utils/errorLogger';
+import { hashPassword } from '../utils/encryption';
 import {
   authenticateWithBiometricGate,
   clearSecureTokens,
@@ -21,7 +24,11 @@ import {
   getSecureTokens,
   isBiometricAuthenticationEnabled as isBiometricStorageEnabled,
   storeSecureTokens,
+  setCurrentAccountId,
+  getCurrentAccountId,
 } from '../utils/encryption/keychain';
+import { logError } from '../utils/errorLogger';
+import { sanitizeString } from '../utils/sanitize';
 
 // ─── Custom error ─────────────────────────────────────────────────────────────
 
@@ -114,13 +121,79 @@ function decodeJwtPayload(token: string): JwtPayload {
   }
 }
 
-function isTokenExpired(token: string): boolean {
+function _isTokenExpired(token: string): boolean {
   try {
     const { exp } = decodeJwtPayload(token);
     return Date.now() / 1000 >= exp - 30;
   } catch {
     return true;
   }
+}
+
+// ─── Session generation guard (Issue #904) ────────────────────────────────────
+
+/**
+ * Monotonic counter identifying the currently authenticated session.
+ *
+ * Every write of credentials to secure storage is tagged with the generation
+ * that was current when the work started. `logout()` and each successful
+ * sign-in bump the counter, which invalidates any refresh that is still in
+ * flight: when it finally resolves it sees a generation mismatch and discards
+ * its response instead of writing it.
+ *
+ * Without this, an in-flight `POST /auth/refresh` that started before logout
+ * would call `storeSecureTokens()` after `clearSecureTokens()` had already
+ * run, silently restoring a session the user just ended. The same race
+ * restores the *previous* account's tokens when a user switches accounts.
+ */
+let authGeneration = 0;
+
+/**
+ * The refresh currently in flight, if any, together with the generation it
+ * belongs to. Concurrent callers within the same generation share one request
+ * rather than each issuing their own — several screens calling `getToken()`
+ * at once previously fired several refreshes, and whichever finished last won.
+ */
+let inFlightRefresh: { generation: number; promise: Promise<string> } | null = null;
+
+/** Current session generation. Exposed for tests and diagnostics. */
+export function getAuthGeneration(): number {
+  return authGeneration;
+}
+
+/**
+ * Invalidate the current session generation.
+ *
+ * Call this whenever the identity behind the stored credentials changes —
+ * logout, account switch, or a fresh sign-in. Any refresh still in flight is
+ * abandoned: it will not write its response.
+ *
+ * @returns the new generation number
+ */
+export function invalidateAuthSession(): number {
+  authGeneration += 1;
+  inFlightRefresh = null;
+  return authGeneration;
+}
+
+/** True while `generation` is still the live session. */
+function isCurrentGeneration(generation: number): boolean {
+  return generation === authGeneration;
+}
+
+/**
+ * Structural check for the stale-session sentinel.
+ *
+ * Deliberately not `err instanceof AuthError`: subclassing `Error` does not
+ * survive Babel's class transform (and behaves inconsistently under Hermes),
+ * so `instanceof` can be false for an error this module threw itself.
+ */
+function isSessionChangedError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: unknown }).code === 'SESSION_CHANGED'
+  );
 }
 
 // ─── API client ───────────────────────────────────────────────────────────────
@@ -147,9 +220,17 @@ export async function login(email: string, password: string): Promise<AuthSessio
     throw error;
   }
 
+  // Sanitize inputs before sending to the API
+  const sanitizedEmail = sanitizeString(email);
+  const sanitizedPassword = sanitizeString(password);
+
   try {
-    const payload: LoginRequest = { email, password };
+    const payload: LoginRequest = { email: sanitizedEmail, password: sanitizedPassword };
     const { data } = await authClient.post<LoginResponse>(API_ENDPOINTS.AUTH_LOGIN, payload);
+
+    // A new sign-in establishes a new identity: abandon any refresh still in
+    // flight for the previous session so it cannot overwrite these tokens.
+    invalidateAuthSession();
 
     await storeSecureTokens({
       token: data.token,
@@ -175,7 +256,7 @@ export async function login(email: string, password: string): Promise<AuthSessio
       logError(err as Error, {
         service: 'authService',
         action: 'login_request',
-        email,
+        email: sanitizedEmail,
         status,
       });
 
@@ -202,6 +283,8 @@ export async function register(payload: RegisterRequest): Promise<AuthSession> {
   try {
     const { data } = await authClient.post<RegisterResponse>(API_ENDPOINTS.AUTH_REGISTER, payload);
 
+    invalidateAuthSession();
+
     await storeSecureTokens({
       token: data.token,
       refreshToken: data.refreshToken,
@@ -224,11 +307,41 @@ export async function register(payload: RegisterRequest): Promise<AuthSession> {
   }
 }
 
+/**
+ * Refresh the access token.
+ *
+ * Concurrent callers share a single in-flight request, and the result is
+ * discarded if the session generation changed while it was pending — see
+ * {@link invalidateAuthSession}.
+ *
+ * @throws {AuthError} `SESSION_CHANGED` if the session ended mid-refresh,
+ *   `REFRESH_FAILED` for every other failure.
+ */
 export async function refreshToken(): Promise<string> {
+  // Single-flight: reuse a pending refresh belonging to the live generation.
+  if (inFlightRefresh && isCurrentGeneration(inFlightRefresh.generation)) {
+    return inFlightRefresh.promise;
+  }
+
+  const generation = authGeneration;
+  const promise = performTokenRefresh(generation).finally(() => {
+    // Only clear the slot if it still holds *this* request; a newer
+    // generation may already have replaced it.
+    if (inFlightRefresh?.generation === generation) {
+      inFlightRefresh = null;
+    }
+  });
+
+  inFlightRefresh = { generation, promise };
+  return promise;
+}
+
+async function performTokenRefresh(generation: number): Promise<string> {
   try {
-    const storedRefresh = await getSecureRefreshToken();
+    const accountId = getCurrentAccountId();
+    const storedRefresh = await getSecureRefreshToken(accountId || undefined);
     if (!storedRefresh) {
-      await clearSecureTokens();
+      await clearTokensIfCurrent(generation);
       const error = new AuthError('No refresh token available', 'NO_REFRESH_TOKEN');
       logError(error, { service: 'authService', action: 'refresh_missing_token' });
       throw error;
@@ -238,17 +351,474 @@ export async function refreshToken(): Promise<string> {
       refreshToken: storedRefresh,
     });
 
+    // The request above is the race window. If logout or a new sign-in landed
+    // while it was pending, writing this response would resurrect credentials
+    // for a session that no longer exists.
+    if (!isCurrentGeneration(generation)) {
+      throw new AuthError('Session changed during token refresh', 'SESSION_CHANGED');
+    }
+
     await storeSecureTokens({
       token: data.token,
       refreshToken: data.refreshToken ?? storedRefresh,
     });
 
+    // `storeSecureTokens` is itself asynchronous, so re-check and undo the
+    // write if the session ended while it was being persisted.
+    if (!isCurrentGeneration(generation)) {
+      await clearSecureTokens();
+      throw new AuthError('Session changed during token refresh', 'SESSION_CHANGED');
+    }
+
     return data.token;
   } catch (err: unknown) {
-    await clearSecureTokens();
+    if (isSessionChangedError(err)) {
+      // Expected outcome of a logout race — not an error worth reporting as a
+      // refresh failure, and the tokens must be left exactly as logout left them.
+      logError(err as Error, { service: 'authService', action: 'refresh_discarded_stale_session' });
+      throw err;
+    }
+
+    await clearTokensIfCurrent(generation);
 
     logError(err as Error, { service: 'authService', action: 'refresh_token' });
 
     throw new AuthError('Token refresh failed', 'REFRESH_FAILED');
   }
+}
+
+/**
+ * Clear stored credentials only if they still belong to `generation`.
+ *
+ * A failed refresh must not wipe the tokens of a session that started after
+ * it — otherwise a slow, doomed refresh from a previous account logs the user
+ * out of the account they just signed in to.
+ */
+async function clearTokensIfCurrent(generation: number): Promise<void> {
+  if (isCurrentGeneration(generation)) {
+    await clearSecureTokens();
+  }
+}
+
+export async function logout(): Promise<void> {
+  // Bump the generation *before* clearing so a refresh that resolves during
+  // the clear already sees itself as stale.
+  invalidateAuthSession();
+  await clearSecureTokens();
+}
+
+export async function verifyEmail(_token: string): Promise<void> {
+  // Placeholder — implement when backend endpoint is available
+  throw new AuthError('Email verification not yet implemented', 'NOT_IMPLEMENTED');
+}
+
+export async function requestPasswordReset(email: string): Promise<void> {
+  try {
+    await authClient.post('/auth/forgot-password', { email });
+  } catch (err) {
+    logError(err as Error, { service: 'authService', action: 'request_password_reset' });
+    throw new AuthError('Failed to send password reset email', 'RESET_FAILED');
+  }
+}
+
+export async function resetPassword(_token: string, _newPassword: string): Promise<void> {
+  throw new AuthError('Password reset not yet implemented', 'NOT_IMPLEMENTED');
+}
+
+export async function isBiometricAuthenticationAvailable(): Promise<boolean> {
+  const availability = await getBiometricAvailability();
+  return availability.isAvailable;
+}
+
+export async function isBiometricAuthenticationEnabled(): Promise<boolean> {
+  return isBiometricStorageEnabled();
+}
+
+export async function disableBiometricAuthentication(): Promise<void> {
+  await disableBiometricStorage();
+}
+
+export async function promptForBiometricSetup(): Promise<boolean> {
+  try {
+    await enableBiometricStorage();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function getStoredToken(): Promise<string | null> {
+  const accountId = getCurrentAccountId();
+  return getSecureToken(accountId || undefined);
+}
+
+export async function getStoredTokens(): Promise<StoredSession | null> {
+  const accountId = getCurrentAccountId();
+  return getSecureTokens(accountId || undefined);
+}
+
+export async function authenticateWithBiometric(): Promise<boolean> {
+  try {
+    return await authenticateWithBiometricGate('Authenticate to access PetChain');
+  } catch {
+    return false;
+  }
+}
+
+export async function getToken(): Promise<string | null> {
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
+  if (!token) return null;
+  if (_isTokenExpired(token)) return refreshToken();
+  return token;
+}
+
+export async function getSession(): Promise<StoredSession | null> {
+  const accountId = getCurrentAccountId();
+  const tokens = await getSecureTokens(accountId || undefined);
+  if (!tokens) return null;
+  if (_isTokenExpired(tokens.token)) {
+    const token = await refreshToken();
+    return { token, refreshToken: tokens.refreshToken };
+  }
+  return tokens;
+}
+
+export async function isAuthenticated(): Promise<boolean> {
+  return (await getToken()) !== null;
+}
+
+export async function authenticateWithBiometrics(): Promise<StoredSession> {
+  const available = await isBiometricAuthenticationAvailable();
+  const enabled = await isBiometricAuthenticationEnabled();
+  if (!available || !enabled)
+    throw new AuthError('Biometric authentication is unavailable', 'BIOMETRIC_UNAVAILABLE');
+  const ok = await authenticateWithBiometric();
+  if (!ok) throw new AuthError('Biometric authentication failed', 'BIOMETRIC_AUTH_FAILED');
+  const session = await getSession();
+  if (!session) throw new AuthError('No stored session available', 'NO_SESSION');
+  return session;
+}
+
+/**
+ * Require biometric re-authentication if the last check was more than 5 minutes ago.
+ * If biometrics fail or are unavailable, falls back to PIN entry.
+ * If both fail, returns false — the caller should navigate back.
+ */
+export async function requireBiometric(): Promise<'authenticated' | 'pin_fallback' | 'failed'> {
+  const isExpired = await sessionMonitoringService.isBiometricCheckExpired();
+  if (!isExpired) {
+    // Recent check still valid — no need to re-auth
+    return 'authenticated';
+  }
+
+  // Attempt biometric authentication
+  const biometricOk = await authenticateWithBiometric();
+  if (biometricOk) {
+    await sessionMonitoringService.setLastBiometricCheck();
+    return 'authenticated';
+  }
+
+  // Biometric failed or unavailable — fall back to PIN
+  const available = await isBiometricAuthenticationAvailable();
+  if (!available) {
+    // Biometrics not available at all — try PIN if set
+    return 'pin_fallback';
+  }
+
+  return 'pin_fallback';
+}
+
+/**
+ * Attempt PIN-based authentication as fallback.
+ * Returns true if PIN is verified, false otherwise.
+ */
+export async function authenticateWithPin(): Promise<boolean> {
+  // The caller will prompt the user for their PIN and pass it here
+  // This returns a promise that resolves when the PIN modal is done
+  return false; // Placeholder — actual PIN prompting is handled in the UI
+}
+
+const PIN_HASH_KEY = 'com.petchain.auth.pin.hash';
+let pinFailures = 0;
+let biometricFailures = 0;
+let lastForegroundAt = Date.now();
+let inMemorySecret: string | null = null;
+
+export async function setPin(pin: string): Promise<void> {
+  await SecureStore.setItemAsync(PIN_HASH_KEY, hashPassword(pin));
+}
+
+export async function verifyPin(pin: string): Promise<boolean> {
+  const expected = await SecureStore.getItemAsync(PIN_HASH_KEY);
+  const valid = !!expected && expected === hashPassword(pin);
+  if (valid) {
+    pinFailures = 0;
+    return true;
+  }
+  pinFailures += 1;
+  if (pinFailures >= 5) {
+    inMemorySecret = null;
+    await clearSecureTokens();
+  }
+  return false;
+}
+
+export async function shouldPromptOnForeground(idleTimeoutMs = 5 * 60 * 1000): Promise<boolean> {
+  const elapsed = Date.now() - lastForegroundAt;
+  lastForegroundAt = Date.now();
+  return elapsed >= idleTimeoutMs && (await isAuthenticated());
+}
+
+export async function authenticateOnForeground(
+  idleTimeoutMs?: number,
+): Promise<'unlocked' | 'pin_required' | 'not_required'> {
+  if (!(await shouldPromptOnForeground(idleTimeoutMs))) return 'not_required';
+  if (!(await isBiometricAuthenticationEnabled())) return 'pin_required';
+  const ok = await authenticateWithBiometric();
+  if (ok) {
+    biometricFailures = 0;
+    return 'unlocked';
+  }
+  biometricFailures += 1;
+  return biometricFailures >= 3 ? 'pin_required' : 'not_required';
+}
+
+// ─── Biometric fallback (Issue #404) ─────────────────────────────────────────
+
+const FALLBACK_PREF_KEY = 'com.petchain.auth.biometric.fallback.pref';
+const MAX_BIOMETRIC_ATTEMPTS = 3;
+
+export type BiometricFallbackReason = 'unavailable' | 'max_attempts_reached' | 'user_preference';
+
+export interface BiometricLoginResult {
+  success: boolean;
+  fallbackRequired: boolean;
+  fallbackReason?: BiometricFallbackReason;
+  session?: StoredSession;
+}
+
+/**
+ * Attempt biometric login with automatic fallback after 3 failures.
+ * Persists fallback preference in SecureStore.
+ */
+export async function loginWithBiometricOrFallback(): Promise<BiometricLoginResult> {
+  const available = await isBiometricAuthenticationAvailable();
+  if (!available) {
+    return { success: false, fallbackRequired: true, fallbackReason: 'unavailable' };
+  }
+
+  const enabled = await isBiometricAuthenticationEnabled();
+  if (!enabled) {
+    return { success: false, fallbackRequired: true, fallbackReason: 'user_preference' };
+  }
+
+  // Check if user previously chose fallback
+  const pref = await SecureStore.getItemAsync(FALLBACK_PREF_KEY);
+  if (pref === 'pin') {
+    return { success: false, fallbackRequired: true, fallbackReason: 'user_preference' };
+  }
+
+  let attempts = 0;
+  while (attempts < MAX_BIOMETRIC_ATTEMPTS) {
+    const ok = await authenticateWithBiometric();
+    if (ok) {
+      biometricFailures = 0;
+      const session = await getSession();
+      if (!session) {
+        return { success: false, fallbackRequired: true, fallbackReason: 'unavailable' };
+      }
+      return { success: true, fallbackRequired: false, session };
+    }
+    attempts += 1;
+    biometricFailures += 1;
+  }
+
+  // Max attempts reached — switch to fallback
+  await SecureStore.setItemAsync(FALLBACK_PREF_KEY, 'pin');
+  return { success: false, fallbackRequired: true, fallbackReason: 'max_attempts_reached' };
+}
+
+/**
+ * Clear the fallback preference so biometrics are re-prompted on next login.
+ */
+export async function clearBiometricFallbackPreference(): Promise<void> {
+  await SecureStore.deleteItemAsync(FALLBACK_PREF_KEY);
+  biometricFailures = 0;
+}
+
+/**
+ * After a successful fallback login, offer to re-enable biometrics.
+ */
+export async function shouldPromptBiometricSetup(): Promise<boolean> {
+  const available = await isBiometricAuthenticationAvailable();
+  if (!available) return false;
+  const pref = await SecureStore.getItemAsync(FALLBACK_PREF_KEY);
+  return pref === 'pin';
+}
+
+export function setInMemorySecret(secret: string | null): void {
+  inMemorySecret = secret;
+}
+
+export function getInMemorySecret(): string | null {
+  return inMemorySecret;
+}
+
+// Re-export account binding functions for app-level initialization
+export { setCurrentAccountId, getCurrentAccountId };
+
+// ─── OAuth 2.0 / PKCE ────────────────────────────────────────────────────────
+
+export interface OAuthSession extends AuthSession {
+  refreshToken: string;
+}
+
+/**
+ * Step 1: Get a PKCE challenge from the backend.
+ * The code_verifier is stored server-side; the client only holds state + code_challenge.
+ */
+export async function initOAuthPKCE(): Promise<{
+  state: string;
+  code_challenge: string;
+  code_challenge_method: string;
+}> {
+  const { data } = await authClient.post<{
+    success: boolean;
+    data: { state: string; code_challenge: string; code_challenge_method: string };
+  }>('/auth/oauth/pkce-init');
+  return data.data;
+}
+
+/**
+ * Step 2: After the user completes the provider's auth flow, send the
+ * authorization code + state to the backend for server-side token exchange.
+ * Client secrets are NEVER in the app.
+ */
+export async function loginWithOAuth(
+  provider: OAuthProvider,
+  code: string,
+  state: string,
+  name?: string, // Apple sends name only on first login
+): Promise<OAuthSession> {
+  try {
+    const { data } = await authClient.post<{
+      success: boolean;
+      data: { user: AuthSession['user']; token: string; refreshToken: string; expiresIn: number };
+    }>(`/auth/oauth/${provider}`, { code, state, name });
+
+    invalidateAuthSession();
+
+    await storeSecureTokens({ token: data.data.token, refreshToken: data.data.refreshToken });
+
+    return {
+      user: data.data.user,
+      token: data.data.token,
+      refreshToken: data.data.refreshToken,
+      expiresIn: data.data.expiresIn,
+    };
+  } catch (err) {
+    logError(err as Error, { service: 'authService', action: 'oauth_login', provider });
+    if (axios.isAxiosError(err)) {
+      const msg = (err as AxiosLikeError).response?.data?.error?.message;
+      throw new AuthError(msg ?? `${provider} login failed`, 'OAUTH_FAILED');
+    }
+    throw new AuthError(`${provider} login failed`, 'OAUTH_FAILED');
+  }
+}
+
+/** Refresh an OAuth access token using the stored refresh token. */
+export async function refreshOAuthToken(): Promise<string> {
+  const generation = authGeneration;
+  const storedRefresh = await getSecureRefreshToken();
+  if (!storedRefresh) throw new AuthError('No refresh token', 'NO_REFRESH_TOKEN');
+
+  try {
+    const { data } = await authClient.post<{
+      success: boolean;
+      data: { token: string; refreshToken: string; expiresIn: number };
+    }>('/auth/oauth/refresh', { refreshToken: storedRefresh });
+
+    // Same logout race as the primary refresh path — see refreshToken().
+    if (!isCurrentGeneration(generation)) {
+      throw new AuthError('Session changed during token refresh', 'SESSION_CHANGED');
+    }
+
+    await storeSecureTokens({ token: data.data.token, refreshToken: data.data.refreshToken });
+
+    if (!isCurrentGeneration(generation)) {
+      await clearSecureTokens();
+      throw new AuthError('Session changed during token refresh', 'SESSION_CHANGED');
+    }
+
+    return data.data.token;
+  } catch (err) {
+    if (isSessionChangedError(err)) {
+      logError(err as Error, {
+        service: 'authService',
+        action: 'oauth_refresh_discarded_stale_session',
+      });
+      throw err;
+    }
+    await clearTokensIfCurrent(generation);
+    logError(err as Error, { service: 'authService', action: 'oauth_refresh' });
+    throw new AuthError('Token refresh failed', 'REFRESH_FAILED');
+  }
+}
+
+/** Revoke the current refresh token (logout). */
+export async function revokeOAuthToken(): Promise<void> {
+  const accountId = getCurrentAccountId();
+  const storedRefresh = await getSecureRefreshToken(accountId || undefined);
+  if (!storedRefresh) return;
+  try {
+    const token = await getSecureToken(accountId || undefined);
+    await authClient.post(
+      '/auth/oauth/revoke',
+      { refreshToken: storedRefresh },
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+  } catch {
+    // Best-effort — always clear local tokens
+  } finally {
+    invalidateAuthSession();
+    await clearSecureTokens();
+  }
+}
+
+/** Get linked OAuth providers for the current user. */
+export async function getLinkedProviders(): Promise<
+  { provider: OAuthProvider; linkedAt: string }[]
+> {
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
+  const { data } = await authClient.get<{
+    success: boolean;
+    data: { linked: { provider: OAuthProvider; linkedAt: string }[] };
+  }>('/auth/oauth/providers', { headers: { Authorization: `Bearer ${token}` } });
+  return data.data.linked;
+}
+
+/** Link an additional OAuth provider to the current account. */
+export async function linkOAuthProvider(
+  provider: OAuthProvider,
+  code: string,
+  state: string,
+): Promise<void> {
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
+  await authClient.post(
+    '/auth/oauth/link',
+    { provider, code, state },
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+}
+
+/** Unlink an OAuth provider from the current account. */
+export async function unlinkOAuthProvider(provider: OAuthProvider): Promise<void> {
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
+  await authClient.delete(`/auth/oauth/unlink/${provider}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
 }

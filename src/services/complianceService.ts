@@ -34,7 +34,7 @@ export async function getConsents(): Promise<ConsentRecord[]> {
     const stored = await getItem(CONSENT_KEY);
     return stored ? (JSON.parse(stored) as ConsentRecord[]) : [];
   } catch (err) {
-    logError(err as Error, 'getConsents');
+    logError(err as Error, { context: 'getConsents' });
     return [];
   }
 }
@@ -68,7 +68,7 @@ export async function recordConsent(
       // Best-effort: local consent is source of truth
     });
   } catch (err) {
-    logError(err as Error, 'recordConsent');
+    logError(err as Error, { context: 'recordConsent' });
     throw err;
   }
 }
@@ -169,8 +169,16 @@ export function checkRetention(
  */
 export function redactPHI<T extends Record<string, unknown>>(record: T): Partial<T> {
   const PHI_FIELDS = [
-    'name', 'email', 'phone', 'address', 'ssn', 'dateOfBirth',
-    'medicalHistory', 'diagnosis', 'medications', 'insuranceId',
+    'name',
+    'email',
+    'phone',
+    'address',
+    'ssn',
+    'dateOfBirth',
+    'medicalHistory',
+    'diagnosis',
+    'medications',
+    'insuranceId',
   ];
 
   const redacted: Partial<T> = { ...record };

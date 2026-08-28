@@ -155,10 +155,12 @@ export interface MedicalRecordApi {
 }
 
 /**
- * Mobile app domain model for a pet medical record.
- *
- * This model includes fields requested by the mobile app (recordType/date/etc.)
- * while remaining mappable to the backend API schema.
+ * Blockchain verification status for a medical record.
+ */
+export type VerificationStatus = 'pending' | 'verified' | 'failed' | 'unknown';
+
+/**
+ * Medical record domain model with optional blockchain verification data.
  */
 export interface MedicalRecord {
   /** Unique record identifier. */
@@ -216,6 +218,43 @@ export interface MedicalRecord {
 
   /** Next suggested visit date (if any). */
   nextVisitDate?: string;
+
+  // ========================
+  // Blockchain Verification
+  // ========================
+
+  /**
+   * Verification status indicating whether the record's hash matches
+   * the version stored on the Stellar blockchain.
+   *
+   * - `verified`: Record hash matches on-chain hash (tamper-evident)
+   * - `pending`: Record is queued for blockchain storage but not yet confirmed
+   * - `failed`: Hash mismatch — record may have been altered after creation
+   * - `unknown`: Verification not yet performed (default for older records)
+   */
+  verificationStatus?: VerificationStatus;
+
+  /**
+   * Transaction hash from the Stellar ledger where this record's hash was stored.
+   * Populated after successful blockchain storage.
+   */
+  blockchainTxHash?: string;
+
+  /**
+   * The cryptographic hash (SHA-256) of the record that is/was stored on-chain.
+   * Used to verify integrity by comparing with on-chain value.
+   */
+  blockchainHash?: string;
+
+  /**
+   * ISO timestamp of the last verification attempt.
+   */
+  verifiedAt?: string;
+
+  /**
+   * Error message if verification failed (for `failed` status).
+   */
+  verificationError?: string;
 }
 
 /**

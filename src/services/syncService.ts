@@ -60,6 +60,13 @@ const DEFAULT_STATUS: SyncStatus = {
 export class SyncService {
   private statusListeners: Array<(status: SyncStatus) => void> = [];
 
+  onStatusChange(listener: (status: SyncStatus) => void): () => void {
+    this.statusListeners.push(listener);
+    return () => {
+      this.statusListeners = this.statusListeners.filter((l) => l !== listener);
+    };
+  }
+
   // ── Queue management ──
   async enqueue(
     type: SyncEntityType,
@@ -168,30 +175,6 @@ export class SyncService {
     await this.push();
   }
 
-  // ── Pull ──
-  async pull(types: SyncEntityType[] = ['pet', 'appointment', 'medication']): Promise<void> {
-    for (const type of types) {
-      try {
-        const response = await apiClient.get<Record<string, unknown>[]>(`/${type}s`);
-
-        for (const item of response.data) {
-          const key = `@${type}_${item.id}`;
-          const localRaw = await getItem(key);
-
-          if (localRaw) {
-            const local = JSON.parse(localRaw);
-            const resolved = await this.resolveConflict(type, local, item);
-            await setItem(key, JSON.stringify(resolved));
-          } else {
-            await setItem(key, JSON.stringify(item));
-          }
-        }
-      } catch {
-        // ignore
-      }
-    }
-  }
-
   // ── Conflict resolution ──
   async resolveConflict(
     type: SyncEntityType,
@@ -246,7 +229,7 @@ export class SyncService {
     return stored ? JSON.parse(stored) : [];
   }
 
-  private async getStatus(): Promise<SyncStatus> {
+  async getStatus(): Promise<SyncStatus> {
     const stored = await getItem(SYNC_STATUS_KEY);
     return stored ? JSON.parse(stored) : DEFAULT_STATUS;
   }

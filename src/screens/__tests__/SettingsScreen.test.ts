@@ -9,14 +9,17 @@
  * interactions directly here.
  */
 
-import { getUserProfile, saveUserProfile, updateUserProfile } from '../../services/userService';
-import { logout } from '../../services/authService';
 import type { User } from '../../models/User';
+import { logout } from '../../services/authService';
+import { getUserProfile, updateUserProfile } from '../../services/userService';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
 jest.mock('../../services/userService');
-jest.mock('../../services/authService');
+jest.mock('../../services/authService', () => ({
+  logout: jest.fn(),
+  requestPasswordReset: jest.fn(),
+}));
 jest.mock('../../utils/encryption/keychain', () => ({
   clearSecureTokens: jest.fn(),
   getSecureToken: jest.fn().mockResolvedValue(null),
@@ -65,7 +68,11 @@ describe('Profile settings', () => {
   });
 
   it('saves updated profile fields', async () => {
-    const updates = { name: 'Jane Smith', email: 'jane.smith@example.com', phone: '+1 555 111 2222' };
+    const updates = {
+      name: 'Jane Smith',
+      email: 'jane.smith@example.com',
+      phone: '+1 555 111 2222',
+    };
     await updateUserProfile(updates);
     expect(mockUpdateUserProfile).toHaveBeenCalledWith(updates);
   });
@@ -78,8 +85,7 @@ describe('Profile settings', () => {
   });
 
   it('rejects malformed email via validation logic', () => {
-    const validateEmail = (email: string) =>
-      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+    const validateEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
     expect(validateEmail('not-an-email')).toBe(false);
     expect(validateEmail('missing@domain')).toBe(false);
     expect(validateEmail('jane@example.com')).toBe(true);

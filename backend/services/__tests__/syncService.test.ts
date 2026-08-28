@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
 import { SyncService } from '../syncService';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -24,12 +25,12 @@ describe('backend SyncService', () => {
   describe('addToQueue', () => {
     it('should add item to queue', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValue('[]');
-      
+
       await syncService.addToQueue('pet', 'create', { id: 'pet-1', name: 'Buddy' });
-      
+
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(
         '@sync_queue',
-        expect.stringContaining('"type":"pet"')
+        expect.stringContaining('"type":"pet"'),
       );
     });
   });
@@ -42,7 +43,7 @@ describe('backend SyncService', () => {
         action: 'create',
         data: { id: 'p1', name: 'Buddy' },
         timestamp: Date.now(),
-        retries: 0
+        retries: 0,
       };
       (AsyncStorage.getItem as jest.Mock).mockResolvedValue(JSON.stringify([queueItem]));
       mockApiClient.post.mockResolvedValue({ data: { success: true } });
@@ -60,14 +61,16 @@ describe('backend SyncService', () => {
         action: 'create',
         data: { id: 'p1', name: 'Buddy' },
         timestamp: Date.now(),
-        retries: 0
+        retries: 0,
       };
       (AsyncStorage.getItem as jest.Mock).mockResolvedValue(JSON.stringify([queueItem]));
       mockApiClient.post.mockRejectedValue(new Error('Network error'));
 
       await syncService.sync(mockApiClient);
 
-      const setCall = (AsyncStorage.setItem as jest.Mock).mock.calls.find(call => call[0] === '@sync_queue');
+      const setCall = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+        (call) => call[0] === '@sync_queue',
+      );
       const savedQueue = JSON.parse(setCall[1]);
       expect(savedQueue[0].retries).toBe(1);
     });
@@ -88,7 +91,10 @@ describe('backend SyncService', () => {
       await syncService.resolveConflicts('last-write-wins');
 
       // Local wins because localTimestamp > serverTimestamp
-      expect(AsyncStorage.setItem).toHaveBeenCalledWith('@sync_queue', expect.stringContaining('"name":"Local"'));
+      expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+        '@sync_queue',
+        expect.stringContaining('"name":"Local"'),
+      );
       expect(AsyncStorage.setItem).toHaveBeenCalledWith('@sync_conflicts', '[]');
     });
   });

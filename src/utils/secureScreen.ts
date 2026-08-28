@@ -1,5 +1,5 @@
-﻿import { useEffect } from "react";
-import * as ScreenCapture from "expo-screen-capture";
+﻿import * as ScreenCapture from 'expo-screen-capture';
+import { useEffect } from 'react';
 
 /**
  * Prevents screenshots and screen recording on the current screen.

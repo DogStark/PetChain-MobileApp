@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PetChain — API Key Management</title>
+    <style>
+      :root {
+        --bg: #0f1419;
+        --surface: #1a2332;
+        --border: #2d3a4f;
+        --text: #e7ecf3;
+        --muted: #8b9cb3;
+        --accent: #3b82f6;
+        --danger: #ef4444;
+        --success: #22c55e;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        margin: 0;
+        padding: 2rem;
+        line-height: 1.5;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 0 0 0.25rem;
+      }
+      .subtitle {
+        color: var(--muted);
+        margin-bottom: 2rem;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1.25rem;
+        margin-bottom: 1.5rem;
+      }
+      label {
+        display: block;
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-bottom: 0.35rem;
+      }
+      input,
+      select,
+      button {
+        font: inherit;
+      }
+      input[type='text'],
+      input[type='password'] {
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--text);
+        margin-bottom: 0.75rem;
+      }
+      .scopes {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+      }
+      .scopes label {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        color: var(--text);
+        cursor: pointer;
+      }
+      button {
+        padding: 0.5rem 1rem;
+        border-radius: 6px;
+        border: none;
+        cursor: pointer;
+        font-weight: 500;
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: #fff;
+      }
+      .btn-danger {
+        background: transparent;
+        color: var(--danger);
+        border: 1px solid var(--danger);
+      }
+      .btn-secondary {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.6rem 0.5rem;
+        border-bottom: 1px solid var(--border);
+      }
+      th {
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .badge {
+        display: inline-block;
+        padding: 0.15rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
+      .badge-active {
+        background: #14532d;
+        color: var(--success);
+      }
+      .badge-rotating {
+        background: #422006;
+        color: #fbbf24;
+      }
+      .badge-revoked {
+        background: #450a0a;
+        color: var(--danger);
+      }
+      .secret-banner {
+        background: #14532d;
+        border: 1px solid var(--success);
+        padding: 1rem;
+        border-radius: 6px;
+        margin-bottom: 1rem;
+        word-break: break-all;
+      }
+      .error {
+        color: var(--danger);
+        margin-top: 0.5rem;
+      }
+      .actions {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      #usage-panel h3 {
+        margin-top: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>API Key Management</h1>
+    <p class="subtitle">Admin dashboard — create, rotate, and revoke third-party integration keys.</p>
+
+    <div class="card" id="auth-card">
+      <h2 style="margin-top: 0; font-size: 1.1rem">Authentication</h2>
+      <label for="jwt">Admin JWT (Bearer token)</label>
+      <input type="password" id="jwt" placeholder="Paste admin JWT from login or mock token" />
+      <label for="api-base">API base URL</label>
+      <input type="text" id="api-base" value="/api" />
+      <button type="button" class="btn-primary" id="save-auth">Save &amp; load keys</button>
+      <p class="error" id="auth-error" hidden></p>
+    </div>
+
+    <div id="secret-banner" class="secret-banner" hidden>
+      <strong>Copy this secret now — it will not be shown again:</strong>
+      <pre id="secret-value" style="margin: 0.5rem 0 0"></pre>
+      <button type="button" class="btn-secondary" id="dismiss-secret">Dismiss</button>
+    </div>
+
+    <div class="card" id="create-card" hidden>
+      <h2 style="margin-top: 0; font-size: 1.1rem">Create API key</h2>
+      <label for="key-name">Name</label>
+      <input type="text" id="key-name" placeholder="e.g. Partner CRM integration" />
+      <label>Scopes</label>
+      <div class="scopes" id="scopes-container"></div>
+      <button type="button" class="btn-primary" id="create-key">Create key</button>
+      <p class="error" id="create-error" hidden></p>
+    </div>
+
+    <div class="card" id="keys-card" hidden>
+      <h2 style="margin-top: 0; font-size: 1.1rem">API keys</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Prefix</th>
+            <th>Scopes</th>
+            <th>Status</th>
+            <th>Last used</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="keys-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="usage-panel" hidden>
+      <h3>Usage analytics</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Key ID</th>
+            <th>Method</th>
+            <th>Endpoint</th>
+            <th>Count</th>
+            <th>Last called</th>
+          </tr>
+        </thead>
+        <tbody id="usage-tbody"></tbody>
+      </table>
+    </div>
+
+    <script>
+      const STORAGE_JWT = 'petchain_admin_jwt';
+      const STORAGE_BASE = 'petchain_api_base';
+
+      const jwtInput = document.getElementById('jwt');
+      const apiBaseInput = document.getElementById('api-base');
+      const authError = document.getElementById('auth-error');
+      const secretBanner = document.getElementById('secret-banner');
+      const secretValue = document.getElementById('secret-value');
+      const scopesContainer = document.getElementById('scopes-container');
+      const keysTbody = document.getElementById('keys-tbody');
+      const usageTbody = document.getElementById('usage-tbody');
+
+      function getJwt() {
+        return localStorage.getItem(STORAGE_JWT) || jwtInput.value.trim();
+      }
+
+      function getBase() {
+        return localStorage.getItem(STORAGE_BASE) || apiBaseInput.value.trim() || '/api';
+      }
+
+      async function api(path, options = {}) {
+        const res = await fetch(`${getBase()}${path}`, {
+          ...options,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${getJwt()}`,
+            ...(options.headers || {}),
+          },
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          throw new Error(body.error?.message || res.statusText);
+        }
+        return body.data;
+      }
+
+      function showSecret(secret) {
+        secretValue.textContent = secret;
+        secretBanner.hidden = false;
+      }
+
+      function statusBadge(status) {
+        const cls =
+          status === 'active'
+            ? 'badge-active'
+            : status === 'rotating'
+              ? 'badge-rotating'
+              : 'badge-revoked';
+        return `<span class="badge ${cls}">${status}</span>`;
+      }
+
+      async function loadScopes() {
+        const data = await api('/api-keys/scopes');
+        scopesContainer.innerHTML = data.scopes
+          .map(
+            (s) =>
+              `<label><input type="checkbox" name="scope" value="${s}" /> ${s}</label>`,
+          )
+          .join('');
+      }
+
+      async function loadKeys() {
+        const keys = await api('/api-keys');
+        keysTbody.innerHTML = keys
+          .map(
+            (k) => `
+          <tr>
+            <td>${escapeHtml(k.name)}</td>
+            <td><code>${escapeHtml(k.keyPrefix)}…</code></td>
+            <td>${k.scopes.map(escapeHtml).join(', ')}</td>
+            <td>${statusBadge(k.status)}</td>
+            <td>${k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : '—'}</td>
+            <td class="actions">
+              ${
+                k.status !== 'revoked'
+                  ? `<button type="button" class="btn-secondary" data-rotate="${k.id}">Rotate</button>`
+                  : ''
+              }
+              ${
+                k.status !== 'revoked'
+                  ? `<button type="button" class="btn-danger" data-revoke="${k.id}">Revoke</button>`
+                  : ''
+              }
+            </td>
+          </tr>`,
+          )
+          .join('');
+
+        keysTbody.querySelectorAll('[data-rotate]').forEach((btn) => {
+          btn.addEventListener('click', () => rotateKey(btn.dataset.rotate));
+        });
+        keysTbody.querySelectorAll('[data-revoke]').forEach((btn) => {
+          btn.addEventListener('click', () => revokeKey(btn.dataset.revoke));
+        });
+      }
+
+      async function loadUsage() {
+        const usage = await api('/api-keys/usage');
+        usageTbody.innerHTML = usage
+          .map(
+            (u) => `
+          <tr>
+            <td><code>${escapeHtml(u.apiKeyId.slice(0, 8))}…</code></td>
+            <td>${escapeHtml(u.method)}</td>
+            <td>${escapeHtml(u.endpoint)}</td>
+            <td>${u.count}</td>
+            <td>${new Date(u.lastCalledAt).toLocaleString()}</td>
+          </tr>`,
+          )
+          .join('');
+        document.getElementById('usage-panel').hidden = usage.length === 0;
+      }
+
+      function escapeHtml(str) {
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      async function rotateKey(id) {
+        if (!confirm('Rotate this key? The old key stays valid during the overlap period.')) return;
+        try {
+          const result = await api(`/api-keys/${id}/rotate`, { method: 'POST', body: '{}' });
+          showSecret(result.secret);
+          await refresh();
+        } catch (e) {
+          alert(e.message);
+        }
+      }
+
+      async function revokeKey(id) {
+        if (!confirm('Revoke this key immediately?')) return;
+        try {
+          await api(`/api-keys/${id}`, { method: 'DELETE' });
+          await refresh();
+        } catch (e) {
+          alert(e.message);
+        }
+      }
+
+      async function refresh() {
+        await loadKeys();
+        await loadUsage();
+      }
+
+      document.getElementById('save-auth').addEventListener('click', async () => {
+        authError.hidden = true;
+        const jwt = jwtInput.value.trim();
+        if (!jwt) {
+          authError.textContent = 'JWT is required';
+          authError.hidden = false;
+          return;
+        }
+        localStorage.setItem(STORAGE_JWT, jwt);
+        localStorage.setItem(STORAGE_BASE, apiBaseInput.value.trim() || '/api');
+        try {
+          await loadScopes();
+          document.getElementById('create-card').hidden = false;
+          document.getElementById('keys-card').hidden = false;
+          await refresh();
+        } catch (e) {
+          authError.textContent = e.message;
+          authError.hidden = false;
+        }
+      });
+
+      document.getElementById('create-key').addEventListener('click', async () => {
+        const createError = document.getElementById('create-error');
+        createError.hidden = true;
+        const name = document.getElementById('key-name').value.trim();
+        const scopes = [...document.querySelectorAll('input[name="scope"]:checked')].map(
+          (el) => el.value,
+        );
+        if (!name || scopes.length === 0) {
+          createError.textContent = 'Name and at least one scope are required';
+          createError.hidden = false;
+          return;
+        }
+        try {
+          const result = await api('/api-keys', {
+            method: 'POST',
+            body: JSON.stringify({ name, scopes }),
+          });
+          showSecret(result.secret);
+          document.getElementById('key-name').value = '';
+          await refresh();
+        } catch (e) {
+          createError.textContent = e.message;
+          createError.hidden = false;
+        }
+      });
+
+      document.getElementById('dismiss-secret').addEventListener('click', () => {
+        secretBanner.hidden = true;
+      });
+
+      const savedJwt = localStorage.getItem(STORAGE_JWT);
+      const savedBase = localStorage.getItem(STORAGE_BASE);
+      if (savedJwt) jwtInput.value = savedJwt;
+      if (savedBase) apiBaseInput.value = savedBase;
+    </script>
+  </body>
+</html>

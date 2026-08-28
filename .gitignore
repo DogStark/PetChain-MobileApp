@@ -1,15 +1,61 @@
- .
- node_modules/
+# Dependencies
+node_modules/
+node_modules/**
+
+# Environment and secrets
 .env
+.env.*
+!.env.example
+!.env.docker
+
+# OS/editor files
 .DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+logs/
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Package artifacts
+*.tgz
+bun.lock
+.kiro/
+
+# Build and test output
 dist/
 build/
+coverage/
+.nyc_output/
+
+# Expo / React Native generated files
 .expo/
 .expo-shared/
-.env.development
-.env.staging
-.env.production
-.env
-node_modules
-node_modules/.package-lock.json
+web-build/
+
+# React Native / native build output
+android/app/build/
+ios/Pods/
+ios/build/
+*.keystore
+*.p8
+*.xcworkspace
+*.xcuserstate
+
+# TypeScript build cache
+*.tsbuildinfo
+
+# Supply-chain metadata output (SBOM, checksums, provenance) — generated in CI
+supply-chain/
+artifacts/
+
+# Local databases and caches
+*.db
+*.sqlite
+*.sqlite3
+.cache/
+tmp/

@@ -1,9 +1,10 @@
 import apiClient, { resilientRequest } from './apiClient';
+import crashReporting from './crashReporting';
 
 async function sendToServer(payload: Record<string, unknown>) {
   try {
     await resilientRequest({ url: '/errors', method: 'POST', data: payload });
-  } catch (err) {
+  } catch {
     // fallback to apiClient.post if resilientRequest unavailable
     try {
       await apiClient.post('/errors', payload);
@@ -22,10 +23,14 @@ async function logError(err: unknown, meta: string | Record<string, unknown> = '
       timestamp: Date.now(),
     };
     // console log locally for developer visibility
-    // eslint-disable-next-line no-console
+
     console.error('[ErrorLogger]', payload);
+    // Forward to Sentry for crash dashboard visibility
+    crashReporting.captureException(err instanceof Error ? err : new Error(String(err)), {
+      meta: typeof meta === 'string' ? { info: meta } : meta,
+    });
     await sendToServer(payload);
-  } catch (e) {
+  } catch {
     // final fallback — do nothing
   }
 }

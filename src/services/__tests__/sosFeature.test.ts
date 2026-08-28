@@ -1,6 +1,6 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import Geolocation from '@react-native-community/geolocation';
-import { Linking, Platform } from 'react-native';
+import { Linking } from 'react-native';
+
 import emergencyService from '../emergencyService';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -62,27 +62,24 @@ describe('SOS Feature Logic', () => {
   describe('SOS Trigger', () => {
     it('should dispatch alerts and call primary contact', async () => {
       const mockPosition = { coords: { latitude: 40, longitude: -70 } };
-      (Geolocation.getCurrentPosition as jest.Mock).mockImplementation((success) => success(mockPosition));
-      
+      (Geolocation.getCurrentPosition as jest.Mock).mockImplementation((success) =>
+        success(mockPosition),
+      );
+
       const contacts = [
-        { id: '1', name: 'Contact 1', phoneNumber: '111', type: 'emergency', available24h: true }
+        { id: '1', name: 'Contact 1', phoneNumber: '111', type: 'emergency', available24h: true },
       ];
+
       const { getItem } = require('../localDB');
       (getItem as jest.Mock).mockResolvedValue(JSON.stringify(contacts));
 
       await emergencyService.triggerSOS('Help me!');
 
       // Verify SMS alert dispatch
-      expect(Linking.openURL).toHaveBeenCalledWith(
-        expect.stringContaining('sms:111')
-      );
-      expect(Linking.openURL).toHaveBeenCalledWith(
-        expect.stringContaining('body=')
-      );
+      expect(Linking.openURL).toHaveBeenCalledWith(expect.stringContaining('sms:111'));
+      expect(Linking.openURL).toHaveBeenCalledWith(expect.stringContaining('body='));
       // "google.com/maps" is encoded as "google.com%2Fmaps"
-      expect(Linking.openURL).toHaveBeenCalledWith(
-        expect.stringContaining('google.com')
-      );
+      expect(Linking.openURL).toHaveBeenCalledWith(expect.stringContaining('google.com'));
 
       // Verify phone call (after SMS in this implementation's logic)
       expect(Linking.openURL).toHaveBeenCalledWith('tel:111');

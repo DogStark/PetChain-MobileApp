@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
 import { get, set, remove, clear, getMultiple, setMultiple } from '../storageService';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -59,7 +60,7 @@ describe('backend storageService', () => {
     it('should get multiple items', async () => {
       (AsyncStorage.multiGet as jest.Mock).mockResolvedValue([
         ['k1', JSON.stringify(1)],
-        ['k2', null]
+        ['k2', null],
       ]);
       const result = await getMultiple<number>(['k1', 'k2']);
       expect(result).toEqual({ k1: 1, k2: null });
@@ -69,7 +70,7 @@ describe('backend storageService', () => {
       await setMultiple({ k1: 1, k2: 2 });
       expect(AsyncStorage.multiSet).toHaveBeenCalledWith([
         ['k1', JSON.stringify(1)],
-        ['k2', JSON.stringify(2)]
+        ['k2', JSON.stringify(2)],
       ]);
     });
   });

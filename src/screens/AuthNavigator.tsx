@@ -4,8 +4,8 @@ import EmailVerificationScreen from './EmailVerificationScreen';
 import ForgotPasswordScreen from './ForgotPasswordScreen';
 import LoginScreen from './LoginScreen';
 import RegisterScreen from './RegisterScreen';
-import type { AuthSession } from '../services/authService';
 import ErrorBoundary from '../components/ErrorBoundary';
+import type { AuthSession } from '../services/authService';
 
 type Screen = 'login' | 'register' | 'forgot' | 'verify';
 

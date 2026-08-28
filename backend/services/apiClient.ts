@@ -48,39 +48,39 @@ function recordFailure(): void {
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 300;
 
-function shouldRetry(error: any, attempt: number): boolean {
+function shouldRetry(error: { response?: { status: number } }, attempt: number): boolean {
   if (attempt >= MAX_RETRIES) return false;
   if (!error.response) return true;
   return error.response.status >= 500;
 }
 
 const delay = (attempt: number) =>
-  new Promise<void>(resolve => setTimeout(resolve, BASE_DELAY_MS * 2 ** attempt));
+  new Promise<void>((resolve) => setTimeout(resolve, BASE_DELAY_MS * 2 ** attempt));
 
 export async function resilientRequest<T>(
-  requestConfig: AxiosRequestConfig
+  requestConfig: AxiosRequestConfig,
 ): Promise<AxiosResponse<T>> {
   if (isCircuitOpen()) {
     throw new Error('Service temporarily unavailable. Please try again later.');
   }
 
-  let lastError: any;
+  let lastError: { response?: { status: number }; message?: string } | undefined;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       if (attempt > 0) await delay(attempt - 1);
       const response = await apiClient.request<T>(requestConfig);
       recordSuccess();
       return response;
-    } catch (err: any) {
-      lastError = err;
+    } catch (err: unknown) {
+      lastError = err as { response?: { status: number }; message?: string };
       recordFailure();
-      if (!shouldRetry(err, attempt)) break;
+      if (!shouldRetry(lastError, attempt)) break;
     }
   }
 
   const message = lastError?.response
     ? `Request failed with status ${lastError.response.status}`
-    : lastError?.message ?? 'Network error';
+    : (lastError?.message ?? 'Network error');
   throw new Error(message);
 }
 

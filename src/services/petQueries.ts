@@ -1,6 +1,11 @@
 import { gqlRequest } from './graphqlClient';
+import {
+  getMedicalRecords,
+  type MedicalRecord,
+  type RecordFilters,
+  type PaginatedResponse,
+} from './medicalRecordService';
 import { getPetById, getAllPets, type Pet } from './petService';
-import { getMedicalRecords, type MedicalRecord, type RecordFilters, type PaginatedResponse } from './medicalRecordService';
 
 // --- Queries ---
 
@@ -61,6 +66,7 @@ export async function fetchMedicalRecords(
     );
     return result.medicalRecords;
   } catch {
-    return getMedicalRecords(petId, filters);
+    const response = await getMedicalRecords(petId, filters);
+    return response.data;
   }
 }

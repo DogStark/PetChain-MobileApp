@@ -1,4 +1,5 @@
 import { Pool, type PoolConfig } from 'pg';
+
 import config from '../../config';
 
 let pool: Pool | null = null;
@@ -24,22 +25,22 @@ export function getPool(): Pool {
 
     pool.on('connect', () => {
       if (config.isDev) {
-        console.log('Database connected');
+        console.warn('Database connected');
       }
     });
   }
   return pool;
 }
 
-export async function query<T = any>(text: string, params?: any[]) {
+export async function query(text: string, params?: unknown[]) {
   const start = Date.now();
   const res = await getPool().query(text, params);
   const duration = Date.now() - start;
-  
+
   if (config.isDev) {
-    console.log('Executed query', { text, duration, rows: res.rowCount });
+    console.warn('Executed query', { text, duration, rows: res.rowCount });
   }
-  
+
   return res;
 }
 

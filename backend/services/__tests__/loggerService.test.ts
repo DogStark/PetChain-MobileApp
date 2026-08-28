@@ -21,7 +21,9 @@ describe('backend loggerService', () => {
 
   it('should log debug messages in development', () => {
     logger.debug('test message', { foo: 'bar' });
-    expect(console.debug).toHaveBeenCalledWith(expect.stringContaining('[DEBUG] test message | {"foo":"bar"}'));
+    expect(console.debug).toHaveBeenCalledWith(
+      expect.stringContaining('[DEBUG] test message | {"foo":"bar"}'),
+    );
   });
 
   it('should not log debug messages in production', () => {
@@ -32,7 +34,7 @@ describe('backend loggerService', () => {
 
   it('should log info, warn, and error messages in both environments', () => {
     logger.configure({ isDevelopment: false });
-    
+
     logger.info('info');
     expect(console.info).toHaveBeenCalled();
 
@@ -49,17 +51,20 @@ describe('backend loggerService', () => {
     mockFetch.mockResolvedValue({ ok: true });
 
     logger.info('remote test');
-    
-    expect(mockFetch).toHaveBeenCalledWith(remoteUrl, expect.objectContaining({
-      method: 'POST',
-      body: expect.stringContaining('remote test'),
-    }));
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      remoteUrl,
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('remote test'),
+      }),
+    );
   });
 
   it('should handle remote log failure gracefully', async () => {
     logger.configure({ enableRemote: true, remoteUrl: 'http://fail' });
     mockFetch.mockRejectedValue(new Error('Network fail'));
-    
+
     // Should not throw
     logger.error('test error');
     expect(console.error).toHaveBeenCalled();

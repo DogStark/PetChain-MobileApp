@@ -1,6 +1,6 @@
 import { query } from '../db';
 import { BaseRepository } from './baseRepository';
-import { UserRole } from '../../models/UserRole';
+import { type UserRole } from '../../models/UserRole';
 
 export interface DBUser {
   id: string;
@@ -11,6 +11,7 @@ export interface DBUser {
   is_email_verified: boolean;
   last_login_at?: Date;
   password_hash?: string;
+  stellar_public_key?: string;
   created_at: Date;
   updated_at: Date;
 }
@@ -24,7 +25,7 @@ export class UserRepository extends BaseRepository<DBUser> {
       `INSERT INTO users (id, email, name, phone, role, is_email_verified, password_hash)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [id, email, name, phone, role, is_email_verified ?? false, password_hash]
+      [id, email, name, phone, role, is_email_verified ?? false, password_hash],
     );
     return res.rows[0];
   }
@@ -39,12 +40,12 @@ export class UserRepository extends BaseRepository<DBUser> {
     if (fields.length === 0) return this.findById(id);
 
     const setClause = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
-    const values = fields.map(f => (updates as any)[f]);
+    const values = fields.map((f) => (updates as Record<string, unknown>)[f]);
 
-    const res = await query(
-      `UPDATE users SET ${setClause} WHERE id = $1 RETURNING *`,
-      [id, ...values]
-    );
+    const res = await query(`UPDATE users SET ${setClause} WHERE id = $1 RETURNING *`, [
+      id,
+      ...values,
+    ]);
     return res.rows[0] || null;
   }
 }

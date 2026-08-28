@@ -17,11 +17,15 @@ const LOCAL_DATA = {
     { id: 'p2', name: 'Whiskers', species: 'Cat' },
   ],
   appointments: [
-    { id: 'a1', title: 'Annual Checkup', petName: 'Buddy', date: '2025-06-01', status: 'scheduled' },
+    {
+      id: 'a1',
+      title: 'Annual Checkup',
+      petName: 'Buddy',
+      date: '2025-06-01',
+      status: 'scheduled',
+    },
   ],
-  medicalRecords: [
-    { id: 'm1', title: 'Vaccination Record', petName: 'Whiskers', type: 'vaccine' },
-  ],
+  medicalRecords: [{ id: 'm1', title: 'Vaccination Record', petName: 'Whiskers', type: 'vaccine' }],
 };
 
 describe('globalSearch (offline fallback)', () => {

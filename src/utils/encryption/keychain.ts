@@ -12,6 +12,21 @@ const BIOMETRIC_KEYCHAIN_SERVICE = 'com.petchain.auth.biometric';
 const BIOMETRIC_USERNAME = 'petchain_biometric_user';
 const BIOMETRIC_SECRET = 'petchain_biometric_unlock';
 
+// Account-namespaced keys (for #905: bind credentials to active account)
+let currentAccountId: string | null = null;
+
+function getAccountNamespacedTokenKey(accountId: string): string {
+  return `${TOKEN_BLOB_KEY}.${accountId}`;
+}
+
+export function setCurrentAccountId(accountId: string | null): void {
+  currentAccountId = accountId;
+}
+
+export function getCurrentAccountId(): string | null {
+  return currentAccountId;
+}
+
 export interface SecureTokenPayload {
   token: string;
   refreshToken?: string;
@@ -129,7 +144,7 @@ export const storeEncryptionKey = async (key: string): Promise<boolean> => {
     await Keychain.setGenericPassword(ENCRYPTION_KEY_USERNAME, key, {
       service: ENCRYPTION_KEY_SERVICE,
       accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-      securityLevel: getSecurityLevel(),
+      securityLevel: getSecurityLevel() as unknown as Keychain.SECURITY_LEVEL,
     });
     return true;
   } catch (error) {
@@ -148,7 +163,10 @@ export const getEncryptionKey = async (): Promise<string> => {
   return key;
 };
 
-export const storeSecureTokens = async (payload: SecureTokenPayload): Promise<void> => {
+export const storeSecureTokens = async (
+  payload: SecureTokenPayload,
+  accountId?: string,
+): Promise<void> => {
   if (!payload.token) {
     throw new EncryptionError('Access token is required', 'INVALID_TOKEN_PAYLOAD');
   }
@@ -156,7 +174,11 @@ export const storeSecureTokens = async (payload: SecureTokenPayload): Promise<vo
   try {
     const key = await ensureEncryptionKey();
     const encryptedPayload = encryptTokenBlob(payload, key);
-    await SecureStore.setItemAsync(TOKEN_BLOB_KEY, encryptedPayload, getSecureStoreOptions());
+    const effectiveAccountId = accountId || currentAccountId;
+    const storageKey = effectiveAccountId
+      ? getAccountNamespacedTokenKey(effectiveAccountId)
+      : TOKEN_BLOB_KEY;
+    await SecureStore.setItemAsync(storageKey, encryptedPayload, getSecureStoreOptions());
   } catch (error) {
     if (error instanceof EncryptionError) {
       throw error;
@@ -168,10 +190,16 @@ export const storeSecureTokens = async (payload: SecureTokenPayload): Promise<vo
   }
 };
 
-export const getSecureTokens = async (): Promise<SecureTokenPayload | null> => {
+export const getSecureTokens = async (
+  accountId?: string,
+): Promise<SecureTokenPayload | null> => {
   try {
+    const effectiveAccountId = accountId || currentAccountId;
+    const storageKey = effectiveAccountId
+      ? getAccountNamespacedTokenKey(effectiveAccountId)
+      : TOKEN_BLOB_KEY;
     const encryptedPayload = await SecureStore.getItemAsync(
-      TOKEN_BLOB_KEY,
+      storageKey,
       getSecureStoreOptions(),
     );
     if (!encryptedPayload) {
@@ -191,18 +219,22 @@ export const getSecureTokens = async (): Promise<SecureTokenPayload | null> => {
   }
 };
 
-export const getSecureToken = async (): Promise<string | null> => {
-  const payload = await getSecureTokens();
+export const getSecureToken = async (accountId?: string): Promise<string | null> => {
+  const payload = await getSecureTokens(accountId);
   return payload?.token ?? null;
 };
 
-export const getSecureRefreshToken = async (): Promise<string | null> => {
-  const payload = await getSecureTokens();
+export const getSecureRefreshToken = async (accountId?: string): Promise<string | null> => {
+  const payload = await getSecureTokens(accountId);
   return payload?.refreshToken ?? null;
 };
 
-export const clearSecureTokens = async (): Promise<void> => {
-  await SecureStore.deleteItemAsync(TOKEN_BLOB_KEY, getSecureStoreOptions());
+export const clearSecureTokens = async (accountId?: string): Promise<void> => {
+  const effectiveAccountId = accountId || currentAccountId;
+  const storageKey = effectiveAccountId
+    ? getAccountNamespacedTokenKey(effectiveAccountId)
+    : TOKEN_BLOB_KEY;
+  await SecureStore.deleteItemAsync(storageKey, getSecureStoreOptions());
 };
 
 export const getBiometricAvailability = async (): Promise<BiometricAvailability> => {
@@ -242,8 +274,8 @@ export const enableBiometricAuthentication = async (
     await Keychain.setGenericPassword(BIOMETRIC_USERNAME, BIOMETRIC_SECRET, {
       service: BIOMETRIC_KEYCHAIN_SERVICE,
       accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-      accessControl: getBiometricAccessControl(),
-      securityLevel: getSecurityLevel(),
+      accessControl: getBiometricAccessControl() as unknown as Keychain.ACCESS_CONTROL,
+      securityLevel: getSecurityLevel() as unknown as Keychain.SECURITY_LEVEL,
     });
 
     const credentials = await Keychain.getGenericPassword({
@@ -279,7 +311,7 @@ export const authenticateWithBiometricGate = async (
       },
     });
 
-    return typeof credentials === 'object' && !!credentials && !!credentials.password;
+    return !!(credentials && 'password' in credentials && credentials.password);
   } catch {
     return false;
   }

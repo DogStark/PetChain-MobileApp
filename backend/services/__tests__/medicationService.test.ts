@@ -1,10 +1,11 @@
 import axios from 'axios';
-import { 
-  getMedications, 
-  createMedication, 
-  updateMedication, 
-  deleteMedication, 
-  getActiveMedications 
+
+import {
+  getMedications,
+  createMedication,
+  updateMedication,
+  deleteMedication,
+  getActiveMedications,
 } from '../medicationService';
 
 jest.mock('axios');
@@ -56,7 +57,7 @@ describe('backend medicationService', () => {
   it('should filter active medications', async () => {
     const meds = [
       { ...mockMed, id: '1', active: true },
-      { ...mockMed, id: '2', active: false }
+      { ...mockMed, id: '2', active: false },
     ];
     mockedAxios.get.mockResolvedValue({ data: meds });
     const result = await getActiveMedications(mockPetId);

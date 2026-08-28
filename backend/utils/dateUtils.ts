@@ -119,3 +119,92 @@ export function formatInTimezone(
     }),
   }).format(parsed);
 }
+
+function formatTimeZoneParts(date: Date, timeZone: string): Record<string, string> {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+
+  const parts = formatter.formatToParts(date);
+  return parts.reduce(
+    (result, part) => {
+      if (part.type !== 'literal') {
+        result[part.type] = part.value;
+      }
+      return result;
+    },
+    {} as Record<string, string>,
+  );
+}
+
+function compareParts(a: Record<string, string>, b: Record<string, string>): number {
+  const keys = ['year', 'month', 'day', 'hour', 'minute', 'second'] as const;
+  for (const key of keys) {
+    const diff = Number(a[key]) - Number(b[key]);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+export function parseZonedDateTime(date: string, time: string, timeZone: string): Date {
+  const [year, month, day] = date.split('-').map(Number);
+  const [hour, minute] = time.split(':').map(Number);
+
+  if ([year, month, day, hour, minute].some((value) => Number.isNaN(value))) {
+    throw new Error('Invalid date or time format');
+  }
+
+  const target = {
+    year: year.toString().padStart(4, '0'),
+    month: month.toString().padStart(2, '0'),
+    day: day.toString().padStart(2, '0'),
+    hour: hour.toString().padStart(2, '0'),
+    minute: minute.toString().padStart(2, '0'),
+    second: '00',
+  };
+
+  const lower = new Date(Date.UTC(year - 1, 0, 1));
+  const upper = new Date(Date.UTC(year + 1, 11, 31, 23, 59, 59, 999));
+  let low = lower.getTime();
+  let high = upper.getTime();
+
+  while (high - low > 1) {
+    const mid = Math.floor((low + high) / 2);
+    const midDate = new Date(mid);
+    const formatted = formatTimeZoneParts(midDate, timeZone);
+    const comparison = compareParts(formatted, target);
+
+    if (comparison <= 0) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+
+  return new Date(high);
+}
+
+export function addMinutes(date: Date | string, minutes: number): Date {
+  const parsed = toDate(date);
+  return new Date(parsed.getTime() + minutes * 60 * 1000);
+}
+
+export function getCurrentDateInTimezone(timeZone: string): string {
+  return formatInTimezone(
+    new Date(),
+    timeZone,
+    {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    },
+    'en-CA',
+  );
+}

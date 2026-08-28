@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
-import { getPool, query } from '../index';
+
 import config from '../../../config';
+import { getPool, query } from '../index';
 
 jest.mock('pg', () => {
   const mPool = {

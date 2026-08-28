@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import ErrorBoundary from '../components/ErrorBoundary';
 import {
   View,
   Text,
@@ -10,9 +9,9 @@ import {
   StatusBar,
   Dimensions,
   Platform,
-  type NativeSyntheticEvent,
-  type NativeScrollEvent,
 } from 'react-native';
+
+import ErrorBoundary from '../components/ErrorBoundary';
 
 const { width } = Dimensions.get('window');
 
@@ -125,6 +124,7 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, onSkip 
           <TouchableOpacity
             style={[styles.nextButton, isLastSlide && styles.getStartedButton]}
             onPress={handleNext}
+            testID={isLastSlide ? 'onboarding-get-started-button' : 'onboarding-next-button'}
           >
             <Text style={[styles.nextButtonText, isLastSlide && styles.getStartedButtonText]}>
               {isLastSlide ? 'Get Started' : 'Next'}
@@ -151,11 +151,15 @@ const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ onComplete, onSkip 
 
   return (
     <ErrorBoundary>
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} testID="onboarding-screen">
         <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={handleSkip} accessibilityRole="button" accessibilityLabel="Skip onboarding">
+          <TouchableOpacity
+            onPress={handleSkip}
+            accessibilityRole="button"
+            accessibilityLabel="Skip onboarding"
+          >
             <Text style={styles.skipText}>Skip</Text>
           </TouchableOpacity>
         </View>

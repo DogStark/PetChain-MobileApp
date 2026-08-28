@@ -1,4 +1,4 @@
-export type ActivityLevel = "low" | "moderate" | "high";
+export type ActivityLevel = 'low' | 'moderate' | 'high';
 
 export interface HealthMetricEntry {
   id: string;

@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
 import { encrypt, decrypt } from './encryption';
 
 /**
@@ -43,7 +44,7 @@ export const encryptedAsyncStorage = {
       keyValuePairs.map(async ([key, value]) => {
         const encryptedValue = await encrypt(value, `async_storage_${key}`);
         return [key, encryptedValue] as [string, string];
-      })
+      }),
     );
     await AsyncStorage.multiSet(encryptedPairs);
   },
@@ -63,7 +64,7 @@ export const encryptedAsyncStorage = {
           console.error(`Failed to decrypt AsyncStorage key "${key}":`, error);
           return [key, null] as [string, string | null];
         }
-      })
+      }),
     );
   },
 
@@ -79,5 +80,5 @@ export const encryptedAsyncStorage = {
    */
   getAllKeys: async (): Promise<readonly string[]> => {
     return await AsyncStorage.getAllKeys();
-  }
+  },
 };

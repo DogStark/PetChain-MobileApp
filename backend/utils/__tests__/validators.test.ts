@@ -1,9 +1,9 @@
-import { 
-  validateEmail, 
-  validatePhoneNumber, 
-  validatePassword, 
-  validateDate, 
-  validateField 
+import {
+  validateEmail,
+  validatePhoneNumber,
+  validatePassword,
+  validateDate,
+  validateField,
 } from '../validators';
 
 describe('backend validators', () => {

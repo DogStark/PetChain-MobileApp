@@ -94,7 +94,11 @@ export async function recordMemorySample(source: string): Promise<void> {
     process?: { memoryUsage?: () => { rss?: number } };
   };
 
-  const bytes = Number(globalScope.performance?.memory?.usedJSHeapSize ?? globalScope.process?.memoryUsage?.().rss ?? 0);
+  const bytes = Number(
+    globalScope.performance?.memory?.usedJSHeapSize ??
+      globalScope.process?.memoryUsage?.().rss ??
+      0,
+  );
   const snapshot = await readSnapshot();
   snapshot.memorySamples = trim([
     ...snapshot.memorySamples,
@@ -108,11 +112,15 @@ export async function getPerformanceDashboard(): Promise<PerformanceDashboard> {
   const latestMemorySample = snapshot.memorySamples[snapshot.memorySamples.length - 1] ?? null;
 
   const average = (values: number[]) =>
-    values.length === 0 ? 0 : Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+    values.length === 0
+      ? 0
+      : Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
 
   return {
     latestMemorySample,
-    topScreenLoads: [...snapshot.screenLoads].sort((a, b) => b.durationMs - a.durationMs).slice(0, 5),
+    topScreenLoads: [...snapshot.screenLoads]
+      .sort((a, b) => b.durationMs - a.durationMs)
+      .slice(0, 5),
     topApiTimings: [...snapshot.apiTimings].sort((a, b) => b.durationMs - a.durationMs).slice(0, 5),
     averageScreenLoadMs: average(snapshot.screenLoads.map((item) => item.durationMs)),
     averageApiTimingMs: average(snapshot.apiTimings.map((item) => item.durationMs)),

@@ -1,14 +1,12 @@
-import apiClient from '../apiClient';
 import { errorHandler } from '../../middleware/errorHandler';
-import { 
-  getAppointments, 
-  getAppointment, 
-  createAppointment, 
-  updateAppointment, 
-  cancelAppointment,
-  getUpcomingAppointments
-} from '../appointmentService';
 import { AppointmentStatus } from '../../models/Appointment';
+import apiClient from '../apiClient';
+import {
+  getAppointments,
+  createAppointment,
+  cancelAppointment,
+  getUpcomingAppointments,
+} from '../appointmentService';
 
 jest.mock('../apiClient');
 jest.mock('../../middleware/errorHandler');
@@ -40,7 +38,9 @@ describe('backend appointmentService', () => {
     it('should filter by petId', async () => {
       mockedApiClient.get.mockResolvedValue({ data: { data: [mockAppointment] } });
       await getAppointments('pet-1');
-      expect(mockedApiClient.get).toHaveBeenCalledWith('/appointments', { params: { petId: 'pet-1' } });
+      expect(mockedApiClient.get).toHaveBeenCalledWith('/appointments', {
+        params: { petId: 'pet-1' },
+      });
     });
 
     it('should throw error on failure', async () => {
@@ -60,7 +60,9 @@ describe('backend appointmentService', () => {
 
   describe('cancelAppointment', () => {
     it('should update status to cancelled', async () => {
-      mockedApiClient.put.mockResolvedValue({ data: { data: { ...mockAppointment, status: AppointmentStatus.CANCELLED } } });
+      mockedApiClient.put.mockResolvedValue({
+        data: { data: { ...mockAppointment, status: AppointmentStatus.CANCELLED } },
+      });
       const response = await cancelAppointment('apt-1');
       expect(response.data.status).toBe(AppointmentStatus.CANCELLED);
     });
@@ -70,10 +72,17 @@ describe('backend appointmentService', () => {
     it('should filter only upcoming scheduled appointments', async () => {
       const pastApt = { ...mockAppointment, id: 'apt-past', date: '2020-01-01' };
       const upcomingApt = { ...mockAppointment, id: 'apt-future', date: '2026-01-01' };
-      const cancelledApt = { ...mockAppointment, id: 'apt-cancelled', date: '2026-01-01', status: AppointmentStatus.CANCELLED };
+      const cancelledApt = {
+        ...mockAppointment,
+        id: 'apt-cancelled',
+        date: '2026-01-01',
+        status: AppointmentStatus.CANCELLED,
+      };
 
-      mockedApiClient.get.mockResolvedValue({ data: { data: [pastApt, upcomingApt, cancelledApt] } });
-      
+      mockedApiClient.get.mockResolvedValue({
+        data: { data: [pastApt, upcomingApt, cancelledApt] },
+      });
+
       const response = await getUpcomingAppointments();
       expect(response.data).toHaveLength(1);
       expect(response.data[0].id).toBe('apt-future');

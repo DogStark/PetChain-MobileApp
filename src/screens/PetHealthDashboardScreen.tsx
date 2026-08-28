@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -7,18 +7,26 @@ import {
   Text,
   TouchableOpacity,
   View,
-} from "react-native";
+  Share,
+  Platform,
+} from 'react-native';
 
-import type { HealthMetricEntry } from "../models/HealthMetric";
-import type { Medication } from "../models/Medication";
-import type { Appointment } from "../models/Appointment";
-import { AppointmentStatus } from "../models/Appointment";
-import type { MedicalRecord } from "../services/medicalRecordService";
-import { getMedicalRecords } from "../services/medicalRecordService";
-import { getMedications, isMedicationActive } from "../services/medicationService";
-import { getHealthMetrics, activityLevelToScore } from "../services/healthMetricService";
-import { getUpcomingAppointments } from "../services/appointmentService";
-import { useSecureScreen } from "../utils/secureScreen";
+import HealthScoreChart, {
+  type HealthScoreDataPoint,
+  type MedicalEvent,
+} from '../components/HealthScoreChart';
+import WeightChart, { type WeightDataPoint } from '../components/WeightChart';
+import type { Appointment } from '../models/Appointment';
+import { AppointmentStatus } from '../models/Appointment';
+import type { HealthMetricEntry } from '../models/HealthMetric';
+import type { Medication } from '../models/Medication';
+import { getUpcomingAppointments } from '../services/appointmentService';
+import { getHealthMetrics, activityLevelToScore } from '../services/healthMetricService';
+import healthScoringServiceV2 from '../services/healthScoringServiceV2';
+import type { MedicalRecord } from '../services/medicalRecordService';
+import { getMedicalRecords } from '../services/medicalRecordService';
+import { getMedications, isMedicationActive } from '../services/medicationService';
+import { useSecureScreen } from '../utils/secureScreen';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -35,6 +43,9 @@ interface DashboardData {
   upcomingAppointments: Appointment[];
   latestMetric: HealthMetricEntry | null;
   healthScore: number | null;
+  weightHistory: WeightDataPoint[];
+  healthScoreHistory: HealthScoreDataPoint[];
+  medicalEvents: MedicalEvent[];
 }
 
 // ─── Health Score Calculation ──────────────────────────────────────────────
@@ -82,46 +93,55 @@ function computeHealthScore(
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function scoreColor(score: number): string {
-  if (score >= 80) return "#2e7d32";
-  if (score >= 60) return "#f57f17";
-  return "#c62828";
+  if (score >= 80) return '#2e7d32';
+  if (score >= 60) return '#f57f17';
+  return '#c62828';
 }
 
 function scoreLabel(score: number): string {
-  if (score >= 80) return "Excellent";
-  if (score >= 60) return "Fair";
-  return "Needs Attention";
+  if (score >= 80) return 'Excellent';
+  if (score >= 60) return 'Fair';
+  return 'Needs Attention';
 }
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
   return isNaN(d.getTime())
     ? iso
-    : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function appointmentTypeLabel(type: string): string {
-  return type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
 
-function SectionHeader({ title, icon }: { title: string; icon: string }) {
+// Memoized because it receives simple scalar props and is rendered multiple times
+const SectionHeader = React.memo(function SectionHeader({
+  title,
+  icon,
+}: {
+  title: string;
+  icon: string;
+}) {
   return (
     <View style={styles.sectionHeader}>
       <Text style={styles.sectionIcon}>{icon}</Text>
       <Text style={styles.sectionTitle}>{title}</Text>
     </View>
   );
-}
+});
 
+// Note: Card is not memoized because it accepts React.ReactNode children, which are always new objects on parent render, making React.memo ineffective here.
 function Card({ children }: { children: React.ReactNode }) {
   return <View style={styles.card}>{children}</View>;
 }
 
-function EmptyState({ message }: { message: string }) {
+// Memoized to avoid re-rendering when parent re-renders due to other state changes
+const EmptyState = React.memo(function EmptyState({ message }: { message: string }) {
   return <Text style={styles.emptyText}>{message}</Text>;
-}
+});
 
 // ─── Main Screen ─────────────────────────────────────────────────────────────
 
@@ -134,17 +154,29 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
     upcomingAppointments: [],
     latestMetric: null,
     healthScore: null,
+    weightHistory: [],
+    healthScoreHistory: [],
+    medicalEvents: [],
   });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [recordsResp, medications, appointments, metrics] = await Promise.all([
-        getMedicalRecords(petId, { limit: 100 }).catch(() => ({ data: [] as MedicalRecord[], total: 0, page: 1, limit: 100, totalPages: 1 })),
+      const [recordsResp, medications, appointments, metrics, scoreHistory] = await Promise.all([
+        getMedicalRecords(petId, { limit: 100 }).catch(() => ({
+          data: [] as MedicalRecord[],
+          total: 0,
+          page: 1,
+          limit: 100,
+          totalPages: 1,
+        })),
         getMedications().catch(() => [] as Medication[]),
         getUpcomingAppointments(petId).catch(() => [] as Appointment[]),
         getHealthMetrics(petId).catch(() => [] as HealthMetricEntry[]),
+        healthScoringServiceV2
+          .getScoreHistory(petId, 365)
+          .catch(() => [] as HealthScoreDataPoint[]),
       ]);
 
       const activeMeds = medications.filter((m) => isMedicationActive(m));
@@ -154,20 +186,49 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
       );
       const latestMetric = sortedMetrics[0] ?? null;
 
-      const sortedRecords = [...recordsResp.data].sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      );
+      const sortedRecords = [
+        ...(Array.isArray(recordsResp.data) ? recordsResp.data : recordsResp.data?.data || []),
+      ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
       const healthScore = computeHealthScore(latestMetric, activeMeds.length);
+
+      // Build weight history from metrics
+      const weightHistory: WeightDataPoint[] = sortedMetrics
+        .filter((m) => m.weightKg !== undefined)
+        .map((m) => ({
+          date: m.recordedAt,
+          weightKg: m.weightKg!,
+          note: m.notes,
+        }));
+
+      // Build medical events from records for chart annotations
+      const medicalEvents: MedicalEvent[] = sortedRecords
+        .filter((r) => r.type === 'vaccination' || r.type === 'treatment' || r.type === 'diagnosis')
+        .map((r) => ({
+          date: r.date,
+          type: r.type as 'vaccination' | 'treatment' | 'diagnosis',
+          label:
+            r.type === 'vaccination'
+              ? 'Vaccination'
+              : r.type === 'treatment'
+                ? 'Treatment'
+                : 'Diagnosis',
+        }));
 
       setData({
         recentRecords: sortedRecords.slice(0, 3),
         activeMedications: activeMeds.slice(0, 5),
         upcomingAppointments: appointments
-          .filter((a) => a.status !== AppointmentStatus.CANCELLED && a.status !== AppointmentStatus.COMPLETED)
+          .filter(
+            (a) =>
+              a.status !== AppointmentStatus.CANCELLED && a.status !== AppointmentStatus.COMPLETED,
+          )
           .slice(0, 3),
         latestMetric,
         healthScore,
+        weightHistory,
+        healthScoreHistory: scoreHistory,
+        medicalEvents,
       });
     } finally {
       setLoading(false);
@@ -179,10 +240,23 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
     void load();
   }, [load]);
 
-  const onRefresh = () => {
+  // Stabilized with useCallback to prevent re-creating this function on every render,
+  // which would cause the RefreshControl to see a new prop unnecessarily
+  const onRefresh = useCallback(() => {
     setRefreshing(true);
     void load();
-  };
+  }, [load]);
+
+  const handleExportChart = useCallback(async () => {
+    try {
+      await Share.share({
+        message: `${petName}'s weight chart - exported from PetChain`,
+        title: `${petName} Weight Chart`,
+      });
+    } catch (err) {
+      console.error('Failed to share chart:', err);
+    }
+  }, [petName]);
 
   if (loading) {
     return (
@@ -193,7 +267,16 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
     );
   }
 
-  const { recentRecords, activeMedications, upcomingAppointments, latestMetric, healthScore } = data;
+  const {
+    recentRecords,
+    activeMedications,
+    upcomingAppointments,
+    latestMetric,
+    healthScore,
+    weightHistory,
+    healthScoreHistory,
+    medicalEvents,
+  } = data;
 
   return (
     <View style={styles.container}>
@@ -263,6 +346,19 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
           )}
         </Card>
 
+        {/* ── Health Score Trend ─────────────────────────────────── */}
+        {healthScoreHistory.length > 0 && (
+          <>
+            <SectionHeader title="Health Score History" icon="📊" />
+            <HealthScoreChart
+              data={healthScoreHistory}
+              medicalEvents={medicalEvents}
+              onExport={handleExportChart}
+              height={300}
+            />
+          </>
+        )}
+
         {/* ── Latest Metrics ─────────────────────────────────────── */}
         {latestMetric && (
           <>
@@ -284,13 +380,28 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
                 {latestMetric.activityLevel && (
                   <View style={styles.metricTile}>
                     <Text style={styles.metricTileValue}>
-                      {latestMetric.activityLevel.charAt(0).toUpperCase() + latestMetric.activityLevel.slice(1)}
+                      {latestMetric.activityLevel.charAt(0).toUpperCase() +
+                        latestMetric.activityLevel.slice(1)}
                     </Text>
                     <Text style={styles.metricTileLabel}>Activity</Text>
                   </View>
                 )}
               </View>
             </Card>
+          </>
+        )}
+
+        {/* ── Weight & Growth Chart ──────────────────────────────── */}
+        {data.weightHistory.length > 0 && (
+          <>
+            <SectionHeader title="Weight & Growth" icon="📈" />
+            <WeightChart
+              data={data.weightHistory}
+              petName={petName}
+              vetRecommendedRange={{ min: 4.5, max: 5.5 }}
+              onExport={handleExportChart}
+              height={300}
+            />
           </>
         )}
 
@@ -301,7 +412,10 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
             upcomingAppointments.map((appt, idx) => (
               <View
                 key={appt.id}
-                style={[styles.listRow, idx < upcomingAppointments.length - 1 && styles.listRowBorder]}
+                style={[
+                  styles.listRow,
+                  idx < upcomingAppointments.length - 1 && styles.listRowBorder,
+                ]}
               >
                 <View style={styles.apptDot} />
                 <View style={styles.listRowContent}>
@@ -309,7 +423,12 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
                   <Text style={styles.listRowSub}>
                     {formatDate(appt.date)} at {appt.time}
                   </Text>
-                  <View style={[styles.statusBadge, appt.status === AppointmentStatus.CONFIRMED && styles.statusConfirmed]}>
+                  <View
+                    style={[
+                      styles.statusBadge,
+                      appt.status === AppointmentStatus.CONFIRMED && styles.statusConfirmed,
+                    ]}
+                  >
                     <Text style={styles.statusBadgeText}>{appt.status}</Text>
                   </View>
                 </View>
@@ -332,9 +451,7 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
                 <View style={styles.medDot} />
                 <View style={styles.listRowContent}>
                   <Text style={styles.listRowTitle}>{med.name}</Text>
-                  {med.dosage ? (
-                    <Text style={styles.listRowSub}>Dosage: {med.dosage}</Text>
-                  ) : null}
+                  {med.dosage ? <Text style={styles.listRowSub}>Dosage: {med.dosage}</Text> : null}
                   {med.endDate ? (
                     <Text style={styles.listRowSub}>Until {formatDate(med.endDate)}</Text>
                   ) : null}
@@ -381,103 +498,129 @@ const PetHealthDashboardScreen: React.FC<Props> = ({ petId, petName, onBack, onO
 // ─── Styles ─────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f4f6f8" },
+  container: { flex: 1, backgroundColor: '#f4f6f8' },
 
-  loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#f4f6f8" },
-  loadingText: { marginTop: 12, fontSize: 14, color: "#888" },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f4f6f8',
+  },
+  loadingText: { marginTop: 12, fontSize: 14, color: '#888' },
 
   header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     padding: 16,
-    backgroundColor: "#fff",
+    backgroundColor: '#fff',
     borderBottomWidth: 1,
-    borderBottomColor: "#e0e0e0",
+    borderBottomColor: '#e0e0e0',
   },
   backBtn: { padding: 4 },
-  backText: { fontSize: 17, color: "#4CAF50" },
+  backText: { fontSize: 17, color: '#4CAF50' },
   headerTitle: {
     flex: 1,
     fontSize: 16,
-    fontWeight: "700",
-    color: "#1a1a1a",
-    textAlign: "center",
+    fontWeight: '700',
+    color: '#1a1a1a',
+    textAlign: 'center',
     marginHorizontal: 8,
   },
   metricsBtn: {
-    backgroundColor: "#e8f5e9",
+    backgroundColor: '#e8f5e9',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
   },
-  metricsBtnText: { color: "#2e7d32", fontWeight: "700", fontSize: 13 },
+  metricsBtnText: { color: '#2e7d32', fontWeight: '700', fontSize: 13 },
 
   scroll: { flex: 1 },
   scrollContent: { padding: 16, paddingBottom: 32 },
 
-  sectionHeader: { flexDirection: "row", alignItems: "center", marginTop: 16, marginBottom: 8 },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', marginTop: 16, marginBottom: 8 },
   sectionIcon: { fontSize: 18, marginRight: 8 },
-  sectionTitle: { fontSize: 15, fontWeight: "700", color: "#333" },
+  sectionTitle: { fontSize: 15, fontWeight: '700', color: '#333' },
 
   card: {
-    backgroundColor: "#fff",
+    backgroundColor: '#fff',
     borderRadius: 12,
     padding: 16,
-    shadowColor: "#000",
+    shadowColor: '#000',
     shadowOpacity: 0.06,
     shadowRadius: 6,
     elevation: 2,
   },
 
-  emptyText: { fontSize: 14, color: "#aaa", textAlign: "center", paddingVertical: 8 },
+  emptyText: { fontSize: 14, color: '#aaa', textAlign: 'center', paddingVertical: 8 },
 
   // Health score
-  scoreRow: { flexDirection: "row", alignItems: "center" },
+  scoreRow: { flexDirection: 'row', alignItems: 'center' },
   scoreBadge: {
     width: 80,
     height: 80,
     borderRadius: 40,
-    alignItems: "center",
-    justifyContent: "center",
+    alignItems: 'center',
+    justifyContent: 'center',
     marginRight: 16,
   },
-  scoreNumber: { fontSize: 28, fontWeight: "800", color: "#fff" },
-  scoreMax: { fontSize: 11, color: "rgba(255,255,255,0.85)", marginTop: -4 },
+  scoreNumber: { fontSize: 28, fontWeight: '800', color: '#fff' },
+  scoreMax: { fontSize: 11, color: 'rgba(255,255,255,0.85)', marginTop: -4 },
   scoreDetails: { flex: 1 },
-  scoreLabel: { fontSize: 18, fontWeight: "700" },
-  scoreSubtext: { fontSize: 12, color: "#888", marginTop: 2, marginBottom: 8 },
-  scoreBarBg: { height: 8, backgroundColor: "#e0e0e0", borderRadius: 4, overflow: "hidden" },
+  scoreLabel: { fontSize: 18, fontWeight: '700' },
+  scoreSubtext: { fontSize: 12, color: '#888', marginTop: 2, marginBottom: 8 },
+  scoreBarBg: { height: 8, backgroundColor: '#e0e0e0', borderRadius: 4, overflow: 'hidden' },
   scoreBarFill: { height: 8, borderRadius: 4 },
 
   // Metric tiles
-  metricsGrid: { flexDirection: "row", justifyContent: "space-around" },
-  metricTile: { alignItems: "center", paddingHorizontal: 8 },
-  metricTileValue: { fontSize: 18, fontWeight: "700", color: "#1a1a1a" },
-  metricTileLabel: { fontSize: 12, color: "#888", marginTop: 2 },
+  metricsGrid: { flexDirection: 'row', justifyContent: 'space-around' },
+  metricTile: { alignItems: 'center', paddingHorizontal: 8 },
+  metricTileValue: { fontSize: 18, fontWeight: '700', color: '#1a1a1a' },
+  metricTileLabel: { fontSize: 12, color: '#888', marginTop: 2 },
 
   // List rows
-  listRow: { flexDirection: "row", alignItems: "flex-start", paddingVertical: 10 },
-  listRowBorder: { borderBottomWidth: 1, borderBottomColor: "#f0f0f0" },
+  listRow: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 10 },
+  listRowBorder: { borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   listRowContent: { flex: 1 },
-  listRowTitle: { fontSize: 14, fontWeight: "600", color: "#1a1a1a" },
-  listRowSub: { fontSize: 13, color: "#666", marginTop: 2 },
-  listRowDate: { fontSize: 12, color: "#aaa", marginTop: 4 },
+  listRowTitle: { fontSize: 14, fontWeight: '600', color: '#1a1a1a' },
+  listRowSub: { fontSize: 13, color: '#666', marginTop: 2 },
+  listRowDate: { fontSize: 12, color: '#aaa', marginTop: 4 },
 
-  apptDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: "#1565c0", marginTop: 4, marginRight: 12 },
-  medDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: "#6a1b9a", marginTop: 4, marginRight: 12 },
-  recDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: "#2e7d32", marginTop: 4, marginRight: 12 },
+  apptDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#1565c0',
+    marginTop: 4,
+    marginRight: 12,
+  },
+  medDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#6a1b9a',
+    marginTop: 4,
+    marginRight: 12,
+  },
+  recDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#2e7d32',
+    marginTop: 4,
+    marginRight: 12,
+  },
 
   statusBadge: {
-    alignSelf: "flex-start",
+    alignSelf: 'flex-start',
     marginTop: 4,
-    backgroundColor: "#fff8e1",
+    backgroundColor: '#fff8e1',
     borderRadius: 4,
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
-  statusConfirmed: { backgroundColor: "#e8f5e9" },
-  statusBadgeText: { fontSize: 11, fontWeight: "600", color: "#555" },
+  statusConfirmed: { backgroundColor: '#e8f5e9' },
+  statusBadgeText: { fontSize: 11, fontWeight: '600', color: '#555' },
 });
 
 export default PetHealthDashboardScreen;

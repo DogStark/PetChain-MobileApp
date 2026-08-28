@@ -1,0 +1,63 @@
+appId: app.petchain.mobile.staging
+---
+# SOS happy path: tap button → countdown → contacts notified
+- launchApp
+
+# Navigate to Emergency Contacts screen
+- tapOn: "Emergency"
+- assertVisible: "Emergency"
+
+# ── Scenario 1: Full SOS activation ──────────────────────────────────────────
+# Mock the emergency API so no real alerts are sent
+- runScript:
+    file: ../scripts/mockEmergencyApi.js
+
+# Hold the SOS button long enough to trigger countdown (1.5 s hold → 3 s countdown)
+- longPressOn:
+    id: "sos-button"
+    duration: 2000
+
+# Confirm dialog / countdown is visible
+- assertVisible:
+    id: "sos-confirm-dialog"
+
+# Wait for auto-send (countdown finishes in 3 s)
+- waitForAnimationToEnd:
+    timeout: 5000
+
+# Verify the confirmation that contacts were notified
+- assertVisible: "SOS Sent"
+
+# ── Scenario 2: SOS cancelled during countdown ─────────────────────────────
+- tapOn:
+    id: "sos-button"
+- longPressOn:
+    id: "sos-button"
+    duration: 2000
+
+- assertVisible:
+    id: "sos-confirm-dialog"
+
+# Tap cancel before countdown ends
+- tapOn:
+    id: "sos-cancel-button"
+
+# Dialog should dismiss and no SOS should be sent
+- assertNotVisible: "SOS Sent"
+- assertVisible:
+    id: "sos-button"
+
+# ── Scenario 3: SOS with no emergency contacts configured ──────────────────
+# Remove all contacts first
+- runScript:
+    file: ../scripts/clearEmergencyContacts.js
+
+- longPressOn:
+    id: "sos-button"
+    duration: 2000
+
+- waitForAnimationToEnd:
+    timeout: 5000
+
+# Should show "add contacts" prompt when no contacts exist
+- assertVisible: "Add Emergency Contact"

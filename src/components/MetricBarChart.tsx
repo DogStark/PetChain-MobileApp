@@ -1,5 +1,7 @@
-import React from "react";
-import { StyleSheet, Text, View } from "react-native";
+import React from 'react';
+import { StyleSheet, Text, View } from 'react-native';
+
+import { useAppTheme } from '../theme';
 
 export interface ChartPoint {
   label: string;
@@ -13,9 +15,15 @@ interface Props {
   height?: number;
 }
 
-const MetricBarChart: React.FC<Props> = ({ points, color, unit = "", height = 168 }) => {
+const MetricBarChart: React.FC<Props> = ({ points, color, unit = '', height = 168 }) => {
+  const colors = useAppTheme();
+
   if (points.length === 0) {
-    return <Text style={styles.empty}>No data points for this metric yet.</Text>;
+    return (
+      <Text style={[styles.empty, { color: colors.placeholder }]}>
+        No data points for this metric yet.
+      </Text>
+    );
   }
 
   const values = points.map((p) => p.value);
@@ -41,35 +49,41 @@ const MetricBarChart: React.FC<Props> = ({ points, color, unit = "", height = 16
       </View>
       <View style={styles.labelsRow}>
         {lastN.map((p, i) => (
-          <Text key={`lbl-${i}`} style={styles.barLabel} numberOfLines={1}>
+          <Text
+            key={`lbl-${i}`}
+            style={[styles.barLabel, { color: colors.secondaryText }]}
+            numberOfLines={1}
+          >
             {p.label}
           </Text>
         ))}
       </View>
-      {unit ? <Text style={styles.unitHint}>Unit: {unit}</Text> : null}
+      {unit ? (
+        <Text style={[styles.unitHint, { color: colors.placeholder }]}>Unit: {unit}</Text>
+      ) : null}
     </View>
   );
 };
 
 const styles = StyleSheet.create({
   wrap: { marginVertical: 8 },
-  empty: { color: "#888", fontSize: 14, paddingVertical: 12, textAlign: "center" },
+  empty: { fontSize: 14, paddingVertical: 12, textAlign: 'center' },
   barsRow: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "space-between",
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
     paddingHorizontal: 4,
   },
-  barCol: { flex: 1, alignItems: "center", marginHorizontal: 1 },
-  bar: { width: "78%", borderRadius: 4, minHeight: 6 },
+  barCol: { flex: 1, alignItems: 'center', marginHorizontal: 1 },
+  bar: { width: '78%', borderRadius: 4, minHeight: 6 },
   labelsRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     marginTop: 6,
     paddingHorizontal: 2,
   },
-  barLabel: { flex: 1, fontSize: 9, color: "#666", textAlign: "center" },
-  unitHint: { fontSize: 12, color: "#999", marginTop: 6, textAlign: "right" },
+  barLabel: { flex: 1, fontSize: 9, textAlign: 'center' },
+  unitHint: { fontSize: 12, marginTop: 6, textAlign: 'right' },
 });
 
 export default MetricBarChart;
