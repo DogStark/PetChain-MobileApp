@@ -132,7 +132,9 @@ const PREFS_KEY = '@notification_preferences';
 const NOTIFICATION_MAP_KEY = '@notification_map'; // maps entity id -> notification ids
 const READ_NOTIFICATIONS_KEY = '@read_notifications';
 const SNOOZED_NOTIFICATIONS_KEY = '@snoozed_notifications';
+const ACTION_IDEMPOTENCY_KEY = '@action_idempotency';
 const SNOOZE_DELAY_MS = 10 * 60 * 1000;
+const IDEMPOTENCY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 const ACTION_OPEN = 'OPEN_APP';
 const ACTION_SNOOZE = 'SNOOZE';
@@ -225,6 +227,55 @@ const saveActionState = async (
   const state = await readActionState(key);
   state[notificationId] = timestamp;
   await setItem(key, JSON.stringify(state));
+};
+
+/**
+ * Read idempotency state: stores action ID + action type -> processed timestamp
+ * Only stores action IDs and timestamps, no sensitive data
+ */
+const readIdempotencyState = async (): Promise<Record<string, { timestamp: number }>> => {
+  const stored = await getItem(ACTION_IDEMPOTENCY_KEY);
+  return stored ? JSON.parse(stored) : {};
+};
+
+/**
+ * Check if an action has been processed recently (within idempotency window)
+ * Returns true if action should be skipped (already processed)
+ */
+const isActionAlreadyProcessed = async (
+  notificationId: string,
+  actionIdentifier: string,
+): Promise<boolean> => {
+  const state = await readIdempotencyState();
+  const idempotencyKey = `${notificationId}::${actionIdentifier}`;
+  const record = state[idempotencyKey];
+
+  if (!record) return false; // Not seen before
+
+  const timeSinceProcessing = Date.now() - record.timestamp;
+  return timeSinceProcessing < IDEMPOTENCY_WINDOW_MS;
+};
+
+/**
+ * Mark an action as processed to prevent duplicate mutations
+ */
+const markActionAsProcessed = async (
+  notificationId: string,
+  actionIdentifier: string,
+): Promise<void> => {
+  const state = await readIdempotencyState();
+  const idempotencyKey = `${notificationId}::${actionIdentifier}`;
+  state[idempotencyKey] = { timestamp: Date.now() };
+
+  // Clean up old entries outside the idempotency window to avoid unbounded growth
+  const now = Date.now();
+  Object.entries(state).forEach(([key, value]) => {
+    if (now - value.timestamp > IDEMPOTENCY_WINDOW_MS) {
+      delete state[key];
+    }
+  });
+
+  await setItem(ACTION_IDEMPOTENCY_KEY, JSON.stringify(state));
 };
 
 const getNotificationUrl = (data: Record<string, unknown> = {}): string => {
@@ -493,8 +544,16 @@ async function findMedicationId(notification: Notifications.Notification): Promi
 }
 
 async function handleMarkAsTaken(notification: Notifications.Notification): Promise<void> {
+  const notificationId = notification.request.identifier;
+
+  // Check idempotency: skip if action already processed recently
+  if (await isActionAlreadyProcessed(notificationId, 'MARK_AS_TAKEN')) {
+    return;
+  }
+
   const medicationId = await findMedicationId(notification);
   if (!medicationId) return;
+
   try {
     const medService = await getMedicationService();
     await medService.logDose({
@@ -502,19 +561,40 @@ async function handleMarkAsTaken(notification: Notifications.Notification): Prom
       medicationId,
       takenAt: new Date().toISOString(),
     });
-    await markAsRead(notification.request.identifier);
+    await markAsRead(notificationId);
+
+    // Mark action as processed after successful mutation
+    await markActionAsProcessed(notificationId, 'MARK_AS_TAKEN');
   } catch {
     // Non-fatal — dose can be recorded manually
   }
 }
 
 async function handleSnooze30Min(notification: Notifications.Notification): Promise<void> {
+  const notificationId = notification.request.identifier;
+
+  // Check idempotency: skip if action already processed recently
+  if (await isActionAlreadyProcessed(notificationId, 'SNOOZE_30MIN')) {
+    return;
+  }
+
   await snooze(notification, 30 * 60 * 1000);
+
+  // Mark action as processed after successful snooze
+  await markActionAsProcessed(notificationId, 'SNOOZE_30MIN');
 }
 
 async function handleSkipDose(notification: Notifications.Notification): Promise<void> {
+  const notificationId = notification.request.identifier;
+
+  // Check idempotency: skip if action already processed recently
+  if (await isActionAlreadyProcessed(notificationId, 'SKIP_DOSE')) {
+    return;
+  }
+
   const medicationId = await findMedicationId(notification);
   if (!medicationId) return;
+
   try {
     const medService = await getMedicationService();
     await medService.logDose({
@@ -524,7 +604,10 @@ async function handleSkipDose(notification: Notifications.Notification): Promise
       skipped: true,
     });
     await cancelEntityNotification(medicationId);
-    await markAsRead(notification.request.identifier);
+    await markAsRead(notificationId);
+
+    // Mark action as processed after successful mutation
+    await markActionAsProcessed(notificationId, 'SKIP_DOSE');
   } catch {
     // Non-fatal
   }
