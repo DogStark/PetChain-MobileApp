@@ -18,3 +18,28 @@ appId: app.petchain.mobile.staging
 - tapOn: "Password"
 - inputText: "SuperSecretPassword123"
 - tapOn: "Sign In"
+---
+# RTL smoke flow using the Arabic fixture locale (issue #1052).
+# The RTL fixture locale is applied at a controlled reload boundary via
+# launchApp env, so I18nManager.forceRTL/allowRTL is never toggled mid-session.
+- launchApp:
+    clearState: true
+    env:
+      RTL_FIXTURE_LOCALE: "ar"
+- assertVisible: "مرحبًا بك في PetChain"
+- tapOn: "التالي"
+- assertVisible: "سجلات طبية آمنة"
+- tapOn: "التالي"
+- assertVisible: "مسح QR الذكي"
+- tapOn: "التالي"
+- assertVisible: "شبكة الأطباء البيطريين"
+- tapOn: "التالي"
+- assertVisible: "جاهز للطوارئ"
+- tapOn: "ابدأ الآن"
+- assertVisible: "مرحبًا بعودتك"
+- assertVisible: "تسجيل الدخول إلى PetMedTracka"
+- tapOn: "البريد الإلكتروني"
+- inputText: "test@petchain.app"
+- tapOn: "كلمة المرور"
+- inputText: "SuperSecretPassword123"
+- tapOn: "تسجيل الدخول"

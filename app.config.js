@@ -22,6 +22,18 @@ const APP_NAME_MAP = {
 // misconfigured — the native layer rejects the manifest outright. See issue #991.
 const RUNTIME_VERSION = `${APP_ENV}-${APP_VERSION}`;
 
+// RTL test locale fixture (issue #1052).
+//
+// Arabic and Hebrew are the RTL locales we ship translations for. The app must not
+// flip direction mid-session: I18nManager.forceRTL/allowRTL only take effect after a
+// full reload, so direction is decided here (natively, before any JS runs) and the
+// runtime only ever *reads* it. `extra.RTL_TEST_LOCALE` lets the Maestro smoke flow
+// and component snapshots boot the app in an RTL fixture locale without touching
+// persisted user preferences.
+const RTL_TEST_LOCALE = process.env.RTL_TEST_LOCALE ?? null;
+const RTL_LOCALES = ['ar', 'he'];
+const IS_RTL_TEST = RTL_TEST_LOCALE != null && RTL_LOCALES.includes(RTL_TEST_LOCALE);
+
 module.exports = {
   expo: {
     name: APP_NAME_MAP[APP_ENV] ?? 'PetChain',
@@ -39,6 +51,11 @@ module.exports = {
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'automatic',
+    // When the RTL fixture locale is active, force the native layout direction at
+    // build/launch time so the reload boundary is the app start, never a mid-session
+    // I18nManager mutation. `extra.rtlTestLocale` is consumed by the runtime to seed
+    // the fixture locale without persisting it to user preferences.
+    ...(IS_RTL_TEST ? { extra: { rtlTestLocale: RTL_TEST_LOCALE } } : {}),
     splash: {
       image: './assets/splash.png',
       resizeMode: 'contain',
@@ -65,6 +82,8 @@ module.exports = {
         NSFaceIDUsageDescription:
           "PetChain uses Face ID/Touch ID for secure biometric authentication to protect your pet's medical data.",
         UIBackgroundModes: ['location', 'background-fetch'],
+        // Declare the RTL fixture locale so iOS renders the fixture direction at launch.
+        ...(IS_RTL_TEST ? { CFBundleLocalizations: RTL_LOCALES } : {}),
       },
       // App Groups for widget data sharing
       appGroups: ['group.app.petchain.mobile'],
@@ -161,6 +180,10 @@ module.exports = {
     ],
     extra: {
       APP_ENV,
+      // RTL fixture locale for tests / Maestro smoke flow (issue #1052).
+      // null in normal builds; 'ar' or 'he' when RTL_TEST_LOCALE is set.
+      RTL_TEST_LOCALE,
+      RTL_LOCALES,
       // API_BASE_URL resolution: explicit env > profile-specific > no fallback to localhost for prod
       API_BASE_URL:
         process.env.API_BASE_URL ||
