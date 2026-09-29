@@ -22,6 +22,18 @@ const APP_NAME_MAP = {
 // misconfigured — the native layer rejects the manifest outright. See issue #991.
 const RUNTIME_VERSION = `${APP_ENV}-${APP_VERSION}`;
 
+// RTL test locale fixture (issue #1052).
+//
+// Arabic and Hebrew are the RTL locales we ship translations for. The app must not
+// flip direction mid-session: I18nManager.forceRTL/allowRTL only take effect after a
+// full reload, so direction is decided here (natively, before any JS runs) and the
+// runtime only ever *reads* it. `extra.RTL_TEST_LOCALE` lets the Maestro smoke flow
+// and component snapshots boot the app in an RTL fixture locale without touching
+// persisted user preferences.
+const RTL_TEST_LOCALE = process.env.RTL_TEST_LOCALE ?? null;
+const RTL_LOCALES = ['ar', 'he'];
+const IS_RTL_TEST = RTL_TEST_LOCALE != null && RTL_LOCALES.includes(RTL_TEST_LOCALE);
+
 // ─── Deep / universal link policy (issue #1029) ─────────────────────────────
 //
 // Supported link routes and their parameter schemas are documented here in one
@@ -260,7 +272,6 @@ const PRIVACY_DECLARATIONS = {
     },
   ],
 };
-};
 
 module.exports = {
   expo: {
@@ -279,6 +290,11 @@ module.exports = {
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'automatic',
+    // When the RTL fixture locale is active, force the native layout direction at
+    // build/launch time so the reload boundary is the app start, never a mid-session
+    // I18nManager mutation. `extra.rtlTestLocale` is consumed by the runtime to seed
+    // the fixture locale without persisting it to user preferences.
+    ...(IS_RTL_TEST ? { extra: { rtlTestLocale: RTL_TEST_LOCALE } } : {}),
     splash: {
       image: './assets/splash.png',
       resizeMode: 'contain',
@@ -310,6 +326,8 @@ module.exports = {
         NSFaceIDUsageDescription:
           "PetChain uses Face ID/Touch ID for secure biometric authentication to protect your pet's medical data.",
         UIBackgroundModes: ['location', 'background-fetch'],
+        // Declare the RTL fixture locale so iOS renders the fixture direction at launch.
+        ...(IS_RTL_TEST ? { CFBundleLocalizations: RTL_LOCALES } : {}),
       },
       // App Groups for widget data sharing
       appGroups: ['group.app.petchain.mobile'],
@@ -405,4 +423,47 @@ module.exports = {
       //   AppDelegate to call excludeSensitiveDirectoriesFromBackup() at
       //   launch.  This sets NSURLIsExcludedFromBackupKey=true on:
       //     • Library/Application Support/  (expo-sqlite petchain.db)
-
+      //     • Library/Preferences/          (AsyncStorage / RNCAsyncStorage)
+      //     • Documents/                    (expo-file-system documentDirectory)
+      //
+      // expo-secure-store (Keychain/Keystore) is NOT backed up by any OS
+      // transport regardless of these settings — no action needed there.
+      //
+      // Source files:
+      //   plugins/withAndroidBackupExclusion.js
+      //   plugins/withIosBackupExclusion.js
+      //   android-config/backup_rules.xml
+      //   android-config/data_extraction_rules.xml
+      './plugins/withAndroidBackupExclusion.js',
+      './plugins/withIosBackupExclusion.js',
+    ],
+    extra: {
+      APP_ENV,
+      // RTL fixture locale for tests / Maestro smoke flow (issue #1052).
+      // null in normal builds; 'ar' or 'he' when RTL_TEST_LOCALE is set.
+      RTL_TEST_LOCALE,
+      RTL_LOCALES,
+      // API_BASE_URL resolution: explicit env > profile-specific > no fallback to localhost for prod
+      API_BASE_URL:
+        process.env.API_BASE_URL ||
+        (APP_ENV === 'production'
+          ? process.env.PROD_API_URL // Production: require explicit PROD_API_URL, no fallback
+          : APP_ENV === 'staging'
+            ? (process.env.STAGING_API_URL ?? 'https://staging.petchain.app/api')
+            : (process.env.API_BASE_URL ?? 'http://localhost:3000/api')), // Dev: localhost default
+      STAGING_API_URL: process.env.STAGING_API_URL ?? 'https://staging.petchain.app/api',
+      PROD_API_URL: process.env.PROD_API_URL ?? 'https://api.petchain.app/api',
+      API_TIMEOUT: process.env.API_TIMEOUT ?? '10000',
+      SENTRY_DSN: process.env.SENTRY_DSN ?? '',
+      SENTRY_ENABLE_IN_DEV: process.env.SENTRY_ENABLE_IN_DEV ?? 'false',
+      MAX_CACHE_SIZE: process.env.MAX_CACHE_SIZE ?? '50',
+      PAGINATION_LIMIT: process.env.PAGINATION_LIMIT ?? '20',
+      IOS_STORE_URL: process.env.IOS_STORE_URL ?? 'https://apps.apple.com/app/petchain/id000000000',
+      ANDROID_STORE_URL:
+        process.env.ANDROID_STORE_URL ??
+        'https://play.google.com/store/apps/details?id=app.petchain.mobile',
+      MIN_NATIVE_VERSION_IOS: process.env.MIN_NATIVE_VERSION_IOS ?? '1.0.0',
+      MIN_NATIVE_VERSION_ANDROID: process.env.MIN_NATIVE_VERSION_ANDROID ?? '1.0.0',
+    },
+  },
+};

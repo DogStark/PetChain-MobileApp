@@ -42,8 +42,16 @@ const isStorybookEnabled = process.env.STORYBOOK_ENABLED === 'true';
 // Initialise Sentry before the first render
 errorTracking.init();
 
-// Apply RTL direction based on the active language at startup
+// Apply RTL direction based on the active language at startup.
+//
+// I18nManager.forceRTL only takes effect after a full app reload, so we apply
+// it here — at the controlled startup boundary — and never mid-session. If the
+// persisted direction no longer matches the active language (e.g. the user
+// switched to Arabic/Hebrew), we flip the flag and let the next launch pick it
+// up. Persisted preferences are untouched, so switching direction can never
+// corrupt stored settings.
 const startupRTL = isRTL(i18n.language);
+I18nManager.allowRTL(true);
 if (I18nManager.isRTL !== startupRTL) {
   I18nManager.forceRTL(startupRTL);
 }
