@@ -7,6 +7,7 @@ import {
   Animated,
   Vibration,
   Platform,
+  AccessibilityInfo,
 } from 'react-native';
 
 import emergencyService, { type SOSPlan } from '../services/emergencyService';
@@ -123,6 +124,16 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
     };
   }, [isCountdown, pulseAnim, triggerSOS]);
 
+  // Announce countdown ticks and cancellation to assistive tech so switch-control
+  // and screen-reader users get the same feedback as sighted users.
+  useEffect(() => {
+    if (isCountdown) {
+      AccessibilityInfo.announceForAccessibility(
+        `SOS countdown started. Sending in ${countdown} seconds. Activate cancel to stop.`,
+      );
+    }
+  }, [isCountdown, countdown]);
+
   const handlePressIn = () => {
     setIsPressing(true);
     Vibration.vibrate(50);
@@ -147,12 +158,27 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
     }
   };
 
+  // Switch-control / non-gesture activation path. A single accessible activation
+  // starts the same confirmation countdown as the long-press, so accidental
+  // activation is still prevented by the countdown + cancel window.
+  const handleAccessibilityActivate = () => {
+    if (isCountdown) {
+      cancelSOS();
+      return;
+    }
+    setIsPressing(false);
+    pressAnim.setValue(0);
+    setIsCountdown(true);
+    Vibration.vibrate(200);
+  };
+
   const cancelSOS = () => {
     setIsCountdown(false);
     setCountdown(3);
     // Medium haptic impact on cancel
     void hapticMedium();
     Vibration.vibrate(100);
+    AccessibilityInfo.announceForAccessibility('SOS cancelled.');
   };
 
   const progressWidth = pressAnim.interpolate({
@@ -167,6 +193,13 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
         onPress={cancelSOS}
         activeOpacity={0.9}
         testID="sos-confirm-dialog"
+        accessible
+        accessibilityRole="button"
+        accessibilityLabel={`SOS countdown, sending in ${countdown} seconds. Activate to cancel.`}
+        accessibilityHint="Cancels the emergency SOS before it is sent"
+        accessibilityLiveRegion="assertive"
+        onAccessibilityAction={handleAccessibilityActivate}
+        accessibilityActions={[{ name: 'activate', label: 'Cancel SOS' }]}
       >
         <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
           <Text style={styles.countdownText}>{countdown}</Text>
@@ -202,6 +235,12 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
         onPressOut={handlePressOut}
         activeOpacity={1}
         testID="sos-button"
+        accessible
+        accessibilityRole="button"
+        accessibilityLabel="SOS emergency. Activate to start the emergency countdown."
+        accessibilityHint="Starts a 3 second countdown before the SOS is sent"
+        onAccessibilityAction={handleAccessibilityActivate}
+        accessibilityActions={[{ name: 'activate', label: 'Activate SOS' }]}
       >
         <View style={styles.content}>
           <Text style={styles.buttonText}>🚨 SOS EMERGENCY</Text>

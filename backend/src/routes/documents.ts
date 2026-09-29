@@ -49,7 +49,13 @@ const QUOTA: Record<string, number> = {
 };
 const DEFAULT_QUOTA = QUOTA.free;
 
-const ALLOWED_MIME = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp']);
+const ALLOWED_MIME = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+]);
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20 MB per file
 
 // ─── In-memory store extension ────────────────────────────────────────────────

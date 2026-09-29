@@ -42,6 +42,15 @@ jest.mock('../apiClient', () => ({
   },
 }));
 
+jest.mock('../config/uploadLimits', () => ({
+  validateFileLimits: jest.fn(),
+}));
+
+jest.mock('../i18n', () => ({
+  __esModule: true,
+  default: { t: (key: string, opts?: { defaultValue: string }) => opts?.defaultValue ?? key },
+}));
+
 // ─── Imports (after mocks) ────────────────────────────────────────────────────
 
 import CryptoJS from 'crypto-js';
@@ -52,6 +61,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as SecureStore from 'expo-secure-store';
 
 import apiClient from '../apiClient';
+import { validateFileLimits } from '../config/uploadLimits';
 import {
   provisionDocumentKey,
   uploadDocument,
