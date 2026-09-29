@@ -42,3 +42,31 @@ Google Play also requires:
 
 ### Generation
 Use Expo's asset generation: `npx expo prebuild` will generate icons from source if properly configured.
+
+## Release Checklist Automation
+
+The release validator (`scripts/validate-release.js`) runs in CI before production builds and
+fails the build with a named missing artifact when any required release input is absent.
+
+### Required assets
+
+- App icons and splash screen listed above must exist under `assets/`.
+- Store screenshots must exist under `assets/screenshots/` (at least one per required device class).
+- Asset dimensions are validated against the sizes documented above.
+
+### Legal documents
+
+- Legal files must exist under `legal/` (`privacy-policy.md`, `terms-of-service.md`).
+- Legal URLs are environment-specific and must be HTTPS. Configure them per environment:
+  - `EXPO_PUBLIC_LEGAL_PRIVACY_URL`
+  - `EXPO_PUBLIC_LEGAL_TERMS_URL`
+
+### Release notes
+
+- Production builds require `RELEASE_NOTES.md` at the repository root.
+
+### Preview placeholders
+
+Preview builds may use documented placeholders instead of the production artifacts above.
+Set `RELEASE_PROFILE=preview` to allow placeholder assets, placeholder legal URLs, and
+missing release notes; production builds (`RELEASE_PROFILE=production`) enforce every check.

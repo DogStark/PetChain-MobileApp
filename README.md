@@ -325,3 +325,22 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 **Status:** Version 1.0.0 — Ready for App Store & Google Play submission.
 
+## Handsoff notes
+
+<!-- handsoff-issue-1021 -->
+- #1021: [Mobile] Add encrypted health-record export and import
+
+<!-- handsoff-issue-1030 -->
+- #1030: [Mobile] Add duplicate-pet detection before registration
+
+<!-- handsoff-issue-1031 -->
+- #1031: [Mobile] Add vaccination-certificate sharing preview
+
+<!-- handsoff-issue-1038 -->
+- #1038: [Mobile] Add account-switch isolation tests for local caches
+
+<!-- handsoff-issue-1091 -->
+- #1091: [Mobile] Add vet credential expiry warning before record submission
+
+<!-- handsoff-issue-1096 -->
+- #1096: [Mobile] Add attachment preview isolation from untrusted document content

@@ -7,6 +7,18 @@ appId: app.petchain.mobile.staging
 - tapOn: "Emergency"
 - assertVisible: "Emergency"
 
+# ── Scenario 0: Pre-flight channel verification before an incident ──────────
+# Each contact's delivery channel status is validated and displayed up front
+- assertVisible:
+    id: "contact-channel-status"
+
+# A test notification can be sent that discloses no health data or location
+- tapOn:
+    id: "send-test-notification-button"
+- assertVisible: "Test Notification Sent"
+- assertNotVisible: "Location"
+- assertNotVisible: "Health"
+
 # ── Scenario 1: Full SOS activation ──────────────────────────────────────────
 # Mock the emergency API so no real alerts are sent
 - runScript:
@@ -61,3 +73,35 @@ appId: app.petchain.mobile.staging
 
 # Should show "add contacts" prompt when no contacts exist
 - assertVisible: "Add Emergency Contact"
+
+# ── Scenario 4: Invalid number / expired token / partial delivery ──────────
+# Seed contacts with an invalid number and an expired push token
+- runScript:
+    file: ../scripts/seedInvalidEmergencyContacts.js
+
+# Failed channels are clearly reported
+- assertVisible:
+    id: "contact-channel-status"
+- assertVisible: "Invalid number"
+- assertVisible: "Expired token"
+
+# Healthy fallback channels still proceed despite the failures
+- longPressOn:
+    id: "sos-button"
+    duration: 2000
+- waitForAnimationToEnd:
+    timeout: 5000
+- assertVisible: "SOS Sent"
+
+# ── Scenario 5: Offline activation ─────────────────────────────────────────
+- runScript:
+    file: ../scripts/setOfflineMode.js
+
+- longPressOn:
+    id: "sos-button"
+    duration: 2000
+- waitForAnimationToEnd:
+    timeout: 5000
+
+# Offline activation is queued and reported rather than silently dropped
+- assertVisible: "SOS Queued"

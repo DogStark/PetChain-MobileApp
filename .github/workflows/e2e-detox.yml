@@ -61,6 +61,20 @@ jobs:
             npm run seed:test
             npx detox test --configuration android.emu.debug --headless --record-logs all
 
+      - name: Run Detox dynamic-type tests (Android, max font size, en/es)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: |
+            adb shell settings put system font_scale 2.0
+            npm run seed:test
+            npx detox test --configuration android.emu.debug --headless --record-logs all --testNamePattern "dynamic-type"
+
       - name: Upload Detox artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -96,6 +110,12 @@ jobs:
         run: |
           npm run seed:test
           npx detox test --configuration ios.sim.debug --record-logs all
+
+      - name: Run Detox dynamic-type tests (iOS, max font size, en/es)
+        run: |
+          xcrun simctl ui booted content_size accessibility-extra-extra-extra-large
+          npm run seed:test
+          npx detox test --configuration ios.sim.debug --record-logs all --testNamePattern "dynamic-type"
 
       - name: Upload Detox artifacts
         if: always()

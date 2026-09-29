@@ -234,4 +234,132 @@ export const appointmentPaths = {
       },
     },
   },
+
+  '/appointments/{id}/calendar-sync': {
+    post: {
+      tags: ['Appointments'],
+      summary: 'Sync an appointment with the device calendar',
+      description:
+        'Idempotently imports or exports an appointment against the device calendar. External event IDs and source ownership are persisted so retries do not duplicate events. When both the server and device copies changed since the last sync, the conflict is reported with both timestamps preserved and must be resolved explicitly via `resolution`.',
+      operationId: 'syncAppointmentCalendar',
+      security: [{ BearerAuth: [] }],
+      parameters: [{ $ref: '#/components/parameters/AppointmentIdParam' }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CalendarSyncRequest' },
+            examples: {
+              export: {
+                summary: 'Export appointment to device calendar',
+                value: {
+                  direction: 'EXPORT',
+                  source: 'DEVICE',
+                  externalEventId: 'device-event-123',
+                  deviceUpdatedAt: '2024-03-15T14:30:00Z',
+                },
+              },
+              import: {
+                summary: 'Import device calendar event',
+                value: {
+                  direction: 'IMPORT',
+                  source: 'DEVICE',
+                  externalEventId: 'device-event-123',
+                  deviceUpdatedAt: '2024-03-16T09:00:00Z',
+                  recurrenceRule: 'FREQ=WEEKLY;COUNT=4',
+                  timezone: 'America/New_York',
+                },
+              },
+              resolve: {
+                summary: 'Resolve a detected conflict',
+                value: {
+                  direction: 'IMPORT',
+                  source: 'DEVICE',
+                  externalEventId: 'device-event-123',
+                  deviceUpdatedAt: '2024-03-16T09:00:00Z',
+                  resolution: 'KEEP_DEVICE',
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description:
+            'Sync applied (or conflict reported). When `status` is `CONFLICT`, both `serverUpdatedAt` and `deviceUpdatedAt` are preserved and `resolution` is required on the next request.',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CalendarSyncResponse' },
+              examples: {
+                synced: {
+                  summary: 'Sync applied idempotently',
+                  value: {
+                    success: true,
+                    data: {
+                      status: 'SYNCED',
+                      externalEventId: 'device-event-123',
+                      source: 'DEVICE',
+                      serverUpdatedAt: '2024-03-15T14:30:00Z',
+                      deviceUpdatedAt: '2024-03-16T09:00:00Z',
+                    },
+                  },
+                },
+                conflict: {
+                  summary: 'Conflict requires explicit resolution',
+                  value: {
+                    success: true,
+                    data: {
+                      status: 'CONFLICT',
+                      externalEventId: 'device-event-123',
+                      source: 'DEVICE',
+                      serverUpdatedAt: '2024-03-15T14:30:00Z',
+                      deviceUpdatedAt: '2024-03-16T09:00:00Z',
+                      resolution: null,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        '400': { $ref: '#/components/responses/BadRequest' },
+        '401': { $ref: '#/components/responses/Unauthorized' },
+        '403': {
+          description: 'Calendar permission revoked or sync not permitted',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ApiError' },
+              example: {
+                success: false,
+                error: {
+                  code: 'CALENDAR_PERMISSION_REVOKED',
+                  message: 'Calendar access was revoked; re-grant permission to sync',
+                },
+                timestamp: '2024-01-15T10:30:00Z',
+              },
+            },
+          },
+        },
+        '404': { $ref: '#/components/responses/NotFound' },
+        '409': {
+          description: 'Unresolved calendar-sync conflict',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ApiError' },
+              example: {
+                success: false,
+                error: {
+                  code: 'CALENDAR_SYNC_CONFLICT',
+                  message: 'Both copies changed; provide an explicit resolution',
+                },
+                timestamp: '2024-01-15T10:30:00Z',
+              },
+            },
+          },
+        },
+        '500': { $ref: '#/components/responses/InternalServerError' },
+      },
+    },
+  },
 } as const;

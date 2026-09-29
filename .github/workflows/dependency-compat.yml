@@ -2,6 +2,7 @@ name: Dependency Compatibility — Expo & React Native
 
 # Issue #989 — block upgrades that drift Expo, React Native or native libraries
 # beyond the supported matrix.
+# Issue #1098 — add dependency license policy and native-module compatibility gate.
 
 on:
   push:
@@ -12,7 +13,10 @@ on:
       - app.config.js
       - app.json
       - eas.json
+      - eas.json
       - scripts/check-dependency-compat.ts
+      - scripts/check-dependency-licenses.ts
+      - scripts/check-native-modules.ts
       - .github/workflows/dependency-compat.yml
   pull_request:
     branches: [main, master, develop]
@@ -23,6 +27,8 @@ on:
       - app.json
       - eas.json
       - scripts/check-dependency-compat.ts
+      - scripts/check-dependency-licenses.ts
+      - scripts/check-native-modules.ts
       - .github/workflows/dependency-compat.yml
   workflow_dispatch:
 
@@ -50,6 +56,12 @@ jobs:
 
       - name: Check Expo / React Native compatibility matrix
         run: npx tsx scripts/check-dependency-compat.ts
+
+      - name: Check dependency license policy
+        run: npx tsx scripts/check-dependency-licenses.ts
+
+      - name: Check native-module platform support
+        run: npx tsx scripts/check-native-modules.ts
 
       - name: Peer dependency check (informational)
         if: always()

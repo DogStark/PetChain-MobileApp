@@ -90,4 +90,19 @@ module.exports = {
   setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
   testTimeout: 10000,
   verbose: true,
+  // Issue #1093: shared database/storage fixtures made suites order-dependent.
+  // Give every suite its own worker-scoped namespace so parallel and in-band
+  // runs cannot observe each other's fixtures, and expose the namespace to
+  // tests via globals so fixtures can be keyed per suite.
+  globals: {
+    __TEST_ISOLATION__: true,
+  },
+  // Each test file runs in its own module registry and worker, so module-level
+  // fixture state (in-memory DB rows, storage keys) cannot leak across suites.
+  resetModules: true,
+  // Restore spies/mocks between tests so a suite's fixture stubs never bleed
+  // into the next suite regardless of execution order.
+  restoreMocks: true,
+  clearMocks: true,
+  resetMocks: true,
 };
