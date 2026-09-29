@@ -3,6 +3,11 @@ name: Native Build — iOS & Android
 # Issue #988 — JavaScript-only CI does not catch CocoaPods, Gradle, manifest or
 # native-module failures. This workflow compiles signing-free debug artifacts on
 # both platforms so those breakages surface on every PR.
+#
+# Issue #1094 — Release checklist automation. Before production builds, validate
+# required assets (screenshots, icons, splash), legal document files and their
+# configured URLs, asset dimensions, and release notes. Preview builds may use
+# documented placeholders; production builds fail with a named missing artifact.
 
 on:
   push:
@@ -16,10 +21,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ─── Release checklist (assets, legal docs, URLs, release notes) ─────────
+  release-checklist:
+    name: Release Checklist — Assets & Legal
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Validate release checklist (production)
+        if: github.event_name != 'pull_request'
+        env:
+          RELEASE_PROFILE: production
+        run: npm run release:validate
+
+      - name: Validate release checklist (preview)
+        if: github.event_name == 'pull_request'
+        env:
+          RELEASE_PROFILE: preview
+        run: npm run release:validate
+
   # ─── Android debug APK (no signing) ──────────────────────────────────────
   android:
     name: Android — Debug Build
     runs-on: ubuntu-latest
+    needs: release-checklist
 
     steps:
       - name: Checkout
@@ -84,6 +120,7 @@ jobs:
   ios:
     name: iOS — Debug Build (Simulator)
     runs-on: macos-14
+    needs: release-checklist
 
     steps:
       - name: Checkout

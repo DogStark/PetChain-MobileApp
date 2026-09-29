@@ -8,6 +8,13 @@ name: SBOM & Provenance — Release Artifacts
 #   • a build-inputs manifest (commit, runner, tool versions, EAS profile)
 #   • signed build provenance + a signed SBOM attestation (Sigstore, keyless)
 #
+# Issue #1098 — native dependencies can introduce incompatible licenses or
+# unsupported Expo/RN combinations that only fail during store builds. This
+# workflow now runs a dependency gate (license policy + Expo/RN compatibility
+# + native platform support) before the SBOM is produced. The gate reports the
+# dependency, version and reason for every rejection and applies the same
+# policy to the production and preview profiles.
+#
 # No secrets, tokens or wallet material are written to any of these files.
 
 on:
@@ -35,8 +42,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  dependency-gate:
+    name: Dependency license & native-module compatibility gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      # License policy + Expo/RN compatibility + native platform support.
+      # The same policy is enforced for the production and preview profiles.
+      - name: Run dependency gate (production profile)
+        run: npm run deps:check -- --profile production
+
+      - name: Run dependency gate (preview profile)
+        run: npm run deps:check -- --profile preview
+
   sbom-provenance:
     name: SBOM & Provenance (${{ matrix.platform }})
+    needs: dependency-gate
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

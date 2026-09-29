@@ -47,6 +47,16 @@ if (I18nManager.isRTL !== startupRTL) {
   I18nManager.forceRTL(startupRTL);
 }
 
+// Monotonic clock source. `performance.now()` is unaffected by wall-clock
+// changes (manual clock edits, timezone/DST shifts), so background duration
+// cannot be bypassed by moving the device clock backwards.
+const monotonicNow = (): number => {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+};
+
 function App() {
   const { appReady } = useSplashGuard();
   const [updateStatus, setUpdateStatus] = React.useState<
@@ -60,17 +70,39 @@ function App() {
     void enableScreenCapturePrevention();
   }, []);
 
-  // Lock app after idle timeout when returning to foreground
+  // Lock app after idle timeout when returning to foreground.
+  // Background duration is measured with a monotonic clock so wall-clock
+  // changes cannot bypass the lock, and the persisted timestamps are used as
+  // a fallback when the process was killed and the in-memory clock is lost.
   useEffect(() => {
+    let backgroundedAt: number | null = null;
+
     const onChange = async (state: AppStateStatus) => {
       if (state === 'background' || state === 'inactive') {
+        backgroundedAt = monotonicNow();
         await persistAppBackground();
       } else if (state === 'active') {
         await persistAppForeground();
-        const elapsed = await getElapsedSinceBackground();
         const timeout = await loadLockTimeout();
         const ms = getLockTimeoutMs(timeout);
-        if (ms > 0 && elapsed >= ms) {
+        if (ms <= 0) {
+          backgroundedAt = null;
+          return;
+        }
+
+        // Prefer monotonic elapsed time for the current process; fall back to
+        // the persisted (wall-clock) elapsed time when the process was killed.
+        const monotonicElapsed =
+          backgroundedAt !== null ? monotonicNow() - backgroundedAt : null;
+        const persistedElapsed = await getElapsedSinceBackground();
+        const elapsed =
+          monotonicElapsed !== null
+            ? Math.max(monotonicElapsed, persistedElapsed)
+            : persistedElapsed;
+
+        backgroundedAt = null;
+
+        if (elapsed >= ms) {
           setPinFallback(false);
           setLocked(true);
         }
