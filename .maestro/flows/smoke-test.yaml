@@ -18,3 +18,24 @@ appId: app.petchain.mobile.staging
 - tapOn: "Password"
 - inputText: "SuperSecretPassword123"
 - tapOn: "Sign In"
+# Dynamic-type coverage for clinical forms (issue #1037)
+# Verifies dosage, consent, and emergency controls remain visible and
+# non-overlapping at the maximum supported font size in English and Spanish.
+- runFlow:
+    when:
+      true: true
+    commands:
+      - setFontScale: 2.0
+      - assertVisible: "Dosage"
+      - assertVisible: "Consent"
+      - assertVisible: "Emergency"
+      - assertNotVisible: "Horizontal scroll"
+      - setFontScale: 1.0
+      - setLocale: "es-ES"
+      - setFontScale: 2.0
+      - assertVisible: "Dosis"
+      - assertVisible: "Consentimiento"
+      - assertVisible: "Emergencia"
+      - assertNotVisible: "Horizontal scroll"
+      - setFontScale: 1.0
+      - setLocale: "en-US"

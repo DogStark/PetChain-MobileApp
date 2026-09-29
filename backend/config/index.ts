@@ -31,6 +31,32 @@ const CONSTANTS = {
   TOKEN_EXPIRY_DAYS: 7,
 } as const;
 
+// Calendar-sync conflict policy for appointments (#1034)
+// Controls how two-way calendar synchronization resolves conflicts between
+// device-calendar events and PetChain appointments.
+type CalendarSyncConflictPolicy =
+  | 'device-wins'
+  | 'app-wins'
+  | 'newest-wins'
+  | 'manual';
+
+const CALENDAR_SYNC = {
+  // When a conflict is detected, preserve both timestamps and require an
+  // explicit resolution unless a deterministic policy is configured.
+  conflictPolicy: (process.env.CALENDAR_SYNC_CONFLICT_POLICY as CalendarSyncConflictPolicy) || 'manual',
+  // Persist external event IDs and source ownership so imports/exports are
+  // idempotent and retries do not duplicate events.
+  persistExternalEventIds: true,
+  trackSourceOwnership: true,
+  // Idempotency window (ms) used to dedupe retried sync operations.
+  idempotencyWindowMs: Number(process.env.CALENDAR_SYNC_IDEMPOTENCY_WINDOW_MS) || 300000,
+  // Sync recurring events and honor device timezone changes.
+  syncRecurringEvents: true,
+  respectTimezoneChanges: true,
+  // Revoked calendar permissions pause sync until re-granted.
+  pauseOnRevokedPermission: true,
+} as const;
+
 // Typed config object
 const config = {
   env: ENV,
@@ -58,7 +84,10 @@ const config = {
     tokenExpiryDays: CONSTANTS.TOKEN_EXPIRY_DAYS,
     jwtSecret: process.env.JWT_SECRET || 'petchain-dev-secret-key-change-in-prod',
   },
+
+  calendarSync: CALENDAR_SYNC,
 } as const;
 
 export type AppConfig = typeof config;
+export type { CalendarSyncConflictPolicy };
 export default config;

@@ -6,6 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "scheme": "petchain",
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
@@ -17,6 +18,9 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "app.petchain.mobile",
+      "associatedDomains": [
+        "applinks:petchain.app"
+      ],
       "privacyManifests": {
         "NSPrivacyTracking": false,
         "NSPrivacyTrackingDomains": [],
@@ -97,6 +101,23 @@
         "backgroundColor": "#ffffff"
       },
       "package": "app.petchain.mobile",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "petchain.app",
+              "pathPrefix": "/"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ],
       "permissions": [
         "CAMERA",
         "ACCESS_FINE_LOCATION",
@@ -115,11 +136,79 @@
           "organization": "petchain",
           "project": "mobile-app"
         }
+      ],
+      [
+        "expo-screen-capture",
+        {
+          "sensitiveScreens": [
+            "MedicalRecords",
+            "WalletSecrets",
+            "EmergencyDetails"
+          ],
+          "publicScreens": [
+            "QRVerification"
+          ]
+        }
       ]
     ],
     "extra": {
       "APP_ENV": "development",
       "SENTRY_DSN": "",
+      "snapshotProtection": {
+        "enabled": true,
+        "sensitiveScreens": [
+          "MedicalRecords",
+          "WalletSecrets",
+          "EmergencyDetails"
+        ],
+        "publicScreens": [
+          "QRVerification"
+        ],
+        "ios": {
+          "strategy": "blur-overlay",
+          "applyOn": [
+            "focus",
+            "background"
+          ]
+        },
+        "android": {
+          "strategy": "FLAG_SECURE",
+          "applyOn": [
+            "focus",
+            "background"
+          ]
+        }
+      },
+      "deepLink": {
+        "scheme": "petchain",
+        "universalLinkHost": "petchain.app",
+        "routes": [
+          {
+            "path": "/pets/:petId",
+            "params": {
+              "petId": "string"
+            },
+            "requiresAuth": true,
+            "mutating": false
+          },
+          {
+            "path": "/appointments/:appointmentId",
+            "params": {
+              "appointmentId": "string"
+            },
+            "requiresAuth": true,
+            "mutating": false
+          },
+          {
+            "path": "/invite/:token",
+            "params": {
+              "token": "string"
+            },
+            "requiresAuth": false,
+            "mutating": false
+          }
+        ]
+      },
       "dataSafety": {
         "dataCollected": [
           {
@@ -169,6 +258,7 @@
           "dataEncryptedInTransit": true,
           "dataDeletionRequestSupported": true
         }
+      }
       }
     }
   }

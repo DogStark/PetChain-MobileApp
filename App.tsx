@@ -25,6 +25,7 @@ import {
   clearPersistedTimestamps,
 } from './src/services/appLockService';
 import { registerBackgroundMedicationTask } from './src/services/backgroundTaskService';
+import { validateDeepLink } from './src/services/deepLinkService';
 import errorTracking from './src/services/errorTracking';
 import navigationQueueService from './src/services/navigationQueueService';
 import {
@@ -45,6 +46,27 @@ errorTracking.init();
 const startupRTL = isRTL(i18n.language);
 if (I18nManager.isRTL !== startupRTL) {
   I18nManager.forceRTL(startupRTL);
+}
+
+// Issue #1037: clinical forms must scale to the supported platform font-size
+// range without clipping dosage, consent, or emergency values. React Native
+// caps text scaling at `maxFontSizeMultiplier`; leaving it unbounded lets
+// accessibility sizes overflow fixed-height controls. We clamp the app-wide
+// default here so every clinical form inherits a safe ceiling, while still
+// honouring the user's preferred size up to that ceiling.
+const MAX_FONT_SIZE_MULTIPLIER = 2;
+if (typeof Text !== 'undefined' && Text.defaultProps == null) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (Text as any).defaultProps = {};
+}
+if (typeof Text !== 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (Text as any).defaultProps = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ...((Text as any).defaultProps ?? {}),
+    maxFontSizeMultiplier: MAX_FONT_SIZE_MULTIPLIER,
+    allowFontScaling: true,
+  };
 }
 
 // Monotonic clock source. `performance.now()` is unaffected by wall-clock
@@ -172,8 +194,14 @@ function App() {
       const notification = await Notifications.getLastNotificationResponseAsync();
       if (notification) {
         const data = notification.notification.request.content.data;
+        // Issue #1029: validate the incoming link against the documented
+        // route/parameter schema before it is ever queued for navigation.
+        // Untrusted or malformed links are dropped here so they can never
+        // bypass auth, switch accounts, or trigger mutations.
+        const validated = validateDeepLink(data);
+        if (!validated) return;
         // Queue the deep link until app-lock verification completes
-        navigationQueueService.queueNotification(data);
+        navigationQueueService.queueNotification(validated);
       }
     };
     void checkInitialNotification();
