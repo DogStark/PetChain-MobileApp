@@ -1,8 +1,137 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system';
 import * as SQLite from 'expo-sqlite';
 
 import { encrypt, decrypt } from '../utils/encryption';
 
-const db = SQLite.openDatabaseSync('petchain.db');
+const DATABASE_NAME = 'petchain.db';
+const RECOVERY_STORAGE_KEY = '@local_database_recovery';
+const REQUIRED_COLUMNS: Record<string, string[]> = {
+  kv_store: ['key', 'value'],
+  medications: ['id', 'data'],
+  dose_logs: ['id', 'medication_id', 'taken_at', 'skipped', 'notes', 'data'],
+  health_metrics: ['id', 'pet_id', 'recorded_at', 'data'],
+  appointments: ['id', 'pet_id', 'scheduled_at', 'status', 'data'],
+  soap_note_drafts: ['id', 'pet_id', 'vet_id', 'data', 'updated_at'],
+};
+
+export interface LocalDatabaseRecoveryInfo {
+  supportCode: string;
+  recoveredAt: string;
+  files: string[];
+}
+
+type RecoveryFile = {
+  exists: boolean;
+  uri: string;
+  move(destination: unknown): Promise<void>;
+};
+
+const recoveryFileSystem = FileSystem as unknown as {
+  File: new (...parts: unknown[]) => RecoveryFile;
+  Paths: { document: unknown };
+};
+
+let rawDb = SQLite.openDatabaseSync(DATABASE_NAME);
+let initialization: Promise<void> | null = null;
+let recoveryInfo: LocalDatabaseRecoveryInfo | null = null;
+
+const db = new Proxy({} as SQLite.SQLiteDatabase, {
+  get(_target, property) {
+    const currentDb = rawDb as unknown as Record<PropertyKey, unknown>;
+    const value = currentDb[property];
+    if (typeof value !== 'function') return value;
+    return (...args: unknown[]) =>
+      initializeLocalDatabase().then(() => {
+        const method = (rawDb as unknown as Record<PropertyKey, unknown>)[property] as Function;
+        return method.apply(rawDb, args);
+      });
+  },
+});
+
+function createSupportCode(): string {
+  return `DB-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+}
+
+async function validateIntegrity(database: SQLite.SQLiteDatabase): Promise<void> {
+  const result = await database.getFirstAsync<{ quick_check: string }>('PRAGMA quick_check');
+  if (result?.quick_check !== 'ok') throw new Error('SQLite quick_check failed');
+
+  const tables = await database.getAllAsync<{ name: string }>(
+    `SELECT name FROM sqlite_master WHERE type = 'table'`,
+  );
+  const existingTables = new Set(tables.map((table) => table.name));
+  for (const [table, requiredColumns] of Object.entries(REQUIRED_COLUMNS)) {
+    if (!existingTables.has(table)) continue;
+    const columns = await database.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
+    const columnNames = new Set(columns.map((column) => column.name));
+    if (requiredColumns.some((column) => !columnNames.has(column))) {
+      throw new Error(`SQLite schema check failed for ${table}`);
+    }
+  }
+}
+
+async function quarantineDatabase(database: SQLite.SQLiteDatabase): Promise<LocalDatabaseRecoveryInfo> {
+  const supportCode = createSupportCode();
+  const suffix = supportCode.toLowerCase();
+  const sourcePath = database.databasePath;
+  await database.closeAsync().catch(() => {});
+
+  const files: string[] = [];
+  for (const [source, name] of [
+    [sourcePath, `petchain-corrupt-${suffix}.db`],
+    [`${sourcePath}-wal`, `petchain-corrupt-${suffix}.db-wal`],
+    [`${sourcePath}-shm`, `petchain-corrupt-${suffix}.db-shm`],
+  ]) {
+    const sourceFile = new recoveryFileSystem.File(source);
+    if (!sourceFile.exists) continue;
+    const destination = new recoveryFileSystem.File(recoveryFileSystem.Paths.document, name);
+    await sourceFile.move(destination);
+    files.push(destination.uri);
+  }
+
+  if (files.length === 0) throw new Error('Corrupt SQLite file could not be preserved');
+
+  const info: LocalDatabaseRecoveryInfo = {
+    supportCode,
+    recoveredAt: new Date().toISOString(),
+    files,
+  };
+  recoveryInfo = info;
+  await AsyncStorage.setItem(RECOVERY_STORAGE_KEY, JSON.stringify(info)).catch(() => {});
+  return info;
+}
+
+async function initializeDatabase(): Promise<void> {
+  try {
+    await validateIntegrity(rawDb);
+    await createBaseSchema(rawDb);
+    await validateIntegrity(rawDb);
+  } catch {
+    await quarantineDatabase(rawDb);
+    await SQLite.deleteDatabaseAsync(DATABASE_NAME).catch(() => {});
+    rawDb = SQLite.openDatabaseSync(DATABASE_NAME, { useNewConnection: true });
+    await createBaseSchema(rawDb);
+    await validateIntegrity(rawDb);
+  }
+}
+
+export async function initializeLocalDatabase(): Promise<SQLite.SQLiteDatabase> {
+  if (!initialization) initialization = initializeDatabase();
+  await initialization;
+  return rawDb;
+}
+
+export async function getLocalDatabaseRecoveryInfo(): Promise<LocalDatabaseRecoveryInfo | null> {
+  if (recoveryInfo) return recoveryInfo;
+  try {
+    const raw = await AsyncStorage.getItem(RECOVERY_STORAGE_KEY);
+    recoveryInfo = raw ? (JSON.parse(raw) as LocalDatabaseRecoveryInfo) : null;
+  } catch {
+    return null;
+  }
+  return recoveryInfo;
+}
 
 /**
  * Helper to safely decrypt data, falling back to original data if decryption fails.
@@ -33,30 +162,64 @@ export async function executeSql(
   sql: string,
   params: SQLite.SQLiteBindParams = [],
 ): Promise<SQLite.SQLiteRunResult> {
-  return db.runAsync(sql, params);
+  await initializeLocalDatabase();
+  return rawDb.runAsync(sql, params);
 }
 
-async function init(): Promise<void> {
+export async function queryAll<T>(
+  sql: string,
+  params: SQLite.SQLiteBindParams = [],
+): Promise<T[]> {
+  await initializeLocalDatabase();
+  return rawDb.getAllAsync<T>(sql, params);
+}
+
+async function deleteWithLocalAudit(
+  sql: string,
+  params: SQLite.SQLiteBindParams,
+  recordReference: string,
+): Promise<void> {
+  const audit = await import('./localAuditService');
+  const successEvent = await audit.prepareLocalAuditEvent({
+    action: 'REMOVE_LOCAL',
+    recordReference,
+    result: 'success',
+  });
+
+  try {
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(sql, params);
+      if (successEvent) await audit.insertPreparedLocalAuditEvent(successEvent);
+    });
+  } catch (error) {
+    await audit
+      .recordLocalAuditEvent({ action: 'REMOVE_LOCAL', recordReference, result: 'failure' })
+      .catch(() => {});
+    throw error;
+  }
+}
+
+async function createBaseSchema(database: SQLite.SQLiteDatabase): Promise<void> {
   // Key-value store for misc JSON blobs
-  await db.execAsync(
+  await database.execAsync(
     `CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY NOT NULL, value TEXT)`,
   );
 
   // Structured tables for medications and dose logs
-  await db.execAsync(
+  await database.execAsync(
     `CREATE TABLE IF NOT EXISTS medications (id TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL)`,
   );
 
-  await db.execAsync(
+  await database.execAsync(
     `CREATE TABLE IF NOT EXISTS dose_logs (id TEXT PRIMARY KEY NOT NULL, medication_id TEXT, taken_at TEXT, skipped INTEGER, notes TEXT, data TEXT NOT NULL)`,
   );
 
-  await db.execAsync(
+  await database.execAsync(
     `CREATE TABLE IF NOT EXISTS health_metrics (id TEXT PRIMARY KEY NOT NULL, pet_id TEXT NOT NULL, recorded_at TEXT NOT NULL, data TEXT NOT NULL)`,
   );
 
   // Appointments table – indexed by pet_id and scheduled_at for conflict lookups
-  await db.execAsync(
+  await database.execAsync(
     `CREATE TABLE IF NOT EXISTS appointments (
       id TEXT PRIMARY KEY NOT NULL,
       pet_id TEXT NOT NULL,
@@ -65,12 +228,12 @@ async function init(): Promise<void> {
       data TEXT NOT NULL
     )`,
   );
-  await db.execAsync(
+  await database.execAsync(
     `CREATE INDEX IF NOT EXISTS idx_appointments_pet_scheduled ON appointments (pet_id, scheduled_at)`,
   );
 
   // SOAP note drafts – one draft per (petId, vetId) pair
-  await db.execAsync(
+  await database.execAsync(
     `CREATE TABLE IF NOT EXISTS soap_note_drafts (
       id TEXT PRIMARY KEY NOT NULL,
       pet_id TEXT NOT NULL,
@@ -79,13 +242,10 @@ async function init(): Promise<void> {
       updated_at TEXT NOT NULL
     )`,
   );
-  await db.execAsync(
+  await database.execAsync(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_soap_drafts_pet_vet ON soap_note_drafts (pet_id, vet_id)`,
   );
 }
-
-// Initialize DB on module import
-init().catch(() => {});
 
 // KV helpers (compat with AsyncStorage-like API)
 export async function getItem(key: string): Promise<string | null> {
@@ -168,7 +328,7 @@ export async function upsertMedication<T extends { id: string }>(med: T): Promis
 }
 
 export async function deleteMedicationById(id: string): Promise<void> {
-  await db.runAsync(`DELETE FROM medications WHERE id = ?`, [id]);
+  await deleteWithLocalAudit(`DELETE FROM medications WHERE id = ?`, [id], `medication:${id}`);
 }
 
 // Dose logs
@@ -212,7 +372,7 @@ export async function addDoseLog<
 }
 
 export async function clearDoseLogs(): Promise<void> {
-  await db.runAsync(`DELETE FROM dose_logs`);
+  await deleteWithLocalAudit(`DELETE FROM dose_logs`, [], 'dose_logs:all');
 }
 
 export async function getHealthMetricsByPetId(petId: string): Promise<unknown[]> {
@@ -246,7 +406,7 @@ export async function upsertHealthMetric(entry: {
 }
 
 export async function deleteHealthMetricById(id: string): Promise<void> {
-  await db.runAsync(`DELETE FROM health_metrics WHERE id = ?`, [id]);
+  await deleteWithLocalAudit(`DELETE FROM health_metrics WHERE id = ?`, [id], `health_metric:${id}`);
 }
 
 // ─── SOAP Note Drafts ────────────────────────────────────────────────────────
@@ -285,7 +445,11 @@ export async function getSoapDraft(petId: string, vetId: string): Promise<SoapNo
 }
 
 export async function deleteSoapDraft(petId: string, vetId: string): Promise<void> {
-  await db.runAsync(`DELETE FROM soap_note_drafts WHERE pet_id = ? AND vet_id = ?`, [petId, vetId]);
+  await deleteWithLocalAudit(
+    `DELETE FROM soap_note_drafts WHERE pet_id = ? AND vet_id = ?`,
+    [petId, vetId],
+    `soap_draft:${petId}:${vetId}`,
+  );
 }
 
 // ─── Appointments CRUD ────────────────────────────────────────────────────────
@@ -362,7 +526,7 @@ export async function upsertAppointment<
 }
 
 export async function deleteAppointmentById(id: string): Promise<void> {
-  await db.runAsync(`DELETE FROM appointments WHERE id = ?`, [id]);
+  await deleteWithLocalAudit(`DELETE FROM appointments WHERE id = ?`, [id], `appointment:${id}`);
 }
 
 export default {
@@ -387,4 +551,7 @@ export default {
   getAppointmentsInWindow,
   upsertAppointment,
   deleteAppointmentById,
+  initializeLocalDatabase,
+  getLocalDatabaseRecoveryInfo,
+  queryAll,
 };

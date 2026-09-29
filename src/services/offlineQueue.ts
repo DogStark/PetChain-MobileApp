@@ -36,6 +36,8 @@ export interface QueuedMutation {
   data: Record<string, unknown>;
   timestamp: number;
   retries: number;
+  nextRetryAt?: number;
+  lastError?: string;
   /** ETag recorded when this mutation was created */
   etag?: string;
 }
@@ -58,6 +60,8 @@ export interface OfflineQueueStatus {
   isSyncing: boolean;
   lastSync: number | null;
   failedCount: number;
+  exhaustedCount: number;
+  nextRetryAt: number | null;
   /** Conflicts waiting for user resolution */
   pendingConflicts: ConflictItem[];
 }
@@ -69,6 +73,10 @@ type ConflictListener = (conflict: ConflictItem) => void;
 
 const QUEUE_KEY = '@offline_queue';
 const CONFLICTS_KEY = '@offline_queue:conflicts';
+const MAX_MUTATION_RETRIES = 5;
+const RETRY_BASE_MS = 30_000;
+const RETRY_MAX_MS = 600_000;
+const RETRY_JITTER_RATIO = 0.25;
 
 // ─── OfflineQueue ─────────────────────────────────────────────────────────────
 
@@ -84,6 +92,10 @@ class OfflineQueue {
   private conflictListeners: ConflictListener[] = [];
   private isOnline = false;
   private initialized = false;
+  private isConnectionExpensive = false;
+  private pauseOnExpensiveNetwork = false;
+  private processPromise: Promise<void> | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -96,14 +108,17 @@ class OfflineQueue {
     this.initialized = true;
 
     // Seed current online state
-    this.isOnline = await networkMonitor.isOnline();
+    const initialStatus = await networkMonitor.getStatus();
+    this.isOnline = initialStatus.isOnline;
+    this.isConnectionExpensive = initialStatus.isConnectionExpensive;
 
-    // Listen for connectivity changes
-    networkMonitor.onNetworkChange(async (online) => {
-      const wasOffline = !this.isOnline;
-      this.isOnline = online;
+    // A single status subscription handles both reconnection and metered-network changes.
+    networkMonitor.onStatusChange(async (status) => {
+      const wasEligible = this.isNetworkEligible();
+      this.isOnline = status.isOnline;
+      this.isConnectionExpensive = status.isConnectionExpensive;
 
-      if (wasOffline && online) {
+      if (!wasEligible && this.isNetworkEligible()) {
         await this.notifyUser('🔄 Back online', 'Syncing your offline changes…');
         await this.processQueue();
         await this.processBlockchainQueue();
@@ -112,16 +127,47 @@ class OfflineQueue {
       await this.emitStatus();
     });
 
-    // Register sync callback so networkMonitor can also trigger sync
+    // Keep legacy connectivity triggers; the in-flight guard coalesces duplicates.
     networkMonitor.setSyncCallback(() => this.processQueue());
 
-    // Start monitoring
     networkMonitor.startNetworkMonitoring();
 
     // Forward syncService status changes to our listeners
     syncService.onStatusChange((syncStatus: SyncStatus) => {
       this.emitStatusFromSync(syncStatus);
     });
+
+    if (this.isNetworkEligible()) void this.processQueue();
+  }
+
+  configure(options: { pauseOnExpensiveNetwork?: boolean }): void {
+    const wasEligible = this.isNetworkEligible();
+    if (options.pauseOnExpensiveNetwork !== undefined) {
+      this.pauseOnExpensiveNetwork = options.pauseOnExpensiveNetwork;
+    }
+    if (!wasEligible && this.isNetworkEligible()) void this.processQueue();
+  }
+
+  private isNetworkEligible(): boolean {
+    return this.isOnline && !(this.pauseOnExpensiveNetwork && this.isConnectionExpensive);
+  }
+
+  private retryDelay(retries: number): number {
+    const base = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.max(0, retries - 1));
+    const jitter = (Math.random() * 2 - 1) * RETRY_JITTER_RATIO;
+    return Math.min(RETRY_MAX_MS, Math.max(1, Math.round(base * (1 + jitter))));
+  }
+
+  private scheduleRetry(queue: QueuedMutation[]): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    const retryAt = queue
+      .filter((mutation) => mutation.retries < MAX_MUTATION_RETRIES && mutation.nextRetryAt)
+      .reduce((next, mutation) => Math.min(next, mutation.nextRetryAt!), Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(retryAt)) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.processQueue();
+    }, Math.max(0, retryAt - Date.now()));
   }
 
   // ── Enqueue a mutation ────────────────────────────────────────────────────
@@ -160,18 +206,40 @@ class OfflineQueue {
    * Detects 409 conflicts via If-Match / ETag and queues them for resolution.
    */
   async processQueue(): Promise<void> {
-    const online = await networkMonitor.isOnline();
-    if (!online) return;
+    if (this.processPromise) return this.processPromise;
+    this.processPromise = this.processQueueInternal();
+    try {
+      await this.processPromise;
+    } finally {
+      this.processPromise = null;
+    }
+  }
+
+  private async processQueueInternal(): Promise<void> {
+    const status = await networkMonitor.getStatus();
+    this.isOnline = status.isOnline;
+    this.isConnectionExpensive = status.isConnectionExpensive;
+    if (!this.isNetworkEligible()) return;
 
     const pending = await this.getPersistentQueue();
     if (pending.length === 0) return;
 
     const stillPending: QueuedMutation[] = [];
+    const now = Date.now();
 
     for (const mutation of pending) {
+      if (
+        mutation.retries >= MAX_MUTATION_RETRIES ||
+        (mutation.nextRetryAt !== undefined && mutation.nextRetryAt > now)
+      ) {
+        stillPending.push(mutation);
+        continue;
+      }
+
       try {
         const headers: Record<string, string> = {};
         if (mutation.etag) headers['If-Match'] = mutation.etag;
+        headers['Idempotency-Key'] = `offline-${mutation.id}`;
 
         const endpoint = `/${mutation.type}s/${String(mutation.data.id ?? '')}`;
         const response = await apiClient.put(endpoint, mutation.data, { headers });
@@ -201,15 +269,16 @@ class OfflineQueue {
               serverData,
             });
           } else {
-            stillPending.push(mutation);
+            stillPending.push(this.scheduleMutationRetry(mutation, err));
           }
         } else {
-          stillPending.push(mutation);
+          stillPending.push(this.scheduleMutationRetry(mutation, err));
         }
       }
     }
 
     await setItem(QUEUE_KEY, JSON.stringify(stillPending));
+    this.scheduleRetry(stillPending);
 
     const conflicts = await this.getPendingConflicts();
     if (conflicts.length > 0) {
@@ -220,13 +289,31 @@ class OfflineQueue {
     } else if (stillPending.length === 0) {
       await this.notifyUser('✅ Sync complete', 'All offline changes have been synced.');
     } else {
+      const nextRetryAt = stillPending
+        .filter((mutation) => mutation.nextRetryAt)
+        .reduce((next, mutation) => Math.min(next, mutation.nextRetryAt!), Number.POSITIVE_INFINITY);
+      const exhausted = stillPending.filter((mutation) => mutation.retries >= MAX_MUTATION_RETRIES);
       await this.notifyUser(
         '⚠️ Sync partially failed',
-        `${stillPending.length} change(s) could not be synced and will be retried.`,
+        exhausted.length > 0
+          ? `${exhausted.length} change(s) reached the retry limit and remain saved.`
+          : `${stillPending.length} change(s) could not be synced. Next retry in ${Math.max(1, Math.ceil((nextRetryAt - Date.now()) / 1000))} seconds.`,
       );
     }
 
     await this.emitStatus();
+  }
+
+  private scheduleMutationRetry(mutation: QueuedMutation, error: unknown): QueuedMutation {
+    const retries = mutation.retries + 1;
+    const lastError = error instanceof Error ? error.message : 'Unknown sync failure';
+    return {
+      ...mutation,
+      retries,
+      nextRetryAt:
+        retries < MAX_MUTATION_RETRIES ? Date.now() + this.retryDelay(retries) : undefined,
+      lastError,
+    };
   }
 
   // ── Blockchain anchor queue ───────────────────────────────────────────────
@@ -299,12 +386,17 @@ class OfflineQueue {
     const syncStatus = await syncService.getStatus();
     const queue = await this.getPersistentQueue();
     const pendingConflicts = await this.getPendingConflicts();
+    const retryTimes = queue
+      .map((mutation) => mutation.nextRetryAt)
+      .filter((retryAt): retryAt is number => retryAt !== undefined);
     return {
       isOnline: this.isOnline,
       pendingCount: Math.max(syncStatus.pendingCount, queue.length),
       isSyncing: syncStatus.isSyncing,
       lastSync: syncStatus.lastSync,
-      failedCount: syncStatus.failedCount,
+      failedCount: syncStatus.failedCount + queue.filter((mutation) => mutation.retries > 0).length,
+      exhaustedCount: queue.filter((mutation) => mutation.retries >= MAX_MUTATION_RETRIES).length,
+      nextRetryAt: retryTimes.length > 0 ? Math.min(...retryTimes) : null,
       pendingConflicts,
     };
   }
@@ -467,18 +559,25 @@ class OfflineQueue {
   }
 
   private async emitStatusFromSync(syncStatus: SyncStatus): Promise<void> {
+    const queue = await this.getPersistentQueue();
     const pendingConflicts = await this.getPendingConflicts();
+    const retryTimes = queue
+      .map((mutation) => mutation.nextRetryAt)
+      .filter((retryAt): retryAt is number => retryAt !== undefined);
     const status: OfflineQueueStatus = {
       isOnline: this.isOnline,
-      pendingCount: syncStatus.pendingCount,
+      pendingCount: Math.max(syncStatus.pendingCount, queue.length),
       isSyncing: syncStatus.isSyncing,
       lastSync: syncStatus.lastSync,
-      failedCount: syncStatus.failedCount,
+      failedCount: syncStatus.failedCount + queue.filter((mutation) => mutation.retries > 0).length,
+      exhaustedCount: queue.filter((mutation) => mutation.retries >= MAX_MUTATION_RETRIES).length,
+      nextRetryAt: retryTimes.length > 0 ? Math.min(...retryTimes) : null,
       pendingConflicts,
     };
     this.statusListeners.forEach((l) => l(status));
   }
 }
 
+export { OfflineQueue };
 export const offlineQueue = new OfflineQueue();
 export default offlineQueue;

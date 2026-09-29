@@ -1,0 +1,8 @@
+appId: app.petchain.mobile.staging
+---
+- stopApp
+- openLink: petchain://pets/foreign-pet-id
+- assertVisible: "Welcome Back"
+- stopApp
+- openLink: petchain://unknown/private-route
+- assertVisible: "This link cannot be opened."

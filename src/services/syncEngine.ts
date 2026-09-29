@@ -4,7 +4,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 
 import apiClient from './apiClient';
 import { executeSql } from './localDB';
-import { networkMonitor } from '../utils/networkMonitor';
+import { networkMonitor, type NetworkStatus } from '../utils/networkMonitor';
 
 export type SyncEntityType =
   | 'pet'
@@ -34,6 +34,8 @@ export interface SyncProgressEvent {
   completed: number;
   failed: number;
   message?: string;
+  retryAt?: number;
+  retryDelayMs?: number;
   record?: DirtyRecord;
 }
 
@@ -41,6 +43,7 @@ export interface SyncEngineOptions {
   batchSize?: number;
   maxRetries?: number;
   strategy?: ConflictResolutionStrategy;
+  pauseOnExpensiveNetwork?: boolean;
 }
 
 type SyncListener = (event: SyncProgressEvent) => void;
@@ -49,12 +52,14 @@ const DEFAULT_OPTIONS: Required<SyncEngineOptions> = {
   batchSize: 25,
   maxRetries: 5,
   strategy: 'last-write-wins',
+  pauseOnExpensiveNetwork: false,
 };
 
 // ── Exponential backoff constants ─────────────────────────────────────────────
 
 /** Backoff steps in ms: 30s → 60s → 120s → 300s → 600s */
 const BACKOFF_STEPS_MS = [30_000, 60_000, 120_000, 300_000, 600_000];
+const MAX_JITTER_RATIO = 0.25;
 
 /** Non-retryable HTTP status codes — surface immediately, no backoff */
 const NON_RETRYABLE_STATUSES = new Set([401, 403, 422]);
@@ -74,10 +79,18 @@ export class SyncEngine {
   private readonly options: Required<SyncEngineOptions>;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private appStateSubscription: { remove: () => void } | null = null;
+  private networkSubscription: (() => void) | null = null;
+  private lastNetworkStatus: NetworkStatus | null = null;
 
   constructor(options: SyncEngineOptions = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
     this._subscribeAppState();
+    this.networkSubscription = networkMonitor.onStatusChange((status) => {
+      const previous = this.lastNetworkStatus;
+      this.lastNetworkStatus = status;
+      const wasEligible = this.isNetworkEligible(previous);
+      if (this.isNetworkEligible(status) && !wasEligible) this.syncNow().catch(() => {});
+    });
   }
 
   // ── Backoff helpers ───────────────────────────────────────────────────────
@@ -94,8 +107,14 @@ export class SyncEngine {
 
   private async _advanceBackoff(): Promise<void> {
     const state = await this._getBackoffState();
-    const nextStep = Math.min(state.stepIndex + 1, BACKOFF_STEPS_MS.length - 1);
-    const delay = BACKOFF_STEPS_MS[nextStep];
+    const stepIndex = Math.min(state.stepIndex, BACKOFF_STEPS_MS.length - 1);
+    const baseDelay = BACKOFF_STEPS_MS[stepIndex];
+    const jitter = (Math.random() * 2 - 1) * MAX_JITTER_RATIO;
+    const delay = Math.min(
+      BACKOFF_STEPS_MS[BACKOFF_STEPS_MS.length - 1],
+      Math.max(1, Math.round(baseDelay * (1 + jitter))),
+    );
+    const nextStep = Math.min(stepIndex + 1, BACKOFF_STEPS_MS.length - 1);
     const next: BackoffState = { stepIndex: nextStep, nextRetryAt: Date.now() + delay };
     await AsyncStorage.setItem(BACKOFF_STORAGE_KEY, JSON.stringify(next));
     this._scheduleRetry(delay);
@@ -116,6 +135,12 @@ export class SyncEngine {
     }, delayMs);
   }
 
+  private isNetworkEligible(status: NetworkStatus | null): boolean {
+    return Boolean(
+      status?.isOnline && !(this.options.pauseOnExpensiveNetwork && status.isConnectionExpensive),
+    );
+  }
+
   private _subscribeAppState(): void {
     this.appStateSubscription = AppState.addEventListener('change', (state: AppStateStatus) => {
       // On foreground, attempt one sync immediately regardless of backoff
@@ -129,6 +154,7 @@ export class SyncEngine {
   destroy(): void {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.appStateSubscription?.remove();
+    this.networkSubscription?.();
   }
 
   async initialize(): Promise<void> {
@@ -198,8 +224,19 @@ export class SyncEngine {
   async syncNow(): Promise<SyncProgressEvent> {
     await this.initialize();
     if (this.isRunning) return { type: 'started', total: 0, completed: 0, failed: 0 };
-    if (!(await networkMonitor.isOnline())) {
+    const networkStatus = await networkMonitor.getStatus();
+    this.lastNetworkStatus = networkStatus;
+    if (!networkStatus.isOnline) {
       return { type: 'failed', total: 0, completed: 0, failed: 0, message: 'Device is offline' };
+    }
+    if (this.options.pauseOnExpensiveNetwork && networkStatus.isConnectionExpensive) {
+      return {
+        type: 'failed',
+        total: 0,
+        completed: 0,
+        failed: 0,
+        message: 'Sync paused on an expensive network',
+      };
     }
 
     this.isRunning = true;
@@ -244,14 +281,17 @@ export class SyncEngine {
       completed,
       failed,
     };
-    this.emit(event);
-
-    if (failed > 0) {
+    if (failed > 0 && batch.some((record) => record.attempts + 1 < this.options.maxRetries)) {
       await this._advanceBackoff();
+      const backoff = await this._getBackoffState();
+      event.retryAt = backoff.nextRetryAt;
+      event.retryDelayMs = Math.max(0, backoff.nextRetryAt - Date.now());
+      event.message = `Retry scheduled in ${Math.ceil(event.retryDelayMs / 1000)} seconds`;
     } else {
       await this._resetBackoff();
     }
 
+    this.emit(event);
     return event;
   }
 
@@ -321,6 +361,8 @@ export class SyncEngine {
     const response = await apiClient.post('/sync/push', {
       records: [record],
       strategy: this.options.strategy,
+    }, {
+      headers: { 'Idempotency-Key': `sync-${record.id}-${record.syncVersion}` },
     });
     const result = response.data as {
       results?: Array<{ status: string; serverRecord?: Record<string, unknown> }>;

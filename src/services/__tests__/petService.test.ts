@@ -112,6 +112,15 @@ describe('petService', () => {
     expect(mockGet).toHaveBeenCalledWith('/pets/pet-1');
   });
 
+  it('does not serve cached pet data after the server denies access', async () => {
+    mockGetItem.mockResolvedValueOnce(JSON.stringify(PET));
+    mockGet.mockRejectedValueOnce(
+      makeAxiosError(403, { error: { code: 'PET_ACCESS_DENIED', message: 'Forbidden' } }),
+    );
+
+    await expect(getPetById('pet-1')).rejects.toMatchObject({ status: 403 });
+  });
+
   it('getPetByQRCode resolves cached pet data without API calls', async () => {
     mockScanQRCode.mockReturnValueOnce({ valid: true, petId: 'pet-1' });
     mockGetItem.mockResolvedValueOnce(JSON.stringify(PET));

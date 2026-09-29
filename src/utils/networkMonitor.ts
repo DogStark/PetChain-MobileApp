@@ -8,6 +8,12 @@ export type ConnectionType = 'wifi' | 'cellular' | 'unknown' | 'none';
 export interface NetworkStatus {
   isOnline: boolean;
   connectionType: ConnectionType;
+  isConnectionExpensive: boolean;
+}
+
+function isExpensiveConnection(state: NetInfoState): boolean {
+  const details = state.details as { isConnectionExpensive?: boolean } | null;
+  return details?.isConnectionExpensive ?? false;
 }
 
 class NetworkMonitor {
@@ -27,6 +33,7 @@ class NetworkMonitor {
       const status: NetworkStatus = {
         isOnline: this.isCurrentlyOnline,
         connectionType: this.currentConnectionType,
+        isConnectionExpensive: isExpensiveConnection(state),
       };
 
       // Trigger sync when coming back online
@@ -63,6 +70,7 @@ class NetworkMonitor {
     return {
       isOnline: state.isConnected ?? false,
       connectionType: this.resolveConnectionType(state.type),
+      isConnectionExpensive: isExpensiveConnection(state),
     };
   }
 

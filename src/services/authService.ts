@@ -333,6 +333,15 @@ export async function getSession(): Promise<StoredSession | null> {
   return tokens;
 }
 
+export async function getCurrentAccountId(): Promise<string | null> {
+  try {
+    const tokens = await getSecureTokens();
+    return tokens ? decodeJwtPayload(tokens.token).sub : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function isAuthenticated(): Promise<boolean> {
   return (await getToken()) !== null;
 }

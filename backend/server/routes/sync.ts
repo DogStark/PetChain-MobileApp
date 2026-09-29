@@ -1,6 +1,7 @@
+import crypto from 'crypto';
 import express from 'express';
 
-import { authenticateJWT } from '../../middleware/auth';
+import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
 import { ok, sendError } from '../response';
 import { store } from '../store';
 
@@ -20,10 +21,11 @@ interface SyncRecord {
 }
 
 const router = express.Router();
+const idempotentResults = new Map<string, { fingerprint: string; response: unknown }>();
 
 router.use(authenticateJWT);
 
-router.post('/push', (req, res) => {
+router.post('/push', (req: AuthenticatedRequest, res) => {
   const { records, strategy = 'last-write-wins' } = req.body as {
     records?: SyncRecord[];
     strategy?: ConflictResolutionStrategy;
@@ -31,6 +33,25 @@ router.post('/push', (req, res) => {
 
   if (!Array.isArray(records)) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'records must be an array');
+  }
+
+  const idempotencyKey = req.header('Idempotency-Key');
+  if (idempotencyKey && !/^[A-Za-z0-9:_-]{1,200}$/.test(idempotencyKey)) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid Idempotency-Key');
+  }
+  const fingerprint = crypto
+    .createHash('sha256')
+    .update(JSON.stringify({ records, strategy }))
+    .digest('hex');
+  const scopedKey = idempotencyKey ? `${req.user!.id}:${idempotencyKey}` : null;
+  if (scopedKey) {
+    const previous = idempotentResults.get(scopedKey);
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) {
+        return sendError(res, 409, 'IDEMPOTENCY_CONFLICT', 'Key was already used for another request');
+      }
+      return res.json(previous.response);
+    }
   }
 
   const results = records.map((record) => {
@@ -47,7 +68,15 @@ router.post('/push', (req, res) => {
     }
   });
 
-  return res.json(ok({ results }));
+  const response = ok({ results });
+  if (scopedKey) {
+    if (idempotentResults.size >= 10_000) {
+      const oldestKey = idempotentResults.keys().next().value;
+      if (oldestKey) idempotentResults.delete(oldestKey);
+    }
+    idempotentResults.set(scopedKey, { fingerprint, response });
+  }
+  return res.json(response);
 });
 
 router.get('/pull', (req, res) => {

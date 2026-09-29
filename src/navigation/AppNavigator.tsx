@@ -1,13 +1,19 @@
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { NavigationContainer, type LinkingOptions } from '@react-navigation/native';
+import {
+  getStateFromPath as getNavigationStateFromPath,
+  NavigationContainer,
+  type LinkingOptions,
+} from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import * as ExpoLinking from 'expo-linking';
 import * as Notifications from 'expo-notifications';
 import React, { Suspense } from 'react';
-import { ActivityIndicator, StatusBar, Text, View } from 'react-native';
+import { ActivityIndicator, StatusBar, Text, TouchableOpacity, View } from 'react-native';
 
 import { useNavigationTheme } from '../theme';
 import type { RootStackParamList, MainTabParamList, PetStackParamList } from './types';
 import { DEEP_LINK_PREFIX } from './types';
+import { gateDeepLinkURL, parseDeepLink, takePendingAuthenticatedLink } from './deepLinks';
 import LazyScreen from '../components/LazyScreen';
 import { useNotificationBadge } from '../hooks/useNotificationBadge';
 import type { Pet } from '../models/Pet';
@@ -414,37 +420,40 @@ const linking: LinkingOptions<RootStackParamList> = {
   prefixes: DEEP_LINK_PREFIX,
   config: {
     screens: {
-      Onboarding: 'onboarding',
       Auth: 'auth',
       Main: {
         screens: {
           PetList: {
             screens: {
-              PetListScreen: 'pets',
               PetDetail: 'pets/:petId',
-              PetProfile: 'pets/:petId/profile',
-              PetHealthDashboard: 'pets/:petId/dashboard',
-              PetHealthMetrics: 'pets/:petId/health',
-              PetForm: 'pets/form/:petId?',
-              PetShare: 'pets/:petId/share',
-              NearbyVet: 'nearby-vets',
             },
           },
-          Medications: 'medications/:medicationId?',
-          Appointments: 'appointments/:appointmentId?',
-          Vaccinations: 'vaccinations/:vaccinationId?',
-          HealthAlerts: 'health-alerts',
-          Community: 'community',
-          Referrals: 'referrals',
-          Emergency: 'emergency/:sosId?',
-          Notifications: 'notifications',
-          Profile: 'profile',
+          Appointments: 'appointments/:appointmentId',
+          Emergency: 'sos/:sosId',
         },
       },
-      QRScanner: 'scan',
-      ManualEntry: 'manual-entry',
-      Payment: 'payment',
+      InvalidLink: 'invalid-link',
     },
+  },
+  async getInitialURL() {
+    const url = await ExpoLinking.getInitialURL();
+    return url ? gateDeepLinkURL(url) : null;
+  },
+  subscribe(listener) {
+    const subscription = ExpoLinking.addEventListener('url', ({ url }) => {
+      void gateDeepLinkURL(url).then(listener);
+    });
+    return () => subscription.remove();
+  },
+  getStateFromPath(path, options) {
+    const normalizedPath = path.replace(/^\/+/, '');
+    if (normalizedPath === 'auth' || normalizedPath === 'invalid-link') {
+      return getNavigationStateFromPath(normalizedPath, options);
+    }
+    if (!parseDeepLink(`https://petchain.app/${normalizedPath}`)) {
+      return { routes: [{ name: 'InvalidLink' }] };
+    }
+    return getNavigationStateFromPath(normalizedPath, options);
   },
 };
 
@@ -567,7 +576,39 @@ export default function AppNavigator() {
 
             <RootStack.Screen name="Auth">
               {({ navigation }) => (
-                <AuthNavigator onAuthenticated={() => navigation.replace('Main')} />
+                <AuthNavigator
+                  onAuthenticated={() => {
+                    navigation.replace('Main');
+                    const pending = takePendingAuthenticatedLink();
+                    if (pending) {
+                      setTimeout(() => {
+                        const nav = navigationRef.current as any;
+                        if (pending.route === 'PetDetail') {
+                          nav?.navigate?.('Main', {
+                            screen: 'PetList',
+                            params: { screen: 'PetDetail', params: pending.params },
+                          });
+                        } else {
+                          nav?.navigate?.('Main', {
+                            screen: pending.route,
+                            params: pending.params,
+                          });
+                        }
+                      }, 0);
+                    }
+                  }}
+                />
+              )}
+            </RootStack.Screen>
+
+            <RootStack.Screen name="InvalidLink" options={{ headerShown: true, title: 'Link unavailable' }}>
+              {({ navigation }) => (
+                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+                  <Text>This link cannot be opened.</Text>
+                  <TouchableOpacity onPress={() => navigation.replace('Onboarding')}>
+                    <Text style={{ marginTop: 16 }}>Return to PetChain</Text>
+                  </TouchableOpacity>
+                </View>
               )}
             </RootStack.Screen>
 

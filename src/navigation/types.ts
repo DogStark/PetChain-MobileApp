@@ -8,6 +8,7 @@ import type { Pet } from '../models/Pet';
 export type RootStackParamList = {
   Onboarding: undefined;
   Auth: undefined;
+  InvalidLink: undefined;
   Main: undefined;
   Forum: undefined;
   LostFound: undefined;
@@ -91,4 +92,4 @@ export type PetStackScreenProps<T extends keyof PetStackParamList> = CompositeSc
 >;
 
 // ─── Deep link config ─────────────────────────────────────────────────────────
-export const DEEP_LINK_PREFIX = ['petchain://', 'https://petchain.app'];
+export const DEEP_LINK_PREFIX = ['petchain://', 'petchainapp://', 'https://petchain.app'];
