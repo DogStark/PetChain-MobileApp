@@ -5,6 +5,141 @@ const APP_ENV = process.env.APP_ENV ?? 'development';
 
 require('dotenv').config({ path: `.env.${APP_ENV}` });
 
+// ─── Startup configuration schema validation (issue #1069) ─────────────────
+//
+// A malformed `.env` or EAS configuration must fail loudly at startup with a
+// *named* configuration error, rather than surfacing later as an opaque API or
+// blockchain failure. Values are validated against typed schemas below and are
+// classified as either PUBLIC configuration (safe to embed in the client
+// bundle and render) or SECRET (never rendered or logged).
+//
+// Secrets are only ever checked for *presence*; their values are never read
+// into any returned/rendered structure, so they cannot leak into logs, error
+// messages, or the app manifest.
+const CONFIG_PROFILES = ['development', 'staging', 'production'];
+
+// Typed schema for each configuration value.
+//   kind: 'public' | 'secret'
+//   type: 'string' | 'url' | 'number' | 'boolean'
+//   required: profiles in which the value must be present
+//   pattern: optional validation regex (applied to public values only)
+const CONFIG_SCHEMA = {
+  EXPO_PUBLIC_API_URL: {
+    kind: 'public',
+    type: 'url',
+    required: ['development', 'staging', 'production'],
+  },
+  EXPO_PUBLIC_CHAIN_ID: {
+    kind: 'public',
+    type: 'number',
+    required: ['development', 'staging', 'production'],
+  },
+  EXPO_PUBLIC_PRIVACY_POLICY_URL: {
+    kind: 'public',
+    type: 'url',
+    required: ['production'],
+  },
+  EXPO_PUBLIC_TERMS_OF_SERVICE_URL: {
+    kind: 'public',
+    type: 'url',
+    required: ['production'],
+  },
+  EXPO_PUBLIC_ENABLE_ANALYTICS: {
+    kind: 'public',
+    type: 'boolean',
+    required: [],
+  },
+  // Secrets: presence-checked only, never read into rendered output.
+  API_SECRET_KEY: {
+    kind: 'secret',
+    type: 'string',
+    required: ['staging', 'production'],
+  },
+  BLOCKCHAIN_SIGNER_KEY: {
+    kind: 'secret',
+    type: 'string',
+    required: ['staging', 'production'],
+  },
+};
+
+// Named configuration error. The message identifies the offending key and the
+// profile, but never includes a value (so secrets cannot leak).
+class ConfigurationError extends Error {
+  constructor(key, profile, reason) {
+    super(`ConfigurationError: ${key} is invalid for profile "${profile}" (${reason})`);
+    this.name = 'ConfigurationError';
+    this.key = key;
+    this.profile = profile;
+  }
+}
+
+function validateConfigValue(key, spec, profile) {
+  const raw = process.env[key];
+  const isRequired = spec.required.includes(profile);
+
+  if (raw == null || raw === '') {
+    if (isRequired) {
+      throw new ConfigurationError(key, profile, 'missing required value');
+    }
+    return undefined;
+  }
+
+  // Secrets are validated for presence only; never parse or expose the value.
+  if (spec.kind === 'secret') {
+    return undefined;
+  }
+
+  switch (spec.type) {
+    case 'number': {
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed)) {
+        throw new ConfigurationError(key, profile, 'expected a number');
+      }
+      return parsed;
+    }
+    case 'boolean': {
+      if (raw !== 'true' && raw !== 'false') {
+        throw new ConfigurationError(key, profile, 'expected "true" or "false"');
+      }
+      return raw === 'true';
+    }
+    case 'url': {
+      let parsed;
+      try {
+        parsed = new URL(raw);
+      } catch {
+        throw new ConfigurationError(key, profile, 'expected a valid URL');
+      }
+      if (parsed.protocol !== 'https:' && profile === 'production') {
+        throw new ConfigurationError(key, profile, 'production URLs must use https');
+      }
+      return raw;
+    }
+    case 'string':
+    default:
+      return raw;
+  }
+}
+
+// Validate the whole schema for a profile. Returns only PUBLIC values so the
+// result is safe to embed in the manifest and render; secrets are omitted.
+function validateConfig(profile) {
+  if (!CONFIG_PROFILES.includes(profile)) {
+    throw new ConfigurationError('APP_ENV', profile, 'unknown profile');
+  }
+  const publicConfig = {};
+  for (const [key, spec] of Object.entries(CONFIG_SCHEMA)) {
+    const value = validateConfigValue(key, spec, profile);
+    if (spec.kind === 'public' && value !== undefined) {
+      publicConfig[key] = value;
+    }
+  }
+  return publicConfig;
+}
+
+// Fail fast at startup with a named configuration error.
+const PUBLIC_CONFIG = validateConfig(APP_ENV);
+
 // Version codes: dev=1, staging=2, prod=3
 const VERSION_CODE = { development: 1, staging: 2, production: 3 }[APP_ENV] ?? 1;
 const APP_VERSION = '1.0.0';
@@ -106,6 +241,52 @@ const DIAGNOSTICS = {
   featureFlags: FEATURE_FLAGS,
   requiredFields: REQUIRED_PROVENANCE_FIELDS,
 };
+
+// ─── App-update migration rollback handling (issue #1057) ───────────────────
+//
+// A failed local schema or persisted-state migration can leave the app unable to
+// start after an upgrade. The runtime migration runner (see the migration service)
+// needs a deterministic, all-or-nothing contract so a crash mid-migration is
+// detected on the next launch and recovered without ever silently deleting health
+// records. This block is the single source of truth for that contract; the native
+// layer reads `extra.MIGRATION_POLICY` before any JS runs so the recovery path is
+// active from the very first frame.
+//
+// Contract:
+//   • Migrations are atomic from the user's perspective: a checkpoint is written
+//     before each phase and the failed-migration marker is only cleared once the
+//     whole migration commits. A marker left behind means the previous run crashed.
+//   • On the next launch, a leftover marker (or a checkpoint that never committed)
+//     is treated as a crash and triggers recovery.
+//   • Recovery restores the last known-good database snapshot. If no snapshot is
+//     available it quarantines ONLY the incompatible record — health records are
+//     never silently deleted.
+//   • The app surfaces migration version, app version, and a non-sensitive support
+//     code instead of raw database errors.
+const MIGRATION_POLICY = {
+  // Bump when the persisted-state schema changes so the runner knows a migration
+  // is required and can record which version was being applied.
+  schemaVersion: 1,
+  // Ordered phases a migration passes through. A checkpoint is persisted before
+  // each phase; a crash between phases is detected on the next launch.
+  phases: ['prepare', 'snapshot', 'apply', 'verify', 'commit'],
+  // Marker key written before a migration starts and cleared only after commit.
+  // A leftover marker on launch means the previous run crashed mid-migration.
+  failedMarkerKey: 'petchain.migration.failed',
+  // Checkpoint key holding the last phase that completed successfully.
+  checkpointKey: 'petchain.migration.checkpoint',
+  // Key holding the last known-good database snapshot used for recovery.
+  snapshotKey: 'petchain.migration.snapshot',
+  // Recovery strategy order. `restoreSnapshot` is preferred; `quarantineRecord`
+  // is the fallback and only ever isolates the incompatible record.
+  recovery: {
+    strategy: ['restoreSnapshot', 'quarantineRecord'],
+    // Health records must never be silently deleted during recovery.
+    deleteHealthRecords: false,
+  },
+  // Non-sensitive support code surfaced to the user instead of raw DB errors.
+  // The runtime appends the migration version and app version to this prefix.
+  supportCodePrefix: 'MIG',
 
 // ─── Android notification-channel policy (issue #1066) ─────────────────────
 //
@@ -211,6 +392,7 @@ const NOTIFICATION_CHANNEL_POLICY = {
   migrations: NOTIFICATION_CHANNEL_MIGRATIONS,
   disabledUx: NOTIFICATION_CHANNEL_DISABLED_UX,
 };
+};
 
 // ─── Deep / universal link policy (issue #1029) ─────────────────────────────
 //
@@ -286,4 +468,114 @@ const DEEP_LINK_ALLOWED_HOSTS = ['petchain.app', 'www.petchain.app'];
 // iOS: the native module installs a snapshot-blur overlay on
 // UIAppl
 
-/* … truncated 3195 chars — edit only what you need near the top … */
+// ─── Release checklist (issue #1094) ───────────────────────────────────────
+//
+// Single source of truth for the artifacts a production build must ship:
+// store screenshots, app icons, splash art, legal documents, and release notes.
+// `scripts/verifyReleaseChecklist.js` reads this block in CI and fails a
+// production build with the *named* missing artifact. Preview/staging builds
+// may fall back to the documented placeholders below.
+const RELEASE_CHECKLIST = {
+  // Required store screenshots (per platform) and their expected dimensions.
+  screenshots: {
+    ios: [
+      { path: './assets/store/screenshots/ios/6.7-inch.png', width: 1290, height: 2796 },
+      { path: './assets/store/screenshots/ios/6.5-inch.png', width: 1242, height: 2688 },
+    ],
+    android: [
+      { path: './assets/store/screenshots/android/phone.png', width: 1080, height: 1920 },
+    ],
+  },
+  // Required icon + splash assets and their expected dimensions.
+  icons: [
+    { path: './assets/icon.png', width: 1024, height: 1024 },
+    { path: './assets/adaptive-icon.png', width: 1024, height: 1024 },
+  ],
+  splash: [{ path: './assets/splash.png', width: 1284, height: 2778 }],
+  // Legal documents that must exist and be wired to an HTTPS, env-specific URL.
+  legal: [
+    { name: 'privacyPolicy', file: './legal/privacy-policy.md', urlEnv: 'EXPO_PUBLIC_PRIVACY_POLICY_URL' },
+    { name: 'termsOfService', file: './legal/terms-of-service.md', urlEnv: 'EXPO_PUBLIC_TERMS_OF_SERVICE_URL' },
+  ],
+  // Release notes must be present for production builds.
+  releaseNotes: { path: './RELEASE_NOTES.md' },
+  // Documented placeholders preview/staging builds may use instead of real assets.
+  placeholders: {
+    screenshots: './assets/store/screenshots/placeholder.png',
+    icon: './assets/icon.png',
+    splash: './assets/splash.png',
+  },
+};
+
+// Resolve a legal document URL for the current environment. Production must be
+// an explicit HTTPS URL; non-production environments may fall back to the
+// documented placeholder host so preview builds keep working.
+function resolveLegalUrl(urlEnv) {
+  const configured = process.env[urlEnv];
+  if (configured) {
+    return configured;
+  }
+  if (APP_ENV === 'production') {
+    // Leave undefined so the release validator fails with a named error.
+    return undefined;
+  }
+  return `https://${APP_ENV}.petchain.app/legal`;
+}
+
+module.exports = {
+  expo: {
+    name: APP_NAME_MAP[APP_ENV] ?? APP_NAME_MAP.development,
+    slug: 'petchain',
+    version: APP_VERSION,
+    runtimeVersion: RUNTIME_VERSION,
+    orientation: 'portrait',
+    icon: './assets/icon.png',
+    scheme: 'petchain',
+    userInterfaceStyle: 'automatic',
+    splash: {
+      image: './assets/splash.png',
+      resizeMode: 'contain',
+      backgroundColor: '#ffffff',
+    },
+    assetBundlePatterns: ['**/*'],
+    ios: {
+      supportsTablet: true,
+      bundleIdentifier: 'app.petchain.mobile',
+      associatedDomains: DEEP_LINK_ALLOWED_HOSTS.map((host) => `applinks:${host}`),
+    },
+    android: {
+      package: 'app.petchain.mobile',
+      versionCode: VERSION_CODE,
+      adaptiveIcon: {
+        foregroundImage: './assets/adaptive-icon.png',
+        backgroundColor: '#ffffff',
+      },
+      intentFilters: [
+        {
+          action: 'VIEW',
+          autoVerify: true,
+          data: DEEP_LINK_ALLOWED_HOSTS.map((host) => ({ scheme: 'https', host })),
+          category: ['BROWSABLE', 'DEFAULT'],
+        },
+      ],
+    },
+    web: {
+      favicon: './assets/favicon.png',
+    },
+    extra: {
+      appEnv: APP_ENV,
+      // Public configuration only — secrets are never embedded here.
+      publicConfig: PUBLIC_CONFIG,
+      deepLinkRoutes: DEEP_LINK_ROUTES,
+      deepLinkAllowedHosts: DEEP_LINK_ALLOWED_HOSTS,
+      sensitiveScreenProtection: SENSITIVE_SCREEN_PROTECTION,
+      releaseChecklist: RELEASE_CHECKLIST,
+      migrationPolicy: MIGRATION_POLICY,
+      rtlTestLocale: IS_RTL_TEST ? RTL_TEST_LOCALE : null,
+      legalUrls: {
+        privacyPolicy: resolveLegalUrl('EXPO_PUBLIC_PRIVACY_POLICY_URL'),
+        termsOfService: resolveLegalUrl('EXPO_PUBLIC_TERMS_OF_SERVICE_URL'),
+      },
+    },
+  },
+};
