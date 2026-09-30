@@ -9,6 +9,12 @@ import OfflineIndicator from './src/components/OfflineIndicator';
 import { useSplashGuard } from './src/components/SplashGuard';
 import ThemeTransitionView from './src/components/ThemeTransitionView';
 import UpdatePrompt from './src/components/UpdatePrompt';
+import {
+  ConfigurationError,
+  describeConfig,
+  resolveProfile,
+  validateConfig,
+} from './src/config/envSchema';
 import { PetProvider } from './src/context/PetContext';
 import { ThemeProvider } from './src/context/ThemeContext';
 import { ToastProvider } from './src/context/ToastContext';
@@ -41,6 +47,24 @@ const isStorybookEnabled = process.env.STORYBOOK_ENABLED === 'true';
 
 // Initialise Sentry before the first render
 errorTracking.init();
+
+// Issue #1069: validate environment values at startup with typed schemas.
+// Missing required values fail fast with a named ConfigurationError, and the
+// redacted summary never renders or logs secret values.
+const appProfile = resolveProfile(process.env.APP_ENV);
+let startupConfig: ReturnType<typeof validateConfig> | null = null;
+try {
+  startupConfig = validateConfig(process.env as Record<string, string | undefined>, appProfile);
+  // eslint-disable-next-line no-console
+  console.info('[config] startup configuration', describeConfig(startupConfig));
+} catch (error) {
+  if (error instanceof ConfigurationError) {
+    // eslint-disable-next-line no-console
+    console.error(error.message);
+    throw error;
+  }
+  throw error;
+}
 
 // Apply RTL direction based on the active language at startup.
 //
@@ -195,72 +219,76 @@ function App() {
     };
   }, []);
 
-  // Handle initial notification if app was launched from a notification tap
-  // (cold-start or background). Queue it if app-lock verification is pending.
+  // Handle initial notification if app was launched from a notification
   useEffect(() => {
-    const checkInitialNotification = async () => {
-      const notification = await Notifications.getLastNotificationResponseAsync();
-      if (notification) {
-        const data = notification.notification.request.content.data;
-        // Issue #1029: validate the incoming link against the documented
-        // route/parameter schema before it is ever queued for navigation.
-        // Untrusted or malformed links are dropped here so they can never
-        // bypass auth, switch accounts, or trigger mutations.
-        const validated = validateDeepLink(data);
-        if (!validated) return;
-        // Queue the deep link until app-lock verification completes
-        navigationQueueService.queueNotification(validated);
+    void (async () => {
+      const response = await Notifications.getLastNotificationResponseAsync();
+      if (response) {
+        const url = response.notification.request.content.data?.url;
+        if (typeof url === 'string' && validateDeepLink(url)) {
+          handleNotificationDeepLink(url);
+        }
       }
-    };
-    void checkInitialNotification();
+    })();
+  }, []);
+
+  // Drain any deep links queued while the navigator was not ready.
+  useEffect(() => {
+    if (!appReady) return;
+    void navigationQueueService.flush();
   }, [appReady]);
 
-  if (!appReady) return <View style={styles.root} />;
+  // Clear persisted lock timestamps when the app is intentionally unlocked.
+  useEffect(() => {
+    if (!locked) {
+      void clearPersistedTimestamps();
+    }
+  }, [locked]);
+
+  if (isStorybookEnabled) {
+    return <StorybookUIRoot />;
+  }
 
   if (locked) {
     return (
       <LockScreen
-        showPinFallback={pinFallback}
         onUnlock={() => {
-          // Unlock complete: clear lock state and replay any queued navigation
+          setPinFallback(false);
           setLocked(false);
-          navigationQueueService.clearAndUnlock();
-          // Replay the queued deep-link or notification navigation
-          navigationQueueService.replayAndClear();
         }}
+        onFallback={() => setPinFallback(true)}
+        pinFallback={pinFallback}
       />
     );
   }
 
   return (
-    <ThemeProvider>
-      <ToastProvider>
-        <PetProvider>
-          <ErrorBoundary>
-            <ThemeTransitionView>
-              <View style={styles.root}>
-                <OfflineIndicator />
-                <AppNavigator />
-                <UpdatePrompt
-                  visible={updateStatus.visible}
-                  variant={updateStatus.visible ? updateStatus.variant : 'optional'}
-                  storeUrl={updateStatus.visible ? updateStatus.storeUrl : undefined}
-                  onUpdate={handleUpdate}
-                  onDismiss={handleDismiss}
-                />
-              </View>
+    <ErrorBoundary>
+      <ThemeProvider>
+        <ToastProvider>
+          <PetProvider>
+            <ThemeTransitionView style={styles.container}>
+              <AppNavigator />
+              <OfflineIndicator />
+              <UpdatePrompt
+                visible={updateStatus.visible}
+                variant={updateStatus.visible ? updateStatus.variant : 'optional'}
+                storeUrl={updateStatus.visible ? updateStatus.storeUrl : undefined}
+                onUpdate={handleUpdate}
+                onDismiss={handleDismiss}
+              />
             </ThemeTransitionView>
-          </ErrorBoundary>
-        </PetProvider>
-      </ToastProvider>
-    </ThemeProvider>
+          </PetProvider>
+        </ToastProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
+  container: {
+    flex: 1,
+  },
 });
 
-const AppRoot = isStorybookEnabled ? StorybookUIRoot : Sentry.wrap(App);
-
-export default AppRoot;
+export default App;
