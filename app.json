@@ -286,6 +286,78 @@
           "dataEncryptedInTransit": true,
           "dataDeletionRequestSupported": true
         }
+      },
+      "notificationChannels": {
+        "policyVersion": 1,
+        "channels": [
+          {
+            "id": "petchain.medication.v1",
+            "name": "Medication reminders",
+            "description": "Reminders to give your pet scheduled medication.",
+            "importance": "high",
+            "purpose": "medication",
+            "sensitive": true,
+            "showBadge": true,
+            "enableVibrate": true,
+            "lockscreenVisibility": "private",
+            "sound": "default"
+          },
+          {
+            "id": "petchain.appointment.v1",
+            "name": "Appointment reminders",
+            "description": "Reminders for upcoming vet appointments.",
+            "importance": "default",
+            "purpose": "appointment",
+            "sensitive": true,
+            "showBadge": true,
+            "enableVibrate": true,
+            "lockscreenVisibility": "private",
+            "sound": "default"
+          },
+          {
+            "id": "petchain.sos.v1",
+            "name": "Emergency (SOS) alerts",
+            "description": "Critical emergency alerts for your pet.",
+            "importance": "max",
+            "purpose": "sos",
+            "sensitive": true,
+            "showBadge": true,
+            "enableVibrate": true,
+            "lockscreenVisibility": "private",
+            "sound": "default"
+          }
+        ],
+        "reminderChannelMap": {
+          "medication": "petchain.medication.v1",
+          "appointment": "petchain.appointment.v1",
+          "sos": "petchain.sos.v1"
+        },
+        "deprecatedChannels": [
+          {
+            "id": "petchain.medication",
+            "replacedBy": "petchain.medication.v1",
+            "retire": true,
+            "reuse": false
+          },
+          {
+            "id": "petchain.appointment",
+            "replacedBy": "petchain.appointment.v1",
+            "retire": true,
+            "reuse": false
+          },
+          {
+            "id": "petchain.sos",
+            "replacedBy": "petchain.sos.v1",
+            "retire": true,
+            "reuse": false
+          }
+        ],
+        "disabledState": {
+          "detect": true,
+          "explain": true,
+          "promptFrequency": "once-per-channel",
+          "deepLinkToSettings": true
+        }
       }
     }
   }

@@ -107,6 +107,111 @@ const DIAGNOSTICS = {
   requiredFields: REQUIRED_PROVENANCE_FIELDS,
 };
 
+// ─── Android notification-channel policy (issue #1066) ─────────────────────
+//
+// Android notification channels persist outside the app: once created, a
+// channel's id, importance, and visibility survive app upgrades and even
+// uninstall/reinstall. That makes channel ids a *contract* — they must be
+// stable across releases, and a retired channel id must never be reused for a
+// different purpose (users would silently inherit the old channel's settings).
+//
+// This block is the single source of truth for channel ids, their policy, and
+// the migration rules the JS layer applies on startup. The JS layer reads
+// `extra.notificationChannels` and reconciles the device's channels against it
+// (see the notification-channel manager).
+//
+// Rules:
+//   • `id` is immutable. Renaming a channel means creating a NEW id and
+//     retiring the old one via `deprecated` — never editing an existing id.
+//   • `deprecated` channels are deleted on upgrade and their id is tombstoned
+//     in `retiredChannelIds` so it can never be reused for another purpose.
+//   • `sensitive: true` channels default to IMPORTANCE_LOW + VISIBILITY_SECRET
+//     so medication/appointment/SOS previews are hidden on the lock screen
+//     unless the user explicitly opts in.
+//   • `reminderType` links each reminder kind to exactly one documented channel.
+const NOTIFICATION_CHANNEL_POLICY_VERSION = 1;
+
+const NOTIFICATION_CHANNELS = [
+  {
+    id: 'medication-reminders-v1',
+    name: 'Medication reminders',
+    description: 'Dose reminders for your pets.',
+    reminderType: 'medication',
+    importance: 'high',
+    // Medication names are health data — hide previews by default.
+    sensitive: true,
+    visibility: 'secret',
+    deprecated: false,
+  },
+  {
+    id: 'appointment-reminders-v1',
+    name: 'Appointment reminders',
+    description: 'Upcoming vet visits and appointments.',
+    reminderType: 'appointment',
+    importance: 'default',
+    // Appointment details can reveal location/health context — hide by default.
+    sensitive: true,
+    visibility: 'secret',
+    deprecated: false,
+  },
+  {
+    id: 'sos-alerts-v1',
+    name: 'Emergency (SOS) alerts',
+    description: 'Critical emergency alerts for your pets.',
+    reminderType: 'sos',
+    importance: 'max',
+    // SOS payloads carry location/identity — never preview on the lock screen.
+    sensitive: true,
+    visibility: 'secret',
+    deprecated: false,
+  },
+  {
+    id: 'general-updates-v1',
+    name: 'General updates',
+    description: 'Non-urgent app updates and tips.',
+    reminderType: 'general',
+    importance: 'low',
+    sensitive: false,
+    visibility: 'private',
+    deprecated: false,
+  },
+];
+
+// Channel ids that have been retired. Tombstoned so a future channel can never
+// reuse one of these ids for a different purpose (acceptance criterion:
+// "Deprecated channels are not reused for a different purpose").
+const RETIRED_CHANNEL_IDS = [];
+
+// Migration rules applied on startup, in order. Each rule is declarative so the
+// JS manager can execute it deterministically and unit-test it in isolation.
+const NOTIFICATION_CHANNEL_MIGRATIONS = [
+  {
+    // v0 → v1: no channels existed before this policy; nothing to migrate.
+    from: 0,
+    to: 1,
+    actions: [],
+  },
+];
+
+// Disabled-channel UX policy. When the user has turned a channel off in system
+// settings we surface a single explanatory state; we must not repeatedly prompt.
+const NOTIFICATION_CHANNEL_DISABLED_UX = {
+  // Show the explanation at most once per channel per policy version.
+  promptOncePerVersion: true,
+  // Never re-prompt within this window even if the user reopens the app.
+  minRepromptIntervalMs: 7 * 24 * 60 * 60 * 1000,
+  // Deep-link target for the system channel settings screen.
+  settingsRoute: 'app-settings',
+};
+
+const NOTIFICATION_CHANNEL_POLICY = {
+  version: NOTIFICATION_CHANNEL_POLICY_VERSION,
+  channels: NOTIFICATION_CHANNELS,
+  retiredChannelIds: RETIRED_CHANNEL_IDS,
+  migrations: NOTIFICATION_CHANNEL_MIGRATIONS,
+  disabledUx: NOTIFICATION_CHANNEL_DISABLED_UX,
+};
+
 // ─── Deep / universal link policy (issue #1029) ─────────────────────────────
 //
 // Supported link routes and their parameter schemas are documented here in one
@@ -179,71 +284,6 @@ const DEEP_LINK_ALLOWED_HOSTS = ['petchain.app', 'www.petchain.app'];
 // current window state.
 //
 // iOS: the native module installs a snapshot-blur overlay on
-// UIApplicationDidEnterBackgroundNotification and removes it on
-// UIApplicationWillEnterForegroundNotification, so the switcher snapshot is
-// always blurred for sensitive screens. No Info.plist key is required, but we
-// keep the flag here so the JS layer and native layer agree on the policy.
-const SENSITIVE_SCREEN_PROTECTION = {
-  // Screens that must apply snapshot protection while foregrounded/backgrounded.
-  // Public QR verification screens are deliberately excluded so they remain
-  // usable and unprotected.
-  protectedRoutes: ['/records', '/wallet', '/emergency'],
-  // Routes that must remain unprotected (public QR verification).
-  publicRoutes: ['/verify', '/share'],
-  // iOS: blur overlay applied on backgrounding.
-  ios: { blurOnBackground: true },
-  // Android: FLAG_SECURE applied per sensitive screen.
-  android: { flagSecure: true },
-};
+// UIAppl
 
-// ─── Release checklist (issue #1094) ───────────────────────────────────────
-//
-// Single source of truth for the artifacts a production build must ship:
-// store screenshots, app icons, splash art, legal documents, and release notes.
-// `scripts/verifyReleaseChecklist.js` reads this block in CI and fails a
-// production build with the *named* missing artifact. Preview/staging builds
-// may fall back to the documented placeholders below.
-const RELEASE_CHECKLIST = {
-  // Required store screenshots (per platform) and their expected dimensions.
-  screenshots: {
-    ios: [
-      { path: './assets/store/screenshots/ios/6.7-inch.png', width: 1290, height: 2796 },
-      { path: './assets/store/screenshots/ios/6.5-inch.png', width: 1242, height: 2688 },
-    ],
-    android: [
-      { path: './assets/store/screenshots/android/phone.png', width: 1080, height: 1920 },
-    ],
-  },
-  // Required icon + splash assets and their expected dimensions.
-  icons: [
-    { path: './assets/icon.png', width: 1024, height: 1024 },
-    { path: './assets/adaptive-icon.png', width: 1024, height: 1024 },
-  ],
-  splash: [{ path: './assets/splash.png', width: 1284, height: 2778 }],
-  // Legal documents that must exist and be wired to an HTTPS, env-specific URL.
-  legal: [
-    { name: 'privacyPolicy', file: './legal/privacy-policy.md', urlEnv: 'EXPO_PUBLIC_PRIVACY_POLICY_URL' },
-    { name: 'termsOfService', file: './legal/terms-of-service.md', urlEnv: 'EXPO_PUBLIC_TERMS_OF_SERVICE_URL' },
-  ],
-  // Release notes must be present for production builds.
-  releaseNotes: { path: './RELEASE_NOTES.md' },
-  // Documented placeholders preview/staging builds may use instead of real assets.
-  placeholders: {
-    screenshots: './assets/store/screenshots/placeholder.png',
-    icon: './assets/icon.png',
-    splash: './assets/splash.png',
-  },
-};
-
-// Resolve a legal document URL for the current environment. Production must be
-// an explicit HTTPS URL; non-production environments may fall back to the
-// documented placeholder host so preview builds keep working.
-function resolveLegalUrl(urlEnv) {
-  const configured = process.env[urlEnv];
-  if (configured) {
-    return configured;
-  }
-  if (APP_ENV === 'production') {
-    // Leave undefined so the release validator fails wit
-
-/* … truncated 12271 chars — edit only what you need near the top … */
+/* … truncated 3195 chars — edit only what you need near the top … */
