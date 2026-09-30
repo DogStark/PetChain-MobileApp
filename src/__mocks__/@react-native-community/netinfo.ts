@@ -3,6 +3,7 @@ const listeners: Array<(state: { isConnected: boolean; type: string }) => void> 
 const mockState = {
   isConnected: true,
   type: 'wifi',
+  details: { isConnectionExpensive: false },
 };
 
 const NetInfo = {

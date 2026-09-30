@@ -86,18 +86,28 @@ const OfflineIndicator: React.FC = () => {
   if (savedVisible) {
     message = '✓ All changes saved';
     bgColor = '#4CAF50';
-  } else if (!isOnline) {
-    message =
-      pendingCount > 0
-        ? `📴 Offline · ${pendingCount} change${pendingCount > 1 ? 's' : ''} pending`
-        : '📴 Offline';
-    bgColor = '#d32f2f';
-  } else if (isSyncing) {
-    message = '🔄 Syncing…';
-    bgColor = '#4CAF50';
-  } else if (pendingCount > 0) {
-    message = `⏳ ${pendingCount} change${pendingCount > 1 ? 's' : ''} pending sync`;
-    bgColor = '#FFA000';
+  } else if (status) {
+    if (!status.isOnline) {
+      message =
+        status.pendingCount > 0
+          ? `📴 Offline · ${status.pendingCount} change${status.pendingCount > 1 ? 's' : ''} pending`
+          : '📴 Offline';
+      bgColor = '#d32f2f';
+    } else if (status.isSyncing) {
+      message = '🔄 Syncing…';
+      bgColor = '#4CAF50';
+    } else if (status.exhaustedCount > 0) {
+      message = `⚠️ ${status.exhaustedCount} change${status.exhaustedCount > 1 ? 's' : ''} need attention`;
+      bgColor = '#d32f2f';
+    } else if (status.pendingCount > 0) {
+      const secondsUntilRetry = status.nextRetryAt
+        ? Math.max(1, Math.ceil((status.nextRetryAt - Date.now()) / 1000))
+        : null;
+      message = secondsUntilRetry
+        ? `⏳ ${status.pendingCount} pending · retry in ${secondsUntilRetry}s`
+        : `⏳ ${status.pendingCount} change${status.pendingCount > 1 ? 's' : ''} pending sync`;
+      bgColor = '#FFA000';
+    }
   }
 
   const translateY = visibleAnim.interpolate({ inputRange: [0, 1], outputRange: [-50, 0] });
@@ -143,6 +153,16 @@ const OfflineIndicator: React.FC = () => {
           ) : (
             <Text style={styles.sheetEmpty}>No pending changes.</Text>
           )}
+          {status?.exhaustedCount ? (
+            <Text style={styles.sheetItem}>
+              {status.exhaustedCount} change(s) reached the retry limit and remain saved.
+            </Text>
+          ) : null}
+          {status?.nextRetryAt ? (
+            <Text style={styles.sheetItem}>
+              Next retry: {new Date(status.nextRetryAt).toLocaleTimeString()}
+            </Text>
+          ) : null}
           <TouchableOpacity
             style={styles.sheetClose}
             onPress={() => setSheetVisible(false)}

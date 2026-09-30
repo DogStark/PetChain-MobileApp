@@ -270,6 +270,10 @@ export async function getPetById(petId: string): Promise<Pet> {
     await setItem(`${PET_CACHE_PREFIX}${pet.id}`, JSON.stringify(pet));
     return pet;
   } catch (error) {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status === 401 || status === 403 || status === 404) {
+      throw toPetServiceError(error, { action: 'get_pet_by_id', petId: id });
+    }
     const cached = await getCachedPet(id);
     if (cached) return cached;
     throw toPetServiceError(error, { action: 'get_pet_by_id', petId: id });

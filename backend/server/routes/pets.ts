@@ -250,7 +250,18 @@ router.get('/', petsByOwnerCacheMiddleware(), (req: AuthenticatedRequest, res) =
   return res.json(ok(list.map(toPetResponse)));
 });
 
-router.get('/:id', petProfileCacheMiddleware(), (req: AuthenticatedRequest, res) => {
+router.get(
+  '/:id',
+  (req: AuthenticatedRequest, res, next) => {
+    const pet = store.pets.get(req.params.id);
+    if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
+    if (req.user!.role === UserRole.OWNER && req.user!.id !== pet.ownerId) {
+      return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to view this pet');
+    }
+    next();
+  },
+  petProfileCacheMiddleware(),
+  (req: AuthenticatedRequest, res) => {
   const pet = store.pets.get(req.params.id);
   if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
 
@@ -260,7 +271,8 @@ router.get('/:id', petProfileCacheMiddleware(), (req: AuthenticatedRequest, res)
   }
 
   return res.json(ok(toPetResponse(pet)));
-});
+  },
+);
 
 router.post('/', async (req: AuthenticatedRequest, res) => {
   const {

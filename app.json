@@ -21,6 +21,16 @@
       "associatedDomains": [
         "applinks:petchain.app"
       ],
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "fetch",
+          "processing"
+        ],
+        "BGTaskSchedulerPermittedIdentifiers": [
+          "app.petchain.mobile.refresh",
+          "app.petchain.mobile.processing"
+        ]
+      },
       "privacyManifests": {
         "NSPrivacyTracking": false,
         "NSPrivacyTrackingDomains": [],
@@ -149,11 +159,39 @@
             "QRVerification"
           ]
         }
+      ],
+      [
+        "expo-background-fetch",
+        {
+          "minimumInterval": 900,
+          "stopOnTerminate": false,
+          "startOnBoot": true
+        }
       ]
     ],
     "extra": {
       "APP_ENV": "development",
       "SENTRY_DSN": "",
+      "backgroundRefresh": {
+        "enabled": true,
+        "taskIdentifier": "app.petchain.mobile.refresh",
+        "processingTaskIdentifier": "app.petchain.mobile.processing",
+        "minimumIntervalSeconds": 900,
+        "requiresBackgroundModes": [
+          "fetch",
+          "processing"
+        ],
+        "requiresBackgroundAppRefresh": true,
+        "degradeToForeground": true,
+        "iosConfigurationChecklist": [
+          "Enable the 'Background Modes' capability in Xcode for the app target.",
+          "Check 'Background fetch' and 'Background processing' under Background Modes.",
+          "Ensure the device setting Settings > General > Background App Refresh is ON for PetChain.",
+          "Verify BGTaskSchedulerPermittedIdentifiers includes app.petchain.mobile.refresh and app.petchain.mobile.processing.",
+          "Confirm UIBackgroundModes includes fetch and processing in Info.plist.",
+          "Do not re-prompt for permission; surface registration status to support instead."
+        ]
+      },
       "snapshotProtection": {
         "enabled": true,
         "sensitiveScreens": [
@@ -258,7 +296,6 @@
           "dataEncryptedInTransit": true,
           "dataDeletionRequestSupported": true
         }
-      }
       }
     }
   }

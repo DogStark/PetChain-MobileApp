@@ -1,8 +1,7 @@
-import * as SQLite from 'expo-sqlite';
-
-import { startNetworkMonitoring } from './networkMonitor';
 import { ALL_SQLITE_MIGRATIONS, runSqliteMigrations } from '../migrations/index';
+import { initializeLocalDatabase } from '../services/localDB';
 import { requestPermissions } from '../services/notificationService';
+import offlineQueue from '../services/offlineQueue';
 
 export interface InitResult {
   ready: boolean;
@@ -14,13 +13,13 @@ export interface InitResult {
  * Everything else is deferred to after the UI is interactive.
  */
 async function runCriticalInit(): Promise<void> {
-  startNetworkMonitoring();
-
-  const db = SQLite.openDatabaseSync('petchain.db');
+  const db = await initializeLocalDatabase();
   const result = await runSqliteMigrations(db, ALL_SQLITE_MIGRATIONS);
   if (!result.success) {
     console.warn('[migrations] SQLite migration failed:', result.error);
   }
+
+  await offlineQueue.initialize();
 }
 
 /**

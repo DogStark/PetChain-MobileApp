@@ -19,6 +19,11 @@ import {
   type DiagnosticLogEntry,
 } from '../services/diagnosticExport';
 import errorTracking from '../services/errorTracking';
+import {
+  getLocalDatabaseRecoveryInfo,
+  type LocalDatabaseRecoveryInfo,
+} from '../services/localDB';
+import { exportLocalAuditCsv, recordLocalAuditEvent } from '../services/localAuditService';
 
 interface ConsentState {
   necessary: boolean;
@@ -53,11 +58,14 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportingAudit, setExportingAudit] = useState(false);
   const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const [lastExportDate, setLastExportDate] = useState<string | null>(null);
   const [dataCategories, setDataCategories] = useState<DataCategory[]>([]);
+  const [databaseRecovery, setDatabaseRecovery] = useState<LocalDatabaseRecoveryInfo | null>(null);
 
   const loadConsents = useCallback(async () => {
+    setDatabaseRecovery(await getLocalDatabaseRecoveryInfo());
     try {
       const res = await resilientRequest<{
         data: {
@@ -86,6 +94,21 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
       // Use defaults on error
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const handleRecoveryExport = useCallback(async (fileUri: string) => {
+    try {
+      if (!(await Sharing.isAvailableAsync())) {
+        Alert.alert('Export unavailable', 'Sharing is not available on this device.');
+        return;
+      }
+      await Sharing.shareAsync(fileUri, {
+        mimeType: 'application/vnd.sqlite3',
+        dialogTitle: 'Export preserved PetChain database file',
+      });
+    } catch {
+      Alert.alert('Error', 'Failed to export the preserved database file.');
     }
   }, []);
 
@@ -130,13 +153,52 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
           'Your data has been prepared but sharing is not available on this device.',
         );
       }
+      await recordLocalAuditEvent({
+        action: 'EXPORT',
+        recordReference: 'account-data-export',
+        result: 'success',
+      });
     } catch {
+      await recordLocalAuditEvent({
+        action: 'EXPORT',
+        recordReference: 'account-data-export',
+        result: 'failure',
+      }).catch(() => {});
       Alert.alert('Error', 'Failed to export data.');
     } finally {
       setExporting(false);
     }
   }, []);
 
+  const handleAuditExport = useCallback(async () => {
+    setExportingAudit(true);
+    try {
+      const csv = await exportLocalAuditCsv();
+      const fileUri = `${FileSystem.cacheDirectory}petchain-local-audit.csv`;
+      await FileSystem.writeAsStringAsync(fileUri, csv, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+      if (!(await Sharing.isAvailableAsync())) throw new Error('Sharing unavailable');
+      await Sharing.shareAsync(fileUri, {
+        mimeType: 'text/csv',
+        dialogTitle: 'Export redacted local audit history',
+      });
+      await recordLocalAuditEvent({
+        action: 'EXPORT',
+        recordReference: 'local-audit-export',
+        result: 'success',
+      });
+    } catch {
+      await recordLocalAuditEvent({
+        action: 'EXPORT',
+        recordReference: 'local-audit-export',
+        result: 'failure',
+      }).catch(() => {});
+      Alert.alert('Error', 'Failed to export local audit history.');
+    } finally {
+      setExportingAudit(false);
+    }
+  }, []);
 
   const collectRecentDiagnosticLogs = useCallback((): DiagnosticLogEntry[] => {
     // Representative device-side breadcrumbs for support — payloads are
@@ -309,6 +371,27 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
 
       <Text style={styles.sectionTitle}>Your Data Rights</Text>
 
+      {databaseRecovery && (
+        <View style={styles.recoverySection}>
+          <Text style={styles.rowLabel}>Local database recovery</Text>
+          <Text style={styles.rowDesc}>
+            Support code: {databaseRecovery.supportCode}. Preserved files are available to export.
+          </Text>
+          {databaseRecovery.files.map((fileUri, index) => (
+            <TouchableOpacity
+              key={fileUri}
+              style={[styles.btn, styles.btnSecondary]}
+              onPress={() => void handleRecoveryExport(fileUri)}
+              accessibilityLabel={`Export preserved database file ${index + 1}`}
+            >
+              <Text style={styles.btnTextSecondary}>
+                Export preserved file {index + 1}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
       {lastExportDate && (
         <Text style={styles.lastExport}>
           Last exported: {new Date(lastExportDate).toLocaleDateString()}
@@ -325,6 +408,19 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
           <ActivityIndicator color="#2d3748" />
         ) : (
           <Text style={styles.btnTextSecondary}>📥 Download My Data</Text>
+        )}
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.btn, styles.btnSecondary]}
+        onPress={() => void handleAuditExport()}
+        disabled={exportingAudit}
+        accessibilityLabel="Export redacted local audit history"
+      >
+        {exportingAudit ? (
+          <ActivityIndicator color="#2d3748" />
+        ) : (
+          <Text style={styles.btnTextSecondary}>Export Local Audit History</Text>
         )}
       </TouchableOpacity>
 
@@ -377,6 +473,12 @@ const styles = StyleSheet.create({
   rowCount: { fontSize: 14, color: '#718096' },
   rowDesc: { fontSize: 13, color: '#718096', marginTop: 2 },
   lastExport: { fontSize: 13, color: '#718096', marginBottom: 4, marginTop: 4 },
+  recoverySection: {
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: '#edf2f7',
+  },
   btn: {
     borderRadius: 8,
     paddingVertical: 12,

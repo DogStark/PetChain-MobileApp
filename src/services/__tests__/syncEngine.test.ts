@@ -3,8 +3,24 @@ import apiClient from '../apiClient';
 import { SyncEngine } from '../syncEngine';
 
 jest.mock('../apiClient');
+let mockNetworkStatusListener: ((status: {
+  isOnline: boolean;
+  connectionType: string;
+  isConnectionExpensive: boolean;
+}) => void) | null = null;
 jest.mock('../../utils/networkMonitor', () => ({
-  networkMonitor: { isOnline: jest.fn() },
+  networkMonitor: {
+    isOnline: jest.fn(),
+    getStatus: jest.fn().mockResolvedValue({
+      isOnline: true,
+      connectionType: 'wifi',
+      isConnectionExpensive: false,
+    }),
+    onStatusChange: jest.fn((listener) => {
+      mockNetworkStatusListener = listener;
+      return jest.fn();
+    }),
+  },
 }));
 
 // Mock AsyncStorage for backoff persistence
@@ -65,6 +81,12 @@ describe('SyncEngine', () => {
     Object.keys(sqliteState).forEach((key) => delete sqliteState[key]);
     Object.keys(asyncStore).forEach((key) => delete asyncStore[key]);
     jest.clearAllMocks();
+    mockNetworkStatusListener = null;
+    (networkMonitor.getStatus as jest.Mock).mockResolvedValue({
+      isOnline: true,
+      connectionType: 'wifi',
+      isConnectionExpensive: false,
+    });
     jest.useFakeTimers();
   });
 
@@ -114,9 +136,10 @@ describe('SyncEngine', () => {
   });
 
   it('persists backoff state to AsyncStorage after a failed sync', async () => {
-    (networkMonitor.isOnline as jest.Mock).mockResolvedValue(true);
     (apiClient.post as jest.Mock).mockRejectedValue(new Error('timeout'));
     const engine = new SyncEngine({ batchSize: 10 });
+    const listener = jest.fn();
+    engine.onProgress(listener);
 
     await engine.markDirty('pet', 'p1', 'update', { name: 'Buddy' });
     const result = await engine.syncNow();
@@ -126,6 +149,9 @@ describe('SyncEngine', () => {
     const state = JSON.parse(asyncStore['@sync_engine:backoff']);
     expect(state.stepIndex).toBeGreaterThan(0);
     expect(state.nextRetryAt).toBeGreaterThan(Date.now());
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'failed', retryAt: state.nextRetryAt, retryDelayMs: expect.any(Number) }),
+    );
     engine.destroy();
   });
 
@@ -150,7 +176,6 @@ describe('SyncEngine', () => {
   });
 
   it('does not retry non-retryable errors (401/403/422)', async () => {
-    (networkMonitor.isOnline as jest.Mock).mockResolvedValue(true);
     const authError = Object.assign(new Error('Unauthorized'), { response: { status: 401 } });
     (apiClient.post as jest.Mock).mockRejectedValue(authError);
     const engine = new SyncEngine({ batchSize: 10 });
@@ -161,6 +186,45 @@ describe('SyncEngine', () => {
     // Non-retryable errors are cleared from the queue immediately
     expect(result.failed).toBe(1);
     expect(sqliteState['pet:p1']).toBeUndefined();
+    engine.destroy();
+  });
+
+  it('uses the same idempotency key for retries of the same record version', async () => {
+    (apiClient.post as jest.Mock)
+      .mockRejectedValueOnce(new Error('temporary'))
+      .mockResolvedValueOnce({ data: { results: [{ status: 'updated' }] } });
+    const engine = new SyncEngine({ batchSize: 10 });
+    await engine.markDirty('pet', 'p-retry', 'update', { name: 'Buddy' });
+
+    await engine.syncNow();
+    await engine.syncNow();
+
+    const requests = (apiClient.post as jest.Mock).mock.calls;
+    expect(requests[0][2].headers['Idempotency-Key']).toBe(requests[1][2].headers['Idempotency-Key']);
+    engine.destroy();
+  });
+
+  it('pauses on configured expensive connections and resumes once when eligible', async () => {
+    (networkMonitor.getStatus as jest.Mock).mockResolvedValue({
+      isOnline: true,
+      connectionType: 'cellular',
+      isConnectionExpensive: true,
+    });
+    (apiClient.post as jest.Mock).mockResolvedValue({ data: { results: [{ status: 'updated' }] } });
+    const engine = new SyncEngine({ pauseOnExpensiveNetwork: true });
+    await engine.markDirty('pet', 'p-metered', 'update', { name: 'Buddy' });
+
+    const paused = await engine.syncNow();
+    expect(paused.message).toBe('Sync paused on an expensive network');
+    expect(apiClient.post).not.toHaveBeenCalled();
+
+    mockNetworkStatusListener?.({
+      isOnline: true,
+      connectionType: 'wifi',
+      isConnectionExpensive: false,
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(apiClient.post).toHaveBeenCalledTimes(1);
     engine.destroy();
   });
 });

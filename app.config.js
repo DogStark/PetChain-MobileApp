@@ -169,6 +169,53 @@ const RTL_TEST_LOCALE = process.env.RTL_TEST_LOCALE ?? null;
 const RTL_LOCALES = ['ar', 'he'];
 const IS_RTL_TEST = RTL_TEST_LOCALE != null && RTL_LOCALES.includes(RTL_TEST_LOCALE);
 
+// ─── App-update migration rollback handling (issue #1057) ───────────────────
+//
+// A failed local schema or persisted-state migration can leave the app unable to
+// start after an upgrade. The runtime migration runner (see the migration service)
+// needs a deterministic, all-or-nothing contract so a crash mid-migration is
+// detected on the next launch and recovered without ever silently deleting health
+// records. This block is the single source of truth for that contract; the native
+// layer reads `extra.MIGRATION_POLICY` before any JS runs so the recovery path is
+// active from the very first frame.
+//
+// Contract:
+//   • Migrations are atomic from the user's perspective: a checkpoint is written
+//     before each phase and the failed-migration marker is only cleared once the
+//     whole migration commits. A marker left behind means the previous run crashed.
+//   • On the next launch, a leftover marker (or a checkpoint that never committed)
+//     is treated as a crash and triggers recovery.
+//   • Recovery restores the last known-good database snapshot. If no snapshot is
+//     available it quarantines ONLY the incompatible record — health records are
+//     never silently deleted.
+//   • The app surfaces migration version, app version, and a non-sensitive support
+//     code instead of raw database errors.
+const MIGRATION_POLICY = {
+  // Bump when the persisted-state schema changes so the runner knows a migration
+  // is required and can record which version was being applied.
+  schemaVersion: 1,
+  // Ordered phases a migration passes through. A checkpoint is persisted before
+  // each phase; a crash between phases is detected on the next launch.
+  phases: ['prepare', 'snapshot', 'apply', 'verify', 'commit'],
+  // Marker key written before a migration starts and cleared only after commit.
+  // A leftover marker on launch means the previous run crashed mid-migration.
+  failedMarkerKey: 'petchain.migration.failed',
+  // Checkpoint key holding the last phase that completed successfully.
+  checkpointKey: 'petchain.migration.checkpoint',
+  // Key holding the last known-good database snapshot used for recovery.
+  snapshotKey: 'petchain.migration.snapshot',
+  // Recovery strategy order. `restoreSnapshot` is preferred; `quarantineRecord`
+  // is the fallback and only ever isolates the incompatible record.
+  recovery: {
+    strategy: ['restoreSnapshot', 'quarantineRecord'],
+    // Health records must never be silently deleted during recovery.
+    deleteHealthRecords: false,
+  },
+  // Non-sensitive support code surfaced to the user instead of raw DB errors.
+  // The runtime appends the migration version and app version to this prefix.
+  supportCodePrefix: 'MIG',
+};
+
 // ─── Deep / universal link policy (issue #1029) ─────────────────────────────
 //
 // Supported link routes and their parameter schemas are documented here in one
@@ -320,6 +367,7 @@ module.exports = {
     runtimeVersion: RUNTIME_VERSION,
     orientation: 'portrait',
     icon: './assets/icon.png',
+    scheme: 'petchain',
     userInterfaceStyle: 'automatic',
     splash: {
       image: './assets/splash.png',
@@ -359,9 +407,12 @@ module.exports = {
       deepLinkAllowedHosts: DEEP_LINK_ALLOWED_HOSTS,
       sensitiveScreenProtection: SENSITIVE_SCREEN_PROTECTION,
       releaseChecklist: RELEASE_CHECKLIST,
+      migrationPolicy: MIGRATION_POLICY,
       rtlTestLocale: IS_RTL_TEST ? RTL_TEST_LOCALE : null,
-      privacyPolicyUrl: resolveLegalUrl('EXPO_PUBLIC_PRIVACY_POLICY_URL'),
-      termsOfServiceUrl: resolveLegalUrl('EXPO_PUBLIC_TERMS_OF_SERVICE_URL'),
+      legalUrls: {
+        privacyPolicy: resolveLegalUrl('EXPO_PUBLIC_PRIVACY_POLICY_URL'),
+        termsOfService: resolveLegalUrl('EXPO_PUBLIC_TERMS_OF_SERVICE_URL'),
+      },
     },
   },
 };
