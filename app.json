@@ -18,6 +18,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "app.petchain.mobile",
+      "buildNumber": "1",
       "associatedDomains": [
         "applinks:petchain.app"
       ],
@@ -101,6 +102,7 @@
         "backgroundColor": "#ffffff"
       },
       "package": "app.petchain.mobile",
+      "versionCode": 1,
       "intentFilters": [
         {
           "action": "VIEW",
@@ -154,6 +156,32 @@
     "extra": {
       "APP_ENV": "development",
       "SENTRY_DSN": "",
+      "diagnostics": {
+        "enabled": true,
+        "access": "support",
+        "redact": [
+          "SENTRY_DSN",
+          "API_BASE_URL",
+          "AUTH_TOKEN",
+          "userContent"
+        ],
+        "fields": [
+          "appVersion",
+          "buildNumber",
+          "environment",
+          "releaseChannel",
+          "commitId",
+          "apiBaseUrlOrigin",
+          "featureFlags"
+        ],
+        "provenance": {
+          "source": "eas",
+          "commitId": "EAS_BUILD_GIT_COMMIT_HASH",
+          "releaseChannel": "EAS_BUILD_PROFILE",
+          "environment": "APP_ENV",
+          "apiBaseUrl": "API_BASE_URL"
+        }
+      },
       "snapshotProtection": {
         "enabled": true,
         "sensitiveScreens": [
@@ -258,7 +286,6 @@
           "dataEncryptedInTransit": true,
           "dataDeletionRequestSupported": true
         }
-      }
       }
     }
   }

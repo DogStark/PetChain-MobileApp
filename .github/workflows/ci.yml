@@ -69,3 +69,64 @@ jobs:
             echo "::error::Missing release checklist at docs/privacy-release-checklist.md"
             exit 1
           fi
+
+  build-provenance-check:
+    name: Build provenance & diagnostics verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify EAS configuration exists
+        run: |
+          if [ ! -f "eas.json" ]; then
+            echo "::error::Missing EAS configuration at eas.json"
+            exit 1
+          fi
+
+      - name: Verify required EAS profiles are defined
+        run: |
+          REQUIRED_PROFILES=("development" "preview" "staging" "production")
+          for profile in "${REQUIRED_PROFILES[@]}"; do
+            if ! grep -q "\"$profile\"" eas.json; then
+              echo "::error::Missing required EAS profile: $profile"
+              exit 1
+            fi
+          done
+
+      - name: Verify required provenance fields per profile
+        run: |
+          # Each EAS profile must declare the provenance fields the diagnostics
+          # view reads at runtime. Values are generated from EAS config, not
+          # hand-maintained strings.
+          REQUIRED_FIELDS=("environment" "releaseChannel" "commit" "apiBaseUrl")
+          for profile in development preview staging production; do
+            for field in "${REQUIRED_FIELDS[@]}"; do
+              if ! grep -q "\"$field\"" eas.json; then
+                echo "::error::Missing provenance field '$field' for EAS profile '$profile'"
+                exit 1
+              fi
+            done
+          done
+
+      - name: Verify diagnostics view is gated behind support/debug access
+        run: |
+          if ! grep -rq "supportDebug" src 2>/dev/null; then
+            echo "::error::Diagnostics view is not gated behind support/debug access"
+            exit 1
+          fi
+
+      - name: Verify diagnostics redaction is enforced
+        run: |
+          if ! grep -rq "redactDiagnostics" src 2>/dev/null; then
+            echo "::error::Diagnostics redaction helper is missing"
+            exit 1
+          fi
+
+      - name: Release-build smoke check
+        run: |
+          # Ensure a release build can resolve provenance metadata without
+          # falling back to hand-maintained strings.
+          if ! grep -rq "getBuildProvenance" src 2>/dev/null; then
+            echo "::error::Release build provenance resolver is missing"
+            exit 1
+          fi

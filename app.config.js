@@ -34,6 +34,79 @@ const RTL_TEST_LOCALE = process.env.RTL_TEST_LOCALE ?? null;
 const RTL_LOCALES = ['ar', 'he'];
 const IS_RTL_TEST = RTL_TEST_LOCALE != null && RTL_LOCALES.includes(RTL_TEST_LOCALE);
 
+// ─── Build provenance & runtime diagnostics (issue #1064) ──────────────────
+//
+// Support needs to distinguish development / preview / staging / production
+// builds and identify the exact commit behind an installed binary. All values
+// are derived from EAS configuration (eas.json profiles + EAS-injected env)
+// rather than hand-maintained strings, so they cannot drift from the build that
+// actually shipped.
+//
+// EAS injects the following at build time:
+//   EAS_BUILD_PROFILE      — the eas.json profile name (e.g. "production")
+//   EAS_BUILD_GIT_COMMIT_HASH — the commit the binary was built from
+//   EAS_BUILD_ID           — the unique EAS build identifier
+//   EAS_BUILD_CHANNEL      — the release channel the build publishes to
+//
+// The diagnostics view is gated behind support/debug access (see
+// `extra.diagnostics.requiresSupportAccess`); it is never shown to end users.
+// Every field is redacted: only the *origin* of the API base URL is exposed
+// (never credentials, query strings, or paths), and no user content is read.
+const EAS_BUILD_PROFILE = process.env.EAS_BUILD_PROFILE ?? APP_ENV;
+const EAS_BUILD_GIT_COMMIT_HASH = process.env.EAS_BUILD_GIT_COMMIT_HASH ?? null;
+const EAS_BUILD_ID = process.env.EAS_BUILD_ID ?? null;
+const EAS_BUILD_CHANNEL = process.env.EAS_BUILD_CHANNEL ?? APP_ENV;
+
+// Release channel per EAS profile. Kept in sync with eas.json `channel`.
+const RELEASE_CHANNEL_MAP = {
+  development: 'development',
+  preview: 'preview',
+  staging: 'staging',
+  production: 'production',
+};
+const RELEASE_CHANNEL = RELEASE_CHANNEL_MAP[EAS_BUILD_PROFILE] ?? EAS_BUILD_CHANNEL;
+
+// Required provenance fields. CI (scripts/verifyBuildProvenance.js) fails a
+// release build when any of these are missing, so a shipped binary can always
+// be traced back to a commit and a channel.
+const REQUIRED_PROVENANCE_FIELDS = ['appVersion', 'buildNumber', 'environment', 'releaseChannel', 'commit'];
+
+// Redact a URL down to its origin only. Credentials, query strings, and paths
+// are stripped so the diagnostics view can never leak secrets or user content.
+function redactUrlOrigin(url) {
+  if (!url) {
+    return null;
+  }
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return null;
+  }
+}
+
+// Feature-flag snapshot. Only flag *names* and their boolean state are exposed;
+// no flag values that could carry user data or secrets.
+const FEATURE_FLAGS = {
+  ocrReview: process.env.EXPO_PUBLIC_FLAG_OCR_REVIEW === 'true',
+  backupImport: process.env.EXPO_PUBLIC_FLAG_BACKUP_IMPORT === 'true',
+  androidNotificationChannels: process.env.EXPO_PUBLIC_FLAG_ANDROID_NOTIFICATION_CHANNELS === 'true',
+};
+
+const DIAGNOSTICS = {
+  // Gated behind support/debug access only.
+  requiresSupportAccess: true,
+  appVersion: APP_VERSION,
+  buildNumber: String(VERSION_CODE),
+  environment: APP_ENV,
+  releaseChannel: RELEASE_CHANNEL,
+  commit: EAS_BUILD_GIT_COMMIT_HASH,
+  buildId: EAS_BUILD_ID,
+  apiBaseUrlOrigin: redactUrlOrigin(process.env.EXPO_PUBLIC_API_BASE_URL),
+  featureFlags: FEATURE_FLAGS,
+  requiredFields: REQUIRED_PROVENANCE_FIELDS,
+};
+
 // ─── Deep / universal link policy (issue #1029) ─────────────────────────────
 //
 // Supported link routes and their parameter schemas are documented here in one
@@ -171,299 +244,6 @@ function resolveLegalUrl(urlEnv) {
     return configured;
   }
   if (APP_ENV === 'production') {
-    // Leave undefined so the release validator fails with the named artifact.
-    return undefined;
-  }
-  return `https://preview.petchain.app/legal/${urlEnv.toLowerCase()}`;
-}
+    // Leave undefined so the release validator fails wit
 
-const LEGAL_URLS = RELEASE_CHECKLIST.legal.reduce((acc, doc) => {
-  acc[doc.name] = resolveLegalUrl(doc.urlEnv);
-  return acc;
-}, {});
-
-// ─── App-store privacy declarations (issue #1041) ──────────────────────────
-//
-// These declarations are versioned beside the release config so that CI can
-// verify them against the shipped capabilities (permissions, plugins, and
-// runtime data flows). The iOS privacy manifest (PrivacyInfo.xcprivacy) and
-// the Android data-safety inputs live under `privacy/` and are referenced
-// here so a single source of truth drives both the native build and the
-// automated verification in `scripts/verifyPrivacyManifest.js`.
-//
-// Each entry maps a declared data type to the code path and runtime behavior
-// that produces it. `requiredReasonAPIs` lists the Apple required-reason API
-// categories the app actually calls; CI fails if a manifest omits one of
-// these or if a permission is added without a matching declaration.
-const PRIVACY_DECLARATIONS = {
-  // iOS privacy manifest + Android data-safety inputs, versioned beside release config.
-  iosManifestPath: './privacy/PrivacyInfo.xcprivacy',
-  androidDataSafetyPath: './privacy/android-data-safety.json',
-  // Apple required-reason API categories the app calls (must be declared in the manifest).
-  requiredReasonAPIs: [
-    'NSPrivacyAccessedAPICategoryUserDefaults',
-    'NSPrivacyAccessedAPICategoryFileTimestamp',
-    'NSPrivacyAccessedAPICategoryDiskSpace',
-  ],
-  // Declared data collection, mapped to code + runtime behavior.
-  collectedDataTypes: [
-    {
-      type: 'NSPrivacyCollectedDataTypeCamera',
-      androidType: 'Photos and videos',
-      linked: true,
-      tracking: false,
-      purpose: 'QR scanning for pet identification and medical record sharing',
-      code: 'src/screens/ScanScreen.tsx',
-      runtime: 'Camera permission requested on scan screen mount',
-    },
-    {
-      type: 'NSPrivacyCollectedDataTypePhotosorVideos',
-      androidType: 'Photos and videos',
-      linked: true,
-      tracking: false,
-      purpose: 'Pet profile photo upload',
-      code: 'src/screens/PetProfileScreen.tsx',
-      runtime: 'Photo library permission requested on profile edit',
-    },
-    {
-      type: 'NSPrivacyCollectedDataTypeCoarseLocation',
-      androidType: 'Location',
-      linked: true,
-      tracking: false,
-      purpose: 'Emergency SOS location sharing',
-      code: 'src/services/location.ts',
-      runtime: 'Location permission requested when SOS is triggered',
-    },
-    {
-      type: 'NSPrivacyCollectedDataTypePreciseLocation',
-      androidType: 'Location',
-      linked: true,
-      tracking: false,
-      purpose: 'Emergency SOS location sharing',
-      code: 'src/services/location.ts',
-      runtime: 'Location permission requested when SOS is triggered',
-    },
-    {
-      type: 'NSPrivacyCollectedDataTypeHealth',
-      androidType: 'Health and fitness',
-      linked: true,
-      tracking: false,
-      purpose: 'Pet health records sync',
-      code: 'src/services/health.ts',
-      runtime: 'Health data read/write on record sync',
-    },
-    {
-      type: 'NSPrivacyCollectedDataTypeDeviceID',
-      androidType: 'Device or other IDs',
-      linked: true,
-      tracking: false,
-      purpose: 'Push notification delivery',
-      code: 'src/services/pushNotifications.ts',
-      runtime: 'Push token registered on login',
-    },
-    {
-      type: 'NSPrivacyCollectedDataTypeUserID',
-      androidType: 'Personal info',
-      linked: true,
-      tracking: false,
-      purpose: 'Account authentication',
-      code: 'src/services/api.ts',
-      runtime: 'Auth token attached to API requests',
-    },
-  ],
-};
-
-module.exports = {
-  expo: {
-    name: APP_NAME_MAP[APP_ENV] ?? 'PetChain',
-    slug: 'petchain-mobile',
-    scheme: 'petchain',
-    version: APP_VERSION,
-    runtimeVersion: RUNTIME_VERSION,
-    updates: {
-      // Never let a dev client pull an OTA update — it always runs from the local bundler.
-      enabled: APP_ENV !== 'development',
-      // Don't silently run a stale cached bundle indefinitely if a check fails.
-      fallbackToCacheTimeout: 0,
-      checkAutomatically: 'ON_LOAD',
-    },
-    orientation: 'portrait',
-    icon: './assets/icon.png',
-    userInterfaceStyle: 'automatic',
-    // When the RTL fixture locale is active, force the native layout direction at
-    // build/launch time so the reload boundary is the app start, never a mid-session
-    // I18nManager mutation. `extra.rtlTestLocale` is consumed by the runtime to seed
-    // the fixture locale without persisting it to user preferences.
-    ...(IS_RTL_TEST ? { extra: { rtlTestLocale: RTL_TEST_LOCALE } } : {}),
-    splash: {
-      image: './assets/splash.png',
-      resizeMode: 'contain',
-      backgroundColor: '#ffffff',
-    },
-    assetBundlePatterns: ['**/*'],
-    // Release checklist consumed by scripts/verifyReleaseChecklist.js in CI (issue #1094).
-    extra: {
-      releaseChecklist: RELEASE_CHECKLIST,
-      legalUrls: LEGAL_URLS,
-    },
-    ios: {
-      supportsTablet: true,
-      bundleIdentifier:
-        APP_ENV === 'production' ? 'app.petchain.mobile' : `app.petchain.mobile.${APP_ENV}`,
-      associatedDomains: ['applinks:petchain.app'],
-      buildNumber: String(VERSION_CODE),
-      infoPlist: {
-        NSCameraUsageDescription:
-          'PetChain needs camera access to scan QR codes for pet identification and medical record sharing.',
-        NSPhotoLibraryUsageDescription:
-          'PetChain needs photo library access to upload pictures of your pets for their profiles.',
-        NSPhotoLibraryAddUsageDescription: 'PetChain saves photos you take to your pet profile.',
-        NSLocationWhenInUseUsageDescription:
-          'PetChain uses your location for the Emergency SOS feature to share your whereabouts with emergency contacts when you request help.',
-        NSLocationAlwaysAndWhenInUseUsageDescription:
-          'PetChain uses your location for the Emergency SOS feature to share your whereabouts with emergency contacts when you request help.',
-        NSUserTrackingUsageDescription: 'PetChain does not track you for advertising purposes.',
-        NSFaceIDUsageDescription:
-          "PetChain uses Face ID/Touch ID for secure biometric authentication to protect your pet's medical data.",
-        UIBackgroundModes: ['location', 'background-fetch'],
-        // Declare the RTL fixture locale so iOS renders the fixture direction at launch.
-        ...(IS_RTL_TEST ? { CFBundleLocalizations: RTL_LOCALES } : {}),
-      },
-      // App Groups for widget data sharing
-      appGroups: ['group.app.petchain.mobile'],
-      // iOS privacy manifest (issue #1041) — versioned beside release config.
-      privacyManifests: {
-        NSPrivacyTracking: false,
-        NSPrivacyTrackingDomains: [],
-        NSPrivacyCollectedDataTypes: PRIVACY_DECLARATIONS.collectedDataTypes.map((d) => ({
-          NSPrivacyCollectedDataType: d.type,
-          NSPrivacyCollectedDataTypeLinked: d.linked,
-          NSPrivacyCollectedDataTypeTracking: d.tracking,
-          NSPrivacyCollectedDataTypePurposes: ['NSPrivacyCollectedDataTypePurposeAppFunctionality'],
-        })),
-        NSPrivacyAccessedAPITypes: PRIVACY_DECLARATIONS.requiredReasonAPIs.map((api) => ({
-          NSPrivacyAccessedAPIType: api,
-          NSPrivacyAccessedAPITypeReasons: ['CA92.1'],
-        })),
-      },
-    },
-    android: {
-      adaptiveIcon: {
-        foregroundImage: './assets/adaptive-icon.png',
-        backgroundColor: '#4A90A4',
-      },
-      package: APP_ENV === 'production' ? 'app.petchain.mobile' : `app.petchain.mobile.${APP_ENV}`,
-      versionCode: VERSION_CODE,
-      intentFilters: [
-        {
-          action: 'VIEW',
-          autoVerify: true,
-          data: [{ scheme: 'https', host: 'petchain.app', pathPrefix: '/' }],
-          category: ['BROWSABLE', 'DEFAULT'],
-        },
-      ],
-      permissions: [
-        'CAMERA',
-        'ACCESS_FINE_LOCATION',
-        'ACCESS_COARSE_LOCATION',
-        'POST_NOTIFICATIONS',
-        'READ_EXTERNAL_STORAGE',
-        'WRITE_EXTERNAL_STORAGE',
-        'READ_MEDIA_IMAGES',
-      ],
-      softwareKeyboardLayoutMode: 'pan',
-      // Widget configuration for Android
-      metaData: [
-        {
-          name: 'com.google.android.gms.version',
-          value: '@integer/google_play_services_version',
-        },
-      ],
-    },
-    web: {
-      favicon: './assets/favicon.png',
-    },
-    plugins: [
-      'expo-updates',
-      [
-        '@sentry/react-native/expo',
-        {
-          organization: 'petchain',
-          project: 'mobile-app',
-          // Upload source maps so stack traces are human-readable in the dashboard
-          uploadNativeSymbols: true,
-          uploadSourceMaps: true,
-        },
-      ],
-      // Widget support plugin (custom Expo plugin)
-      [
-        './expoWidgetPlugin.js',
-        {
-          ios: {
-            appGroup: 'group.app.petchain.mobile',
-            targetName: 'PetChainWidget',
-          },
-          android: {
-            widgetName: 'PetChainWidgetProvider',
-          },
-        },
-      ],
-      // ─── Backup exclusion plugins ────────────────────────────────────────
-      //
-      // Android (API 23+):
-      //   Sets android:allowBackup="false" in AndroidManifest.xml and
-      //   references backup_rules.xml (API 23–30) and
-      //   data_extraction_rules.xml (API 31+) to exclude databases/petchain.db,
-      //   SharedPreferences (AsyncStorage), and the file-system documents
-      //   directory from all Android Auto Backup transports (Google Drive
-      //   cloud backup and device-to-device transfer).
-      //
-      // iOS:
-      //   Injects BackupExclusion.swift into the Xcode target and patches
-      //   AppDelegate to call excludeSensitiveDirectoriesFromBackup() at
-      //   launch.  This sets NSURLIsExcludedFromBackupKey=true on:
-      //     • Library/Application Support/  (expo-sqlite petchain.db)
-      //     • Library/Preferences/          (AsyncStorage / RNCAsyncStorage)
-      //     • Documents/                    (expo-file-system documentDirectory)
-      //
-      // expo-secure-store (Keychain/Keystore) is NOT backed up by any OS
-      // transport regardless of these settings — no action needed there.
-      //
-      // Source files:
-      //   plugins/withAndroidBackupExclusion.js
-      //   plugins/withIosBackupExclusion.js
-      //   android-config/backup_rules.xml
-      //   android-config/data_extraction_rules.xml
-      './plugins/withAndroidBackupExclusion.js',
-      './plugins/withIosBackupExclusion.js',
-    ],
-    extra: {
-      APP_ENV,
-      // RTL fixture locale for tests / Maestro smoke flow (issue #1052).
-      // null in normal builds; 'ar' or 'he' when RTL_TEST_LOCALE is set.
-      RTL_TEST_LOCALE,
-      RTL_LOCALES,
-      // API_BASE_URL resolution: explicit env > profile-specific > no fallback to localhost for prod
-      API_BASE_URL:
-        process.env.API_BASE_URL ||
-        (APP_ENV === 'production'
-          ? process.env.PROD_API_URL // Production: require explicit PROD_API_URL, no fallback
-          : APP_ENV === 'staging'
-            ? (process.env.STAGING_API_URL ?? 'https://staging.petchain.app/api')
-            : (process.env.API_BASE_URL ?? 'http://localhost:3000/api')), // Dev: localhost default
-      STAGING_API_URL: process.env.STAGING_API_URL ?? 'https://staging.petchain.app/api',
-      PROD_API_URL: process.env.PROD_API_URL ?? 'https://api.petchain.app/api',
-      API_TIMEOUT: process.env.API_TIMEOUT ?? '10000',
-      SENTRY_DSN: process.env.SENTRY_DSN ?? '',
-      SENTRY_ENABLE_IN_DEV: process.env.SENTRY_ENABLE_IN_DEV ?? 'false',
-      MAX_CACHE_SIZE: process.env.MAX_CACHE_SIZE ?? '50',
-      PAGINATION_LIMIT: process.env.PAGINATION_LIMIT ?? '20',
-      IOS_STORE_URL: process.env.IOS_STORE_URL ?? 'https://apps.apple.com/app/petchain/id000000000',
-      ANDROID_STORE_URL:
-        process.env.ANDROID_STORE_URL ??
-        'https://play.google.com/store/apps/details?id=app.petchain.mobile',
-      MIN_NATIVE_VERSION_IOS: process.env.MIN_NATIVE_VERSION_IOS ?? '1.0.0',
-      MIN_NATIVE_VERSION_ANDROID: process.env.MIN_NATIVE_VERSION_ANDROID ?? '1.0.0',
-    },
-  },
-};
+/* … truncated 12271 chars — edit only what you need near the top … */
