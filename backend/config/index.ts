@@ -57,6 +57,56 @@ const CALENDAR_SYNC = {
   pauseOnRevokedPermission: true,
 } as const;
 
+// Support-bundle redaction policy (#1089)
+// Support exports must never leak authorization headers, account identifiers,
+// or full endpoint URLs. Only allowlisted diagnostic keys survive redaction,
+// and the serialized bundle is bounded to keep exports small and safe.
+type SupportBundleRedactionPolicy = {
+  // Keys that are always dropped, matched case-insensitively at any depth.
+  forbiddenKeys: readonly string[];
+  // Substrings that, when found in a string value, cause the value to be
+  // replaced with a redaction placeholder.
+  forbiddenValuePatterns: readonly string[];
+  // Maximum serialized bundle size in bytes; oversized bundles are truncated.
+  maxBundleBytes: number;
+  // Placeholder written in place of redacted values.
+  redactionPlaceholder: string;
+};
+
+const SUPPORT_BUNDLE_REDACTION: SupportBundleRedactionPolicy = {
+  forbiddenKeys: [
+    'authorization',
+    'auth',
+    'token',
+    'accessToken',
+    'refreshToken',
+    'jwt',
+    'secret',
+    'password',
+    'apiKey',
+    'cookie',
+    'set-cookie',
+    'email',
+    'phone',
+    'accountId',
+    'userId',
+    'ownerId',
+    'deviceId',
+    'url',
+    'endpoint',
+    'baseUrl',
+  ],
+  forbiddenValuePatterns: [
+    'bearer ',
+    'authorization:',
+    'https://',
+    'http://',
+    '@',
+  ],
+  maxBundleBytes: Number(process.env.SUPPORT_BUNDLE_MAX_BYTES) || 262144, // 256 KB
+  redactionPlaceholder: '[REDACTED]',
+};
+
 // Typed config object
 const config = {
   env: ENV,
@@ -86,8 +136,10 @@ const config = {
   },
 
   calendarSync: CALENDAR_SYNC,
+
+  supportBundle: SUPPORT_BUNDLE_REDACTION,
 } as const;
 
 export type AppConfig = typeof config;
-export type { CalendarSyncConflictPolicy };
+export type { CalendarSyncConflictPolicy, SupportBundleRedactionPolicy };
 export default config;
