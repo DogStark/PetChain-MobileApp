@@ -84,6 +84,46 @@ describe('API Integration Tests', () => {
     });
   });
 
+  describe('Sync idempotency', () => {
+    it('replays a matching request and rejects a reused key with a different payload', async () => {
+      const idempotencyKey = `sync-test-${Date.now()}`;
+      const requestBody = {
+        strategy: 'last-write-wins',
+        records: [
+          {
+            id: 'pet:sync-test-1',
+            entityType: 'pet',
+            entityId: 'sync-test-1',
+            action: 'create',
+            payload: { name: 'Test Pet', ownerId },
+            updatedAt: new Date().toISOString(),
+            syncVersion: 1,
+          },
+        ],
+      };
+
+      const first = await request(app)
+        .post('/api/sync/push')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .set('Idempotency-Key', idempotencyKey)
+        .send(requestBody);
+      const replay = await request(app)
+        .post('/api/sync/push')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .set('Idempotency-Key', idempotencyKey)
+        .send(requestBody);
+      const conflict = await request(app)
+        .post('/api/sync/push')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .set('Idempotency-Key', idempotencyKey)
+        .send({ ...requestBody, records: [{ ...requestBody.records[0], payload: { name: 'Changed' } }] });
+
+      expect(first.status).toBe(200);
+      expect(replay.body).toEqual(first.body);
+      expect(conflict.status).toBe(409);
+    });
+  });
+
   describe('User Endpoints', () => {
     describe('GET /api/users/me', () => {
       it('should return current user profile', async () => {
@@ -210,6 +250,20 @@ describe('API Integration Tests', () => {
         expect(response.status).toBe(200);
         expect(response.body.data.id).toBe(petId);
         expect(response.body.data.name).toBe('Fluffy');
+      });
+
+      it('should reject another account before serving a cached pet response', async () => {
+        await request(app).get(`/api/pets/${petId}`).set('Authorization', `Bearer ${ownerToken}`);
+
+        const otherOwnerToken = jwt.sign(
+          { sub: 'owner-2', email: 'other@test.com', role: UserRole.OWNER },
+          secret,
+        );
+        const response = await request(app)
+          .get(`/api/pets/${petId}`)
+          .set('Authorization', `Bearer ${otherOwnerToken}`);
+
+        expect(response.status).toBe(403);
       });
 
       it('should return 404 for non-existent pet', async () => {

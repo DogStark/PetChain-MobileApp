@@ -54,11 +54,16 @@ describe('networkMonitor', () => {
   });
 
   it('should fetch current status', async () => {
-    (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true, type: 'cellular' });
+    (NetInfo.fetch as jest.Mock).mockResolvedValue({
+      isConnected: true,
+      type: 'cellular',
+      details: { isConnectionExpensive: true },
+    });
 
     const status = await networkMonitor.getStatus();
     expect(status.isOnline).toBe(true);
     expect(status.connectionType).toBe('cellular');
+    expect(status.isConnectionExpensive).toBe(true);
   });
 
   it('should unsubscribe and clear callbacks on stop', () => {

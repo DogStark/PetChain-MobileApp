@@ -6,6 +6,8 @@
  */
 import * as SQLite from 'expo-sqlite';
 
+import { initializeLocalDatabase } from './localDB';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type NotificationCategory = 'medication' | 'appointment' | 'sos' | 'system';
@@ -30,11 +32,12 @@ export type NotificationFilter = NotificationCategory | 'all';
 
 // ─── DB setup ─────────────────────────────────────────────────────────────────
 
-const db = SQLite.openDatabaseSync('petchain.db');
+let db: SQLite.SQLiteDatabase;
 
 const SCHEMA_VERSION = 1;
 
 async function ensureTable(): Promise<void> {
+  db = await initializeLocalDatabase();
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS notifications (
       id          TEXT PRIMARY KEY NOT NULL,
