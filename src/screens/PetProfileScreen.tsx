@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   ActivityIndicator,
   Alert,
   Image,
@@ -37,6 +38,17 @@ const PetProfileScreen: React.FC<Props> = ({ petId, onBack }) => {
   const [insights, setInsights] = useState<PetBreedInsights | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+
+  // Tracks the last announced status so loading/empty/error states are only
+  // announced once per transition (avoids duplicate VoiceOver/TalkBack chatter).
+  const lastAnnouncedStatus = useRef<string | null>(null);
+
+  const announceOnce = useCallback((key: string, message: string) => {
+    if (lastAnnouncedStatus.current === key) return;
+    lastAnnouncedStatus.current = key;
+    AccessibilityInfo.announceForAccessibility(message);
+  }, []);
 
   const loadBreedList = useCallback(async () => {
     try {
@@ -53,7 +65,9 @@ const PetProfileScreen: React.FC<Props> = ({ petId, onBack }) => {
       setPet(data);
       setBreedText(data.breed ?? '');
       setPhotoUri(uri);
+      setLoadError(false);
     } catch {
+      setLoadError(true);
       Alert.alert('Error', 'Unable to load pet profile.');
     } finally {
       setLoading(false);
@@ -81,6 +95,21 @@ const PetProfileScreen: React.FC<Props> = ({ petId, onBack }) => {
       }
     })();
   }, [breedText, pet]);
+
+  // Announce loading, error, and ready states exactly once per transition.
+  useEffect(() => {
+    if (loading) {
+      announceOnce('loading', 'Loading pet profile.');
+      return;
+    }
+    if (loadError) {
+      announceOnce('error', 'Unable to load pet profile.');
+      return;
+    }
+    if (pet) {
+      announceOnce('ready', `${pet.name} profile loaded.`);
+    }
+  }, [loading, loadError, pet, announceOnce]);
 
   const updateBreedField = (value: string) => {
     setBreedText(value);
@@ -154,7 +183,12 @@ const PetProfileScreen: React.FC<Props> = ({ petId, onBack }) => {
 
   if (loading || !pet) {
     return (
-      <View style={styles.loadingContainer}>
+      <View
+        style={styles.loadingContainer}
+        accessible
+        accessibilityRole="progressbar"
+        accessibilityLabel="Loading pet profile"
+      >
         <ActivityIndicator size="large" color="#4CAF50" />
       </View>
     );
@@ -169,10 +203,13 @@ const PetProfileScreen: React.FC<Props> = ({ petId, onBack }) => {
             style={styles.backBtn}
             accessibilityRole="button"
             accessibilityLabel="Back"
+            accessibilityHint="Returns to the previous screen"
           >
             <Text style={styles.backText}>‹ Back</Text>
           </TouchableOpacity>
-          <Text style={styles.title}>{pet.name}'s Profile</Text>
+          <Text style={styles.title} accessibilityRole="header">
+            {pet.name}'s Profile
+          </Text>
           <View style={styles.backBtn} />
         </View>
 
@@ -181,10 +218,17 @@ const PetProfileScreen: React.FC<Props> = ({ petId, onBack }) => {
             <Image
               source={{ uri: photoUri }}
               style={styles.photo}
+              accessible
+              accessibilityRole="image"
               accessibilityLabel={`${pet.name} photo`}
             />
           ) : (
-            <View style={[styles.photo, styles.photoPlaceholder]}>
+            <View
+              style={[styles.photo, styles.photoPlaceholder]}
+              accessible={false}
+              importantForAccessibility="no-hide-descendants"
+              accessibilityElementsHidden
+            >
               <Text style={styles.photoEmoji}>🐾</Text>
             </View>
           )}
@@ -197,13 +241,17 @@ const PetProfileScreen: React.FC<Props> = ({ petId, onBack }) => {
             style={styles.detectBtn}
             onPress={detectBreedFromPhoto}
             accessibilityRole="button"
+            accessibilityLabel="Detect breed from photo"
+            accessibilityHint="Suggests a breed based on the current pet photo"
           >
             <Text style={styles.detectBtnText}>Detect Breed from Photo</Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.formCard}>
-          <Text style={styles.sectionTitle}>Breed Selection</Text>
+          <Text style={styles.sectionTitle} accessibilityRole="header">
+            Breed Selection
+          </Text>
           <TextInput
             style={styles.input}
             placeholder="Search or type breed"
@@ -211,6 +259,7 @@ const PetProfileScreen: React.FC<Props> = ({ petId, onBack }) => {
             onChangeText={updateBreedField}
             placeholderTextColor="#999"
             accessibilityLabel="Breed"
+            accessibilityHint="Search or type the pet's breed"
             returnKeyType="done"
           />
           {breedSuggestions.length > 0 && (
@@ -220,6 +269,9 @@ const PetProfileScreen: React.FC<Props> = ({ petId, onBack }) => {
                   key={suggestion}
                   onPress={() => selectBreedSuggestion(suggestion)}
                   style={styles.suggestionChip}
+                  accessibilityRole="button"
+                  accessibilityLabel={suggestion}
+                  accessibilityHint="Selects this breed suggestion"
                 >
                   <Text style={styles.suggestionText}>{suggestion}</Text>
                 </TouchableOpacity>
@@ -231,6 +283,9 @@ const PetProfileScreen: React.FC<Props> = ({ petId, onBack }) => {
             onPress={saveBreedUpdate}
             disabled={saving}
             accessibilityRole="button"
+            accessibilityLabel="Save breed"
+            accessibilityHint="Saves the breed details for this pet"
+            accessibilityState={{ disabled: saving, busy: saving }}
           >
             <Text style={styles.saveBtnText}>{saving ? 'Saving…' : 'Save Breed'}</Text>
           </TouchableOpacity>
@@ -238,12 +293,16 @@ const PetProfileScreen: React.FC<Props> = ({ petId, onBack }) => {
 
         {insights ? (
           <View style={styles.insightsCard}>
-            <Text style={styles.sectionTitle}>Breed Insights</Text>
+            <Text style={styles.sectionTitle} accessibilityRole="header">
+              Breed Insights
+            </Text>
             <Text style={styles.insightText}>Breed: {insights.breedDisplay}</Text>
             <Text style={styles.insightText}>
               Estimated life expectancy: {insights.lifeExpectancyLabel}
             </Text>
-            <Text style={[styles.subTitle, styles.marginTop]}>Common health risks</Text>
+            <Text style={[styles.subTitle, styles.marginTop]} accessibilityRole="header">
+              Common health risks
+            </Text>
             {insights.healthRisks.length > 0 ? (
               insights.healthRisks.map((risk) => (
                 <Text key={risk} style={styles.bullet}>
@@ -253,98 +312,94 @@ const PetProfileScreen: React.FC<Props> = ({ petId, onBack }) => {
             ) : (
               <Text style={styles.bullet}>• No breed-specific risks available.</Text>
             )}
-            <Text style={[styles.subTitle, styles.marginTop]}>Care recommendations</Text>
-            {insights.careRecommendations.map((tip) => (
-              <Text key={tip} style={styles.bullet}>
-                • {tip}
-              </Text>
-            ))}
+            <Text style={[styles.subTitle, styles.marginTop]} accessibilityRole="header">
+              Care recommendations
+            </Text>
           </View>
         ) : null}
-
-        <View style={styles.summaryCard}>
-          <Text style={styles.sectionTitle}>Pet Summary</Text>
-          <Text style={styles.summaryLine}>Species: {pet.species}</Text>
-          <Text style={styles.summaryLine}>
-            Weight: {pet.weightKg ? formatWeight(pet.weightKg) : 'Unknown'}{' '}
-            {pet.weightKg ? weightUnit() : ''}
-          </Text>
-          <Text style={styles.summaryLine}>
-            Born: {pet.dateOfBirth ? formatLocalDate(pet.dateOfBirth) : 'Unknown'}
-          </Text>
-        </View>
       </ScrollView>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  content: { padding: 16 },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  container: { flex: 1, backgroundColor: '#F7F8FA' },
+  content: { padding: 16, paddingBottom: 32 },
+  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   header: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  backBtn: { width: 64 },
+  backText: { color: '#4CAF50', fontSize: 16 },
+  title: { fontSize: 20, fontWeight: '700', color: '#1F2933' },
+  photoCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 16,
     alignItems: 'center',
     marginBottom: 16,
   },
-  backBtn: { padding: 6 },
-  backText: { fontSize: 18, color: '#4CAF50' },
-  title: { fontSize: 20, fontWeight: '700', color: '#1a1a1a' },
-  photoCard: {
-    backgroundColor: '#fff',
+  photo: { width: 120, height: 120, borderRadius: 60 },
+  photoPlaceholder: {
+    backgroundColor: '#EEF2F5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoEmoji: { fontSize: 40 },
+  photoHint: { color: '#52606D', fontSize: 13, marginTop: 12, textAlign: 'center' },
+  detectBtn: {
+    marginTop: 12,
+    backgroundColor: '#4CAF50',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+  },
+  detectBtnText: { color: '#FFFFFF', fontWeight: '600' },
+  formCard: {
+    backgroundColor: '#FFFFFF',
     borderRadius: 12,
     padding: 16,
     marginBottom: 16,
-    alignItems: 'center',
   },
-  photo: { width: 140, height: 140, borderRadius: 70, marginBottom: 12 },
-  photoPlaceholder: { backgroundColor: '#e8f5e9', justifyContent: 'center', alignItems: 'center' },
-  photoEmoji: { fontSize: 48 },
-  photoHint: { color: '#666', textAlign: 'center', marginBottom: 12 },
-  detectBtn: {
-    backgroundColor: '#4CAF50',
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-  },
-  detectBtnText: { color: '#fff', fontWeight: '700' },
-  formCard: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 16 },
-  sectionTitle: { fontSize: 16, fontWeight: '700', marginBottom: 10, color: '#1a1a1a' },
+  sectionTitle: { fontSize: 16, fontWeight: '700', color: '#1F2933', marginBottom: 12 },
   input: {
     borderWidth: 1,
-    borderColor: '#d9d9d9',
-    borderRadius: 10,
-    padding: 12,
-    fontSize: 15,
-    color: '#1a1a1a',
-  },
-  suggestionsCard: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
-  suggestionChip: {
-    backgroundColor: '#f1f8e9',
+    borderColor: '#D9E2EC',
+    borderRadius: 8,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    marginRight: 8,
-    marginBottom: 8,
+    paddingVertical: 10,
+    color: '#1F2933',
   },
-  suggestionText: { color: '#33691e', fontWeight: '600' },
+  suggestionsCard: { marginTop: 8 },
+  suggestionChip: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#EEF2F5',
+    borderRadius: 8,
+    marginBottom: 6,
+  },
+  suggestionText: { color: '#1F2933' },
   saveBtn: {
-    marginTop: 16,
+    marginTop: 12,
     backgroundColor: '#4CAF50',
     paddingVertical: 12,
-    borderRadius: 10,
+    borderRadius: 8,
     alignItems: 'center',
   },
   saveBtnDisabled: { opacity: 0.6 },
-  saveBtnText: { color: '#fff', fontWeight: '700' },
-  insightsCard: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 16 },
-  insightText: { color: '#333', fontSize: 14, marginBottom: 8 },
-  subTitle: { color: '#666', fontWeight: '700', marginTop: 12, marginBottom: 8 },
-  bullet: { color: '#444', fontSize: 14, marginBottom: 6, marginLeft: 8 },
+  saveBtnText: { color: '#FFFFFF', fontWeight: '600' },
+  insightsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 16,
+  },
+  insightText: { color: '#1F2933', marginBottom: 6 },
+  subTitle: { fontSize: 14, fontWeight: '600', color: '#1F2933' },
   marginTop: { marginTop: 12 },
-  summaryCard: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 32 },
-  summaryLine: { color: '#444', fontSize: 14, marginBottom: 8 },
+  bullet: { color: '#52606D', marginTop: 4 },
 });
 
 export default PetProfileScreen;
