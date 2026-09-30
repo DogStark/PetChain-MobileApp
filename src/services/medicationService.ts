@@ -11,6 +11,30 @@ import type { Medication, RefillStatus } from '../models/Medication';
 
 export type { Medication, RefillStatus };
 
+/**
+ * Explicit dose state machine (#1049).
+ *
+ * A scheduled dose moves through a small, well-defined set of states so a
+ * reminder can never be silently dismissed and caregivers can always tell
+ * whether follow-up is needed:
+ *
+ *   pending ──taken──▶ taken
+ *      │  └──skipped──▶ skipped (optional reason)
+ *      │  └──snoozed──▶ snoozed ──(snooze expires)──▶ pending
+ *      └──(grace period expires)──▶ missed
+ *
+ * `missed` is only ever produced by {@link resolveDoseState} once the grace
+ * period has elapsed — never by a user action — so a dose cannot be marked
+ * missed before it is actually overdue.
+ */
+export type DoseState = 'pending' | 'taken' | 'skipped' | 'snoozed' | 'missed';
+
+/** Default grace period before an unacknowledged dose becomes `missed`. */
+export const DEFAULT_GRACE_PERIOD_MS = 30 * 60 * 1000;
+
+/** Default snooze duration applied when a dose is snoozed. */
+export const DEFAULT_SNOOZE_MS = 10 * 60 * 1000;
+
 export interface DoseLog {
   id: string;
   medicationId: string;
@@ -18,6 +42,21 @@ export interface DoseLog {
   skipped?: boolean;
   scheduledFor?: string;
   notes?: string;
+  /**
+   * Stable identity for the scheduled dose this log fulfils. Derived from the
+   * medication ID and the scheduled instant so the same dose resolves to the
+   * same ID regardless of entry point (manual tap, notification action, or
+   * offline-queue replay). Used to make dose logging idempotent.
+   */
+  scheduledDoseId?: string;
+  /** Explicit state of the dose (#1049). Defaults to `taken` for legacy logs. */
+  state?: DoseState;
+  /** Optional free-text reason supplied when a dose is skipped (#1049). */
+  skipReason?: string;
+  /** Instant the dose was snoozed until, when `state === 'snoozed'` (#1049). */
+  snoozedUntil?: string;
+  /** Instant the dose was acknowledged (taken/skipped/snoozed) (#1049). */
+  acknowledgedAt?: string;
 }
 
 export interface MedicationAdherence {
@@ -46,6 +85,253 @@ export async function getDoseLogs(): Promise<DoseLog[]> {
 
 export async function logDose(log: DoseLog): Promise<void> {
   await dbAddDoseLog(log);
+}
+
+// ── Idempotent dose logging (#958) ───────────────────────────────────────────
+
+/**
+ * Deterministic identity for a single scheduled dose.
+ *
+ * The same medication + scheduled instant always yields the same ID, so a dose
+ * marked from a notification action, a manual tap, and a replayed offline-queue
+ * entry all collapse onto one record instead of being counted 2–3 times.
+ *
+ * The scheduled time is snapped to a whole minute in UTC so sub-minute clock
+ * skew between the notification trigger and the queue flush does not fork the
+ * identity. This is also the key used for conflict-safe server sync.
+ */
+export function scheduledDoseId(medicationId: string, scheduledFor: string | Date): string {
+  const ms =
+    scheduledFor instanceof Date ? scheduledFor.getTime() : new Date(scheduledFor).getTime();
+  if (Number.isNaN(ms)) {
+    throw new Error('scheduledDoseId: invalid scheduledFor timestamp');
+  }
+  const minuteIso = new Date(Math.floor(ms / 60_000) * 60_000).toISOString();
+  return `dose:${medicationId}:${minuteIso}`;
+}
+
+/** Resolve the scheduled-dose identity for a log, deriving it if not stored. */
+function resolveDoseId(log: Pick<DoseLog, 'scheduledDoseId' | 'medicationId' | 'scheduledFor' | 'takenAt'>): string {
+  return log.scheduledDoseId ?? scheduledDoseId(log.medicationId, log.scheduledFor ?? log.takenAt);
+}
+
+/** True when `logs` already contains an entry for the same scheduled dose. */
+export function isDoseAlreadyLogged(log: DoseLog, logs: DoseLog[]): boolean {
+  const key = resolveDoseId(log);
+  return logs.some((existing) => resolveDoseId(existing) === key);
+}
+
+/**
+ * Conflict-safe dose logging. Stamps a stable `scheduledDoseId` and only writes
+ * when no log for that dose exists yet. Returns the record that is authoritative
+ * for the dose — the pre-existing one on a duplicate, the freshly written one
+ * otherwise — plus a `duplicate` flag so callers and the server can converge on
+ * a single record.
+ *
+ * Safe to call repeatedly from offline-queue replay and notification actions.
+ */
+export async function logDoseIdempotent(
+  log: DoseLog,
+): Promise<{ log: DoseLog; duplicate: boolean }> {
+  const withId: DoseLog = { ...log, scheduledDoseId: resolveDoseId(log) };
+  const existing = await getDoseLogs();
+  const match = existing.find((l) => resolveDoseId(l) === withId.scheduledDoseId);
+  if (match) {
+    return { log: match, duplicate: true };
+  }
+  await dbAddDoseLog(withId);
+  return { log: withId, duplicate: false };
+}
+
+// ── Dose state machine (#1049) ───────────────────────────────────────────────
+
+/**
+ * Resolve the current state of a scheduled dose from its logs.
+ *
+ * `missed` is derived, not stored: it is returned only once the grace period
+ * after the scheduled instant has elapsed without an acknowledgement. A
+ * `snoozed` log keeps the dose out of `missed` until the snooze window itself
+ * expires, at which point it falls back to `pending` (and can later become
+ * `missed`).
+ */
+export function resolveDoseState(
+  medicationId: string,
+  scheduledFor: string | Date,
+  logs: DoseLog[],
+  now: Date = new Date(),
+  gracePeriodMs: number = DEFAULT_GRACE_PERIOD_MS,
+): DoseState {
+  const scheduledMs =
+    scheduledFor instanceof Date ? scheduledFor.getTime() : new Date(scheduledFor).getTime();
+  if (Number.isNaN(scheduledMs)) {
+    throw new Error('resolveDoseState: invalid scheduledFor timestamp');
+  }
+  const key = scheduledDoseId(medicationId, scheduledMs);
+  const match = logs.find((log) => resolveDoseId(log) === key);
+
+  if (match) {
+    const state = match.state ?? (match.skipped ? 'skipped' : 'taken');
+    if (state === 'snoozed') {
+      const until = match.snoozedUntil ? new Date(match.snoozedUntil).getTime() : NaN;
+      if (!Number.isNaN(until) && until > now.getTime()) return 'snoozed';
+      // Snooze window elapsed without acknowledgement — fall through to the
+      // overdue check so the dose can still escalate to `missed`.
+    } else {
+      return state;
+    }
+  }
+
+  return scheduledMs + gracePeriodMs < now.getTime() ? 'missed' : 'pending';
+}
+
+/**
+ * Apply a dose transition idempotently.
+ *
+ * Replaying the same action (notification tap, offline-queue flush) for the
+ * same scheduled dose returns the existing record with `duplicate: true`
+ * instead of appending a second history entry. The scheduled occurrence id is
+ * preserved across every transition for reconciliation.
+ */
+export async function transitionDose(
+  medicationId: string,
+  scheduledFor: string | Date,
+  next: Exclude<DoseState, 'pending' | 'missed'>,
+  options: { skipReason?: string; snoozeMs?: number; notes?: string; now?: Date } = {},
+): Promise<{ log: DoseLog; duplicate: boolean; state: DoseState }> {
+  const now = options.now ?? new Date();
+  const scheduledIso =
+    scheduledFor instanceof Date ? scheduledFor.toISOString() : new Date(scheduledFor).toISOString();
+  const doseId = scheduledDoseId(medicationId, scheduledIso);
+
+  const existing = await getDoseLogs();
+  const match = existing.find((l) => resolveDoseId(l) === doseId);
+  if (match) {
+    return { log: match, duplicate: true, state: match.state ?? (match.skipped ? 'skipped' : 'taken') };
+  }
+
+  const log: DoseLog = {
+    id: doseId,
+    medicationId,
+    scheduledFor: scheduledIso,
+    scheduledDoseId: doseId,
+    takenAt: now.toISOString(),
+    acknowledgedAt: now.toISOString(),
+    state: next,
+    skipped: next === 'skipped',
+    skipReason: next === 'skipped' ? options.skipReason : undefined,
+    snoozedUntil:
+      next === 'snoozed'
+        ? new Date(now.getTime() + (options.snoozeMs ?? DEFAULT_SNOOZE_MS)).toISOString()
+        : undefined,
+    notes: options.notes,
+  };
+
+  await dbAddDoseLog(log);
+  return { log, duplicate: false, state: next };
+}
+
+/**
+ * Escalate overdue doses to `missed` by writing a missed log for each dose
+ * whose grace period has expired without acknowledgement. Idempotent: doses
+ * that already have a log are skipped, so repeated sweeps never duplicate
+ * history. Returns the missed logs that were newly written.
+ */
+export async function escalateMissedDoses(
+  medications: Medication[],
+  fromDate: Date,
+  toDate: Date,
+  now: Date = new Date(),
+  gracePeriodMs: number = DEFAULT_GRACE_PERIOD_MS,
+): Promise<DoseLog[]> {
+  const logs = await getDoseLogs();
+  const written: DoseLog[] = [];
+  for (const med of medications) {
+    for (const doseTime of getScheduleForRange(med, fromDate, toDate)) {
+      if (resolveDoseState(med.id, doseTime, logs, now, gracePeriodMs) !== 'missed') continue;
+      const doseId = scheduledDoseId(med.id, doseTime);
+      if (logs.some((l) => resolveDoseId(l) === doseId)) continue;
+      const log: DoseLog = {
+        id: doseId,
+        medicationId: med.id,
+        scheduledFor: doseTime.toISOString(),
+        scheduledDoseId: doseId,
+        takenAt: doseTime.toISOString(),
+        state: 'missed',
+      };
+      await dbAddDoseLog(log);
+      logs.push(log);
+      written.push(log);
+    }
+  }
+  return written;
+}
+
+// ── Timezone-safe schedule reconciliation (#957) ─────────────────────────────
+
+export interface ScheduledDose {
+  /** OS notification identifier, when this dose is already scheduled. */
+  notificationId?: string;
+  medicationId: string;
+  /** Absolute instant the dose is due (Date or ISO string). */
+  fireDate: Date | string;
+}
+
+/**
+ * Identity of a scheduled dose as an absolute UTC instant (snapped to the
+ * minute). Editing a schedule or crossing a timezone — including DST
+ * transitions and overnight doses — must not change this key for a dose still
+ * due at the same real-world moment, so reconciliation drops duplicates instead
+ * of stacking overlapping local notifications.
+ */
+export function doseIdentityKey(dose: ScheduledDose): string {
+  const ms = dose.fireDate instanceof Date ? dose.fireDate.getTime() : new Date(dose.fireDate).getTime();
+  if (Number.isNaN(ms)) {
+    throw new Error('doseIdentityKey: invalid fireDate');
+  }
+  const minuteIso = new Date(Math.floor(ms / 60_000) * 60_000).toISOString();
+  return `${dose.medicationId}@${minuteIso}`;
+}
+
+/**
+ * Reconcile a freshly-computed desired schedule against what is already
+ * scheduled with the OS, keyed by dose identity.
+ *
+ * @returns `toCancel` — notification IDs that are stale or exact duplicates;
+ *          `toSchedule` — desired doses not yet scheduled;
+ *          `keep` — notification IDs that already match a desired dose.
+ */
+export function reconcileDoseSchedules(
+  existing: ScheduledDose[],
+  desired: ScheduledDose[],
+): { toCancel: string[]; toSchedule: ScheduledDose[]; keep: string[] } {
+  const existingByKey = new Map<string, ScheduledDose[]>();
+  for (const dose of existing) {
+    const key = doseIdentityKey(dose);
+    const group = existingByKey.get(key);
+    if (group) group.push(dose);
+    else existingByKey.set(key, [dose]);
+  }
+
+  const desiredKeys = new Set(desired.map(doseIdentityKey));
+  const toCancel: string[] = [];
+  const keep: string[] = [];
+
+  for (const [key, group] of existingByKey) {
+    const [first, ...duplicates] = group;
+    for (const dup of duplicates) {
+      if (dup.notificationId) toCancel.push(dup.notificationId);
+    }
+    if (desiredKeys.has(key)) {
+      if (first.notificationId) keep.push(first.notificationId);
+    } else if (first.notificationId) {
+      toCancel.push(first.notificationId);
+    }
+  }
+
+  const existingKeys = new Set(existing.map(doseIdentityKey));
+  const toSchedule = desired.filter((dose) => !existingKeys.has(doseIdentityKey(dose)));
+
+  return { toCancel, toSchedule, keep };
 }
 
 export function getDoseStatus(
@@ -91,279 +377,3 @@ export function calculateAdherence(
 export function getLowRefillMedications(medications: Medication[], threshold = 0.2): Medication[] {
   return medications.filter(
     (med) =>
-      med.remainingPills !== undefined &&
-      med.totalPills !== undefined &&
-      med.totalPills > 0 &&
-      med.remainingPills <= med.totalPills * threshold,
-  );
-}
-
-export function getMedicationEndDate(med: Medication): Date | null {
-  if (!med.endDate) return null;
-  const end = new Date(med.endDate);
-  return Number.isNaN(end.getTime()) ? null : end;
-}
-
-export function isMedicationActive(med: Medication, date = new Date()): boolean {
-  const now = date;
-  const start = new Date(med.startDate);
-  if (Number.isNaN(start.getTime()) || now < start) return false;
-  const end = getMedicationEndDate(med);
-  if (end && now > end) return false;
-  return med.status !== 'paused' && med.status !== 'discontinued';
-}
-
-export function getScheduleForRange(med: Medication, fromDate: Date, toDate: Date): Date[] {
-  const times: Date[] = [];
-  const start = new Date(med.startDate);
-  if (Number.isNaN(start.getTime()) || fromDate > toDate) return times;
-
-  const end = getMedicationEndDate(med);
-  if (end && fromDate > end) return times;
-
-  const intervalMs = med.frequency * 60 * 60 * 1000;
-  if (intervalMs <= 0) return times;
-
-  if (toDate < start) return times;
-
-  let cursor = new Date(start);
-  if (cursor < fromDate) {
-    const diff = fromDate.getTime() - cursor.getTime();
-    const steps = Math.ceil(diff / intervalMs);
-    cursor = new Date(cursor.getTime() + steps * intervalMs);
-  }
-
-  const lastDate = end && end < toDate ? end : toDate;
-  while (cursor <= lastDate) {
-    if (cursor >= fromDate) {
-      times.push(new Date(cursor));
-    }
-    cursor = new Date(cursor.getTime() + intervalMs);
-  }
-
-  return times;
-}
-
-export function getDaySchedule(med: Medication, date: Date): Date[] {
-  const dayStart = new Date(date);
-  dayStart.setHours(0, 0, 0, 0);
-  const dayEnd = new Date(date);
-  dayEnd.setHours(23, 59, 59, 999);
-  return getScheduleForRange(med, dayStart, dayEnd);
-}
-
-export function getUpcomingDoseTimes(med: Medication, days = 7, fromDate = new Date()): Date[] {
-  const windowEnd = new Date(fromDate);
-  windowEnd.setDate(windowEnd.getDate() + days);
-  return getScheduleForRange(med, fromDate, windowEnd);
-}
-
-// ── Refill estimation ─────────────────────────────────────────────────────────
-
-/**
- * Compute how many doses per day a medication requires based on its frequency
- * (hours between doses). Returns a positive number; minimum 0.01 to avoid
- * divide-by-zero when frequency is unreasonably large.
- */
-export function computeDosesPerDay(frequencyHours: number): number {
-  if (frequencyHours <= 0) return 1;
-  return Math.max(0.01, 24 / frequencyHours);
-}
-
-/**
- * Estimate the date when the current supply will run out.
- *
- * @param supply         Number of doses/pills currently on hand.
- * @param frequencyHours Hours between each dose.
- * @param fromDate       Reference date (defaults to now).
- * @returns ISO string of the estimated run-out date, or null if inputs are invalid.
- */
-export function estimateRunOutDate(
-  supply: number,
-  frequencyHours: number,
-  fromDate: Date = new Date(),
-): string | null {
-  if (supply <= 0 || frequencyHours <= 0) return null;
-  const dosesPerDay = computeDosesPerDay(frequencyHours);
-  const daysLeft = supply / dosesPerDay;
-  const runOut = new Date(fromDate.getTime() + daysLeft * 24 * 60 * 60 * 1000);
-  return runOut.toISOString();
-}
-
-/**
- * Derive the human-readable refill status from the estimated run-out date.
- *
- * Thresholds:
- *  - out     : 0 days remaining
- *  - urgent  : ≤ 3 days remaining
- *  - warning : ≤ 7 days remaining
- *  - ok      : > 7 days remaining
- *  - unknown : no supply information
- */
-export function getRefillStatus(med: Medication, now: Date = new Date()): RefillStatus {
-  const supply = med.currentSupply ?? med.remainingPills;
-  if (supply === undefined || supply === null) return 'unknown';
-  if (supply <= 0) return 'out';
-
-  const runOutIso = med.estimatedRunOutDate ?? estimateRunOutDate(supply, med.frequency);
-  if (!runOutIso) return 'unknown';
-
-  const runOut = new Date(runOutIso);
-  const daysLeft = (runOut.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
-
-  if (daysLeft <= 0) return 'out';
-  if (daysLeft <= 3) return 'urgent';
-  if (daysLeft <= 7) return 'warning';
-  return 'ok';
-}
-
-/**
- * Recalculate the estimated run-out date for a medication and persist it back
- * to the DB.  Should be called after every dose log or supply update.
- */
-export async function refreshRunOutDate(med: Medication): Promise<Medication> {
-  const supply = med.currentSupply ?? med.remainingPills;
-  const runOutIso =
-    supply !== undefined && supply > 0 ? estimateRunOutDate(supply, med.frequency) : undefined;
-
-  const updated: Medication = {
-    ...med,
-    estimatedRunOutDate: runOutIso ?? undefined,
-    dosesPerDay: computeDosesPerDay(med.frequency),
-  };
-  await upsertMedication(updated);
-  return updated;
-}
-
-// ── Refill push notifications ─────────────────────────────────────────────────
-
-/**
- * Cancel any previously-scheduled refill reminder notifications for a
- * medication so we don't send stale alerts after a supply update.
- */
-async function cancelRefillNotifications(med: Medication): Promise<void> {
-  if (!med.refillNotificationIds?.length) return;
-  await Promise.all(
-    med.refillNotificationIds.map((id) =>
-      Notifications.cancelScheduledNotificationAsync(id).catch(() => {}),
-    ),
-  );
-}
-
-/**
- * Schedule push notifications 7 days and 3 days before the estimated run-out
- * date.  Previous refill reminders for this medication are cancelled first.
- *
- * @returns Array of scheduled notification IDs (empty if nothing was scheduled).
- */
-export async function scheduleRefillNotifications(med: Medication): Promise<string[]> {
-  await cancelRefillNotifications(med);
-
-  const supply = med.currentSupply ?? med.remainingPills;
-  if (supply === undefined || supply <= 0) return [];
-
-  const runOutIso = med.estimatedRunOutDate ?? estimateRunOutDate(supply, med.frequency);
-  if (!runOutIso) return [];
-
-  const runOut = new Date(runOutIso);
-  const now = new Date();
-  const notificationIds: string[] = [];
-
-  for (const leadDays of [7, 3]) {
-    const triggerDate = new Date(runOut);
-    triggerDate.setDate(runOut.getDate() - leadDays);
-    triggerDate.setHours(9, 0, 0, 0); // 9 AM on the reminder day
-
-    if (triggerDate <= now) continue; // already past, skip
-
-    try {
-      const id = await Notifications.scheduleNotificationAsync({
-        content: {
-          title: '💊 Refill Reminder',
-          body:
-            leadDays === 7
-              ? `${med.name} will run out in about 7 days. Time to request a refill!`
-              : `⚠️ ${med.name} supply is critically low — runs out in ~3 days!`,
-          sound: 'default',
-          data: {
-            type: 'medication',
-            subType: 'refill',
-            medicationId: med.id,
-            leadDays,
-            estimatedRunOutDate: runOutIso,
-          },
-          categoryIdentifier: 'medication',
-        },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.DATE,
-          date: triggerDate,
-        },
-      });
-      notificationIds.push(id);
-    } catch {
-      // Non-fatal — scheduling may fail in Expo Go without native build
-    }
-  }
-
-  return notificationIds;
-}
-
-/**
- * Full refill-reminder pipeline:
- *  1. Recalculate estimated run-out date.
- *  2. Cancel stale refill notifications.
- *  3. Schedule new notifications at 7-day and 3-day lead times.
- *  4. Persist the updated medication (with new notification IDs).
- *
- * @returns Updated medication object.
- */
-export async function syncRefillReminders(med: Medication): Promise<Medication> {
-  const withRunOut = await refreshRunOutDate(med);
-  const notificationIds = await scheduleRefillNotifications(withRunOut);
-
-  const final: Medication = {
-    ...withRunOut,
-    refillNotificationIds: notificationIds,
-  };
-  await upsertMedication(final);
-  return final;
-}
-
-// ── Refill completion ─────────────────────────────────────────────────────────
-
-/**
- * Mark a medication refill as completed: reset the supply count, update
- * lastRefillDate, recalculate the run-out date, and reschedule notifications.
- *
- * @param med          The medication to update.
- * @param newSupply    Number of doses/pills after refill.
- * @returns Updated medication.
- */
-export async function markRefillComplete(med: Medication, newSupply: number): Promise<Medication> {
-  const now = new Date().toISOString();
-  const updated: Medication = {
-    ...med,
-    currentSupply: newSupply,
-    remainingPills: newSupply, // keep legacy field in sync
-    lastRefillDate: now,
-  };
-  return syncRefillReminders(updated);
-}
-
-// ── Legacy refill reminder (kept for backwards compat) ─────────────────────
-
-export async function scheduleRefillReminder(med: Medication): Promise<void> {
-  if (!med.refillDate) return;
-  const trigger = new Date(med.refillDate);
-  trigger.setHours(9, 0, 0, 0); // 9 AM on refill day
-  if (trigger <= new Date()) return;
-
-  await Notifications.scheduleNotificationAsync({
-    content: {
-      title: 'Refill Reminder',
-      body: `Time to refill ${med.name}`,
-      data: { medicationId: med.id },
-    },
-    trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: trigger },
-  });
-}

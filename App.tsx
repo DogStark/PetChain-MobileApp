@@ -19,13 +19,20 @@ import {
   enableScreenCapturePrevention,
   loadLockTimeout,
   getLockTimeoutMs,
+  persistAppBackground,
+  persistAppForeground,
+  getElapsedSinceBackground,
+  clearPersistedTimestamps,
 } from './src/services/appLockService';
 import { registerBackgroundMedicationTask } from './src/services/backgroundTaskService';
+import { validateDeepLink } from './src/services/deepLinkService';
 import errorTracking from './src/services/errorTracking';
+import navigationQueueService from './src/services/navigationQueueService';
 import {
   registerNotificationActions,
   watchNotificationActions,
 } from './src/services/notificationService';
+import { reconcilePendingStellarTransactions } from './src/services/stellarStartup';
 import updateService from './src/services/updateService';
 import { checkAppVersion } from './src/services/versionCheckService';
 import { initializeWidgetService } from './src/services/widgetService';
@@ -35,11 +42,50 @@ const isStorybookEnabled = process.env.STORYBOOK_ENABLED === 'true';
 // Initialise Sentry before the first render
 errorTracking.init();
 
-// Apply RTL direction based on the active language at startup
+// Apply RTL direction based on the active language at startup.
+//
+// I18nManager.forceRTL only takes effect after a full app reload, so we apply
+// it here — at the controlled startup boundary — and never mid-session. If the
+// persisted direction no longer matches the active language (e.g. the user
+// switched to Arabic/Hebrew), we flip the flag and let the next launch pick it
+// up. Persisted preferences are untouched, so switching direction can never
+// corrupt stored settings.
 const startupRTL = isRTL(i18n.language);
+I18nManager.allowRTL(true);
 if (I18nManager.isRTL !== startupRTL) {
   I18nManager.forceRTL(startupRTL);
 }
+
+// Issue #1037: clinical forms must scale to the supported platform font-size
+// range without clipping dosage, consent, or emergency values. React Native
+// caps text scaling at `maxFontSizeMultiplier`; leaving it unbounded lets
+// accessibility sizes overflow fixed-height controls. We clamp the app-wide
+// default here so every clinical form inherits a safe ceiling, while still
+// honouring the user's preferred size up to that ceiling.
+const MAX_FONT_SIZE_MULTIPLIER = 2;
+if (typeof Text !== 'undefined' && Text.defaultProps == null) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (Text as any).defaultProps = {};
+}
+if (typeof Text !== 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (Text as any).defaultProps = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ...((Text as any).defaultProps ?? {}),
+    maxFontSizeMultiplier: MAX_FONT_SIZE_MULTIPLIER,
+    allowFontScaling: true,
+  };
+}
+
+// Monotonic clock source. `performance.now()` is unaffected by wall-clock
+// changes (manual clock edits, timezone/DST shifts), so background duration
+// cannot be bypassed by moving the device clock backwards.
+const monotonicNow = (): number => {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+};
 
 function App() {
   const { appReady } = useSplashGuard();
@@ -48,24 +94,45 @@ function App() {
   >({ visible: false });
   const [locked, setLocked] = useState(false);
   const [pinFallback, setPinFallback] = useState(false);
-  const backgroundedAt = React.useRef<number | null>(null);
 
   // Enable screen capture prevention on mount
   useEffect(() => {
     void enableScreenCapturePrevention();
   }, []);
 
-  // Lock app after idle timeout when returning to foreground
+  // Lock app after idle timeout when returning to foreground.
+  // Background duration is measured with a monotonic clock so wall-clock
+  // changes cannot bypass the lock, and the persisted timestamps are used as
+  // a fallback when the process was killed and the in-memory clock is lost.
   useEffect(() => {
+    let backgroundedAt: number | null = null;
+
     const onChange = async (state: AppStateStatus) => {
       if (state === 'background' || state === 'inactive') {
-        backgroundedAt.current = Date.now();
-      } else if (state === 'active' && backgroundedAt.current !== null) {
-        const elapsed = Date.now() - backgroundedAt.current;
-        backgroundedAt.current = null;
+        backgroundedAt = monotonicNow();
+        await persistAppBackground();
+      } else if (state === 'active') {
+        await persistAppForeground();
         const timeout = await loadLockTimeout();
         const ms = getLockTimeoutMs(timeout);
-        if (ms > 0 && elapsed >= ms) {
+        if (ms <= 0) {
+          backgroundedAt = null;
+          return;
+        }
+
+        // Prefer monotonic elapsed time for the current process; fall back to
+        // the persisted (wall-clock) elapsed time when the process was killed.
+        const monotonicElapsed =
+          backgroundedAt !== null ? monotonicNow() - backgroundedAt : null;
+        const persistedElapsed = await getElapsedSinceBackground();
+        const elapsed =
+          monotonicElapsed !== null
+            ? Math.max(monotonicElapsed, persistedElapsed)
+            : persistedElapsed;
+
+        backgroundedAt = null;
+
+        if (elapsed >= ms) {
           setPinFallback(false);
           setLocked(true);
         }
@@ -113,6 +180,12 @@ function App() {
     const subscription = watchNotificationActions();
     void registerBackgroundMedicationTask();
 
+    // Issue #947: the app can be terminated between submitting a Stellar
+    // transaction and learning its outcome. Resolve anything left in flight
+    // against Horizon on launch, so a payment is never silently lost — and,
+    // just as importantly, never re-sent because its status was unknown.
+    void reconcilePendingStellarTransactions();
+
     // Initialize widget service and update widgets
     const unsubscribeWidget = initializeWidgetService();
 
@@ -123,13 +196,20 @@ function App() {
   }, []);
 
   // Handle initial notification if app was launched from a notification tap
-  // (cold-start or background)
+  // (cold-start or background). Queue it if app-lock verification is pending.
   useEffect(() => {
     const checkInitialNotification = async () => {
       const notification = await Notifications.getLastNotificationResponseAsync();
       if (notification) {
         const data = notification.notification.request.content.data;
-        handleNotificationDeepLink(data);
+        // Issue #1029: validate the incoming link against the documented
+        // route/parameter schema before it is ever queued for navigation.
+        // Untrusted or malformed links are dropped here so they can never
+        // bypass auth, switch accounts, or trigger mutations.
+        const validated = validateDeepLink(data);
+        if (!validated) return;
+        // Queue the deep link until app-lock verification completes
+        navigationQueueService.queueNotification(validated);
       }
     };
     void checkInitialNotification();
@@ -138,7 +218,18 @@ function App() {
   if (!appReady) return <View style={styles.root} />;
 
   if (locked) {
-    return <LockScreen showPinFallback={pinFallback} onUnlock={() => setLocked(false)} />;
+    return (
+      <LockScreen
+        showPinFallback={pinFallback}
+        onUnlock={() => {
+          // Unlock complete: clear lock state and replay any queued navigation
+          setLocked(false);
+          navigationQueueService.clearAndUnlock();
+          // Replay the queued deep-link or notification navigation
+          navigationQueueService.replayAndClear();
+        }}
+      />
+    );
   }
 
   return (

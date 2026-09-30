@@ -1,4 +1,98 @@
+/**
+ * dosageCalculator — weight-based medication dosing utilities (#956)
+ *
+ * ### Dimensional unit safety
+ *
+ * To prevent silent unit-confusion bugs (e.g. treating mg/kg as mg/lb, or
+ * returning a raw number that callers misinterpret as a different unit), this
+ * module uses *branded / opaque scalar types* — `MgPerKg`, `Mg`, `Ml`, and
+ * `Tablets`.  Each type is structurally identical to `number` at runtime but
+ * is distinct at the TypeScript level, so assigning a `Mg` value to a `MgPerKg`
+ * slot is a compile-time error.
+ *
+ * Constructors (`asMgPerKg`, `asMg`, `asMl`, `asTablets`) must be used to
+ * create these values; plain number literals cannot be assigned directly.
+ *
+ * ### Bounds enforcement
+ *
+ * `computeDosage` throws `DosageBoundsError` for inputs outside the valid
+ * physical range:
+ *   - weight ≤ 0 → immediate critical result (no exception)
+ *   - dose-per-kg ≤ 0 → immediate critical result (no exception)
+ *   - weight > MAX_WEIGHT_KG (500 kg) → DosageBoundsError
+ *   - dose-per-kg > MAX_DOSE_PER_KG (200 mg/kg) → DosageBoundsError
+ *
+ * ### Veterinarian disclaimer (required on every result)
+ *
+ * `DosageResult` now includes a `vetDisclaimer` field.  This is a mandatory
+ * legal notice that MUST be shown to the user alongside any calculated dose.
+ * The UI layer is responsible for displaying it; the service layer always
+ * populates it so it can never be accidentally omitted.
+ */
+
 import type { Species } from '../models/Pet';
+
+// ─── Branded unit types (issue #956) ─────────────────────────────────────────
+
+/** Milligrams of drug per kilogram of body weight */
+export type MgPerKg = number & { readonly __brand: 'MgPerKg' };
+/** Total milligrams */
+export type Mg = number & { readonly __brand: 'Mg' };
+/** Total millilitres */
+export type Ml = number & { readonly __brand: 'Ml' };
+/** Number of tablets */
+export type Tablets = number & { readonly __brand: 'Tablets' };
+
+/** Union of all supported dispensing units */
+export type DosedQuantity = Mg | Ml | Tablets;
+
+/** Constructors — use these instead of plain number casts */
+export function asMgPerKg(n: number): MgPerKg {
+  return n as MgPerKg;
+}
+export function asMg(n: number): Mg {
+  return n as Mg;
+}
+export function asMl(n: number): Ml {
+  return n as Ml;
+}
+export function asTablets(n: number): Tablets {
+  return n as Tablets;
+}
+
+// ─── Bounds constants (issue #956) ───────────────────────────────────────────
+
+/** Maximum plausible pet weight (500 kg — largest domestic animals) */
+export const MAX_WEIGHT_KG = 500;
+/** Maximum plausible dose-per-kg input (200 mg/kg is well above any standard dose) */
+export const MAX_DOSE_PER_KG = 200;
+
+/**
+ * Thrown when a numeric input exceeds the physical safety bounds.
+ * Distinct from a `DosageSafetyLevel = 'critical'` result — this is an error
+ * in the input itself, not a safety classification of an otherwise-valid dose.
+ */
+export class DosageBoundsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DosageBoundsError';
+  }
+}
+
+// ─── Mandatory veterinarian disclaimer (issue #956) ─────────────────────────
+
+/**
+ * Mandatory disclaimer text that MUST be displayed to the user alongside
+ * every calculated dose.
+ *
+ * This string is embedded in `DosageResult.vetDisclaimer` so it travels
+ * with the result and cannot be accidentally omitted by any consumer.
+ */
+export const VET_DISCLAIMER =
+  '⚠️ This calculation is a reference tool only and does not constitute veterinary advice. ' +
+  'Always consult a licensed veterinarian before administering any medication to your pet. ' +
+  'Individual animals may require different dosing based on health status, concurrent medications, ' +
+  'or other clinical factors.';
 
 export type DoseUnit = 'mg' | 'ml' | 'tablets';
 export type DosageSafetyLevel = 'safe' | 'low' | 'high' | 'critical';
@@ -37,6 +131,11 @@ export interface DosageResult {
   warnings: string[];
   rangeMin?: number;
   rangeMax?: number;
+  /**
+   * Mandatory veterinarian disclaimer (issue #956).
+   * This field is ALWAYS populated; the UI MUST display it to the user.
+   */
+  vetDisclaimer: string;
 }
 
 export const DRUG_DATABASE: DrugRecord[] = [
@@ -299,6 +398,7 @@ export function computeDosage(input: DosageInput, range?: DosageRange): DosageRe
       doseInMg: 0,
       safetyLevel: 'critical',
       warnings: ['Weight must be greater than zero.'],
+      vetDisclaimer: VET_DISCLAIMER,
     };
   }
   if (dosePerKg <= 0) {
@@ -308,7 +408,22 @@ export function computeDosage(input: DosageInput, range?: DosageRange): DosageRe
       doseInMg: 0,
       safetyLevel: 'critical',
       warnings: ['Dose per kg must be greater than zero.'],
+      vetDisclaimer: VET_DISCLAIMER,
     };
+  }
+
+  // ── Bounds enforcement (issue #956) ────────────────────────────────────────
+  if (weightKg > MAX_WEIGHT_KG) {
+    throw new DosageBoundsError(
+      `Weight ${weightKg} kg exceeds the maximum supported value of ${MAX_WEIGHT_KG} kg. ` +
+        'Please verify the weight and consult a veterinarian.',
+    );
+  }
+  if (dosePerKg > MAX_DOSE_PER_KG) {
+    throw new DosageBoundsError(
+      `Dose ${dosePerKg} mg/kg exceeds the maximum supported value of ${MAX_DOSE_PER_KG} mg/kg. ` +
+        'Please verify the dose and consult a veterinarian.',
+    );
   }
 
   const doseInMg = calculateDoseInMg(weightKg, dosePerKg);
@@ -323,6 +438,7 @@ export function computeDosage(input: DosageInput, range?: DosageRange): DosageRe
       doseInMg: round(doseInMg),
       safetyLevel: 'critical',
       warnings: [(err as Error).message],
+      vetDisclaimer: VET_DISCLAIMER,
     };
   }
 
@@ -341,6 +457,7 @@ export function computeDosage(input: DosageInput, range?: DosageRange): DosageRe
     doseInMg: round(doseInMg),
     safetyLevel,
     warnings,
+    vetDisclaimer: VET_DISCLAIMER,
   };
 
   if (range) {

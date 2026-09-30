@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android Data Extraction Rules (API 31+)
+  =========================================
+  Referenced by AndroidManifest.xml:
+    android:dataExtractionRules="@xml/data_extraction_rules"
+
+  This file supersedes backup_rules.xml for API 31+ and controls two
+  independent backup transports:
+
+    cloudBackup   — Google Drive Auto Backup (uploaded to user's Drive account)
+    deviceTransfer — Device-to-device transfers (e.g. Setup Wizard clone)
+
+  Both transports are restricted identically: all sensitive local data is
+  excluded. Refer to backup_rules.xml for the detailed rationale on each
+  excluded path.
+
+  Sensitive data categories handled here
+  ────────────────────────────────────────
+  • databases/petchain.db
+      AES-256 encrypted SQLite with medications, health records, appointments,
+      SOAP drafts, and the kv_store (auth tokens, PII, emergency contacts).
+
+  • shared_prefs/RNCAsyncStorage (directory) + RNCAsyncStorage.xml (flat file)
+      Encrypted AsyncStorage entries: JWT access / refresh tokens, session,
+      pet list, pet detail cache, sync queue, notification prefs, pet photos,
+      user profile, and emergency contacts.
+
+  • shared_prefs/.  (catch-all)
+      Any future preference files added by Expo SDK upgrades or 3rd-party libs.
+
+  • files/.
+      Expo FileSystem documents: medical record PDFs, QR codes, travel certs,
+      photo exports.
+
+  • cache/.
+      Expo update bundles and image cache — no personal data, excluded to
+      reduce backup size and prevent stale-bundle restore issues.
+
+  • external/.
+      External storage files written by any SDK component.
+-->
+<data-extraction-rules>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       CLOUD BACKUP  (Google Drive Auto Backup)
+       ════════════════════════════════════════════════════════════════════ -->
+  <cloud-backup>
+
+    <!-- SQLite database -->
+    <exclude domain="database" path="petchain.db" />
+
+    <!-- AsyncStorage (SharedPreferences) -->
+    <exclude domain="sharedpref" path="RNCAsyncStorage" />
+    <exclude domain="sharedpref" path="RNCAsyncStorage.xml" />
+    <exclude domain="sharedpref" path="." />
+
+    <!-- Expo FileSystem documents -->
+    <exclude domain="file" path="." />
+
+    <!-- Cache -->
+    <exclude domain="cache" path="." />
+
+    <!-- External storage -->
+    <exclude domain="external" path="." />
+
+  </cloud-backup>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       DEVICE TRANSFER  (device-to-device clone, Setup Wizard)
+       ════════════════════════════════════════════════════════════════════ -->
+  <device-transfer>
+
+    <!-- SQLite database -->
+    <exclude domain="database" path="petchain.db" />
+
+    <!-- AsyncStorage (SharedPreferences) -->
+    <exclude domain="sharedpref" path="RNCAsyncStorage" />
+    <exclude domain="sharedpref" path="RNCAsyncStorage.xml" />
+    <exclude domain="sharedpref" path="." />
+
+    <!-- Expo FileSystem documents -->
+    <exclude domain="file" path="." />
+
+    <!-- Cache -->
+    <exclude domain="cache" path="." />
+
+    <!-- External storage -->
+    <exclude domain="external" path="." />
+
+  </device-transfer>
+
+</data-extraction-rules>

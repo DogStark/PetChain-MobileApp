@@ -1,6 +1,7 @@
 import CryptoJS from 'crypto-js';
 import { Share } from 'react-native';
 
+import apiClient from './apiClient';
 import { getItem, removeItem, setItem } from './localDB';
 import type { Pet } from '../models/Pet';
 import {
@@ -11,6 +12,7 @@ import {
   extractPetFromPayload,
   extractVersion,
   getCachedQRPayload,
+  markQRRevoked,
 } from '../utils/qrUtils';
 
 // ─── QR format versions ───────────────────────────────────────────────────────
@@ -112,11 +114,16 @@ const saveTokenState = async (state: QRTokenState): Promise<void> => {
 
 /**
  * Revoke an active QR token so it is rejected on the next scan.
+ *
+ * Revocation also invalidates the matching offline cache entry (when it embeds
+ * this token) so a revoked tag's cached data is never presented as valid
+ * emergency data later.
  */
 export const revokeQRCode = async (token: string): Promise<void> => {
   const state = await getTokenState(token);
   if (!state) return;
   await saveTokenState({ ...state, revokedAt: Date.now() });
+  await markQRRevoked(state.petId, token);
 };
 
 /**
@@ -235,6 +242,86 @@ export const printPetQRCode = async (
  */
 export const getOfflineQRCode = async (petId: string): Promise<string | null> => {
   return getCachedQRPayload(petId);
+};
+
+/** How confident we are in a cached (offline) QR before showing it as valid. */
+export type QRVerificationStatus =
+  | 'verified'
+  | 'revoked'
+  | 'expired'
+  | 'unverifiable'
+  | 'not_found';
+
+/** Offline QR payload plus its revocation/expiry verification result. */
+export interface OfflineQRCodeInfo {
+  petId: string;
+  /** The cached QR payload, or null when nothing usable is stored. */
+  payload: string | null;
+  status: QRVerificationStatus;
+  /** Human-readable reason for a non-verified result. */
+  reason?: string;
+}
+
+/**
+ * Inspect a pet's cached QR payload and report whether it is still safe to
+ * present offline. A revoked, expired, or unverifiable tag must not be shown
+ * as valid emergency data.
+ *
+ * "verified" here means the payload passed the offline expiry checks and its
+ * revocation token state is known and not revoked — it does not imply a fresh
+ * network confirmation.
+ */
+export const getOfflineQRCodeInfo = async (petId: string): Promise<OfflineQRCodeInfo> => {
+  const cached = await getCachedQRPayload(petId);
+  if (!cached) {
+    return { petId, payload: null, status: 'not_found', reason: 'No offline QR code available' };
+  }
+
+  let data: PetQRData;
+  try {
+    data = parseQRCodeData(cached);
+  } catch {
+    return {
+      petId,
+      payload: cached,
+      status: 'unverifiable',
+      reason: 'Offline QR code could not be decoded',
+    };
+  }
+
+  if (data.version === 2) {
+    const v2 = data as PetQRDataV2;
+
+    if (v2.expiresAt !== undefined && Date.now() > v2.expiresAt) {
+      return { petId, payload: cached, status: 'expired', reason: 'This code has expired' };
+    }
+
+    if (v2.token) {
+      const state = await getTokenState(v2.token);
+
+      if (state?.revokedAt !== undefined) {
+        return { petId, payload: cached, status: 'revoked', reason: 'This code has been revoked' };
+      }
+
+      if (!state) {
+        return {
+          petId,
+          payload: cached,
+          status: 'unverifiable',
+          reason: 'Revocation cannot be verified while offline',
+        };
+      }
+
+      return { petId, payload: cached, status: 'verified' };
+    }
+  }
+
+  return {
+    petId,
+    payload: cached,
+    status: 'unverifiable',
+    reason: 'Offline QR code has no revocation metadata',
+  };
 };
 
 // ─── Parsing ──────────────────────────────────────────────────────────────────
@@ -367,3 +454,79 @@ export const scanQRCode = async (qrData: string): Promise<QRScanResult> => {
 export const validateQRCode = (
   qrData: string,
 ): Promise<{ valid: boolean; petId?: string; error?: string }> => scanQRCode(qrData);
+
+// ─── Canonical named API (issue #794) ─────────────────────────────────────────
+
+/**
+ * Generate a QR payload string for a pet.
+ *
+ * Thin, explicitly-named wrapper over {@link generatePetQRCode} so callers can
+ * use the canonical `generateQRCode` name. Honours expiry / one-time-use
+ * options and persists the payload to the offline cache.
+ */
+export const generateQRCode = (pet: Pet, options: QRCodeOptions = {}): Promise<string> =>
+  generatePetQRCode(pet, options);
+
+/**
+ * Decode a raw QR string into its typed payload without running the full
+ * validation pipeline. Throws a descriptive error on malformed input.
+ *
+ * Use {@link scanQRCode} / {@link validateQRCode} when you also need checksum,
+ * expiry, revocation, and one-time-use enforcement.
+ */
+export const decodeQRPayload = (qrData: string): PetQRData => parseQRCodeData(qrData);
+
+// ─── Backend integration ──────────────────────────────────────────────────────
+
+/** Server-issued QR record for a pet. */
+export interface RemoteQRData {
+  /** Encoded QR payload string, ready to render. */
+  qrData: string;
+  /** Unix ms timestamp after which the code is invalid. */
+  expiresAt?: number;
+  /** Server-side revocation / usage token. */
+  token?: string;
+}
+
+/**
+ * Fetch a server-issued QR code for a pet from the backend. Falls back to the
+ * offline cache when the request fails so scanning still works offline.
+ *
+ * @returns the encoded QR payload string, or `null` if none is available.
+ */
+export const fetchPetQRCode = async (petId: string): Promise<string | null> => {
+  if (!PET_ID_REGEX.test(petId)) {
+    throw new Error('fetchPetQRCode failed: invalid pet ID format');
+  }
+
+  try {
+    const response = await apiClient.get<{ data: RemoteQRData }>(
+      `/pets/${encodeURIComponent(petId)}/qr`,
+    );
+    const remote = response.data?.data;
+    if (remote?.qrData) {
+      await cacheQRPayload(petId, remote.qrData);
+      return remote.qrData;
+    }
+  } catch {
+    // Network / server error — fall back to any cached payload below.
+  }
+
+  // Offline fallback: only serve a payload that passed local revocation/expiry
+  // checks, so a revoked or expired tag is never presented as valid emergency
+  // data when the network is unavailable.
+  const offline = await getOfflineQRCodeInfo(petId);
+  return offline.status === 'verified' ? offline.payload : null;
+};
+
+/**
+ * Register a locally-generated QR token with the backend so it can be revoked
+ * or usage-tracked server-side. Best-effort — never throws.
+ */
+export const syncQRToken = async (petId: string, token: string): Promise<void> => {
+  try {
+    await apiClient.post(`/pets/${encodeURIComponent(petId)}/qr/tokens`, { token });
+  } catch {
+    // best-effort — server sync is optional; local token state remains valid.
+  }
+};

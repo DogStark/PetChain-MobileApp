@@ -14,6 +14,10 @@ export interface TrustlineAsset {
   balance: string;
   /** Trustline limit set by the user */
   limit: string;
+  /** Amount locked by open sell offers on this asset (Horizon `selling_liabilities`) */
+  sellingLiabilities: string;
+  /** Amount locked by open buy offers on this asset (Horizon `buying_liabilities`) */
+  buyingLiabilities: string;
   /** Whether this is a PetChain-issued asset */
   isPetChainAsset: boolean;
 }

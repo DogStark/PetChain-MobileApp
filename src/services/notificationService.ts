@@ -57,6 +57,11 @@ export interface NotificationPreferences {
     appointmentReminders?: boolean;
     vaccinationAlerts?: boolean;
   }[];
+  privacySettings?: {
+    medicationDetailsPrivate?: boolean;
+    appointmentDetailsPrivate?: boolean;
+    vaccinationDetailsPrivate?: boolean;
+  };
 }
 
 export type NotificationCategory = 'medication' | 'appointments' | 'health' | 'general';
@@ -132,7 +137,9 @@ const PREFS_KEY = '@notification_preferences';
 const NOTIFICATION_MAP_KEY = '@notification_map'; // maps entity id -> notification ids
 const READ_NOTIFICATIONS_KEY = '@read_notifications';
 const SNOOZED_NOTIFICATIONS_KEY = '@snoozed_notifications';
+const ACTION_IDEMPOTENCY_KEY = '@action_idempotency';
 const SNOOZE_DELAY_MS = 10 * 60 * 1000;
+const IDEMPOTENCY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 const ACTION_OPEN = 'OPEN_APP';
 const ACTION_SNOOZE = 'SNOOZE';
@@ -140,6 +147,60 @@ const ACTION_MARK_AS_READ = 'MARK_AS_READ';
 const ACTION_MARK_AS_TAKEN = 'MARK_AS_TAKEN';
 const ACTION_SNOOZE_30MIN = 'SNOOZE_30MIN';
 const ACTION_SKIP_DOSE = 'SKIP_DOSE';
+
+// Session-scoped set to track notification IDs that have already triggered navigation.
+// Ensures cold-start and listener paths don't both navigate for the same notification.
+// Cleared on app restart (not persisted).
+const processedNotificationIds = new Set<string>();
+
+// Timezone reconciliation: track the device timezone at the time of medication scheduling.
+// Used to detect changes and reschedule notifications as needed.
+const SCHEDULED_MEDICATIONS_TIMEZONE_KEY = '@scheduled_medications_timezone';
+let lastKnownTimezone: string | null = null;
+
+/**
+ * Gets the current device timezone identifier (e.g., 'America/New_York').
+ * Falls back to 'UTC' if unable to determine.
+ */
+function getDeviceTimezone(): string {
+  try {
+    // Try to get timezone from device Intl API
+    const formatter = new Intl.DateTimeFormat('en-US', { timeZoneName: 'long' });
+    // This is a best-effort approximation; for production use a library like `react-native-timezone`
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+/**
+ * Stores the timezone context for a medication's scheduled notifications.
+ * Called when scheduling medication reminders to establish baseline timezone.
+ */
+async function storeMedicationTimezone(medicationId: string, timezone: string): Promise<void> {
+  try {
+    const storedJson = await getItem(SCHEDULED_MEDICATIONS_TIMEZONE_KEY);
+    const stored = storedJson ? JSON.parse(storedJson) : {};
+    const updated = { ...stored, [medicationId]: timezone };
+    await setItem(SCHEDULED_MEDICATIONS_TIMEZONE_KEY, JSON.stringify(updated));
+  } catch {
+    // Ignore storage errors; timezone tracking is best-effort
+  }
+}
+
+/**
+ * Retrieves the stored timezone for a medication's scheduled notifications.
+ */
+async function getMedicationTimezone(medicationId: string): Promise<string | null> {
+  try {
+    const storedJson = await getItem(SCHEDULED_MEDICATIONS_TIMEZONE_KEY);
+    if (!storedJson) return null;
+    const stored = JSON.parse(storedJson) as Record<string, string>;
+    return stored[medicationId] ?? null;
+  } catch {
+    return null;
+  }
+}
 
 const DEFAULT_PREFS: NotificationPreferences = {
   medicationReminders: true,
@@ -154,6 +215,11 @@ const DEFAULT_PREFS: NotificationPreferences = {
   quietHoursStart: '22:00',
   quietHoursEnd: '07:00',
   petOverrides: [],
+  privacySettings: {
+    medicationDetailsPrivate: true,
+    appointmentDetailsPrivate: true,
+    vaccinationDetailsPrivate: true,
+  },
 };
 
 // ─── Notification actions ────────────────────────────────────────────────────
@@ -171,6 +237,55 @@ const saveActionState = async (
   const state = await readActionState(key);
   state[notificationId] = timestamp;
   await setItem(key, JSON.stringify(state));
+};
+
+/**
+ * Read idempotency state: stores action ID + action type -> processed timestamp
+ * Only stores action IDs and timestamps, no sensitive data
+ */
+const readIdempotencyState = async (): Promise<Record<string, { timestamp: number }>> => {
+  const stored = await getItem(ACTION_IDEMPOTENCY_KEY);
+  return stored ? JSON.parse(stored) : {};
+};
+
+/**
+ * Check if an action has been processed recently (within idempotency window)
+ * Returns true if action should be skipped (already processed)
+ */
+const isActionAlreadyProcessed = async (
+  notificationId: string,
+  actionIdentifier: string,
+): Promise<boolean> => {
+  const state = await readIdempotencyState();
+  const idempotencyKey = `${notificationId}::${actionIdentifier}`;
+  const record = state[idempotencyKey];
+
+  if (!record) return false; // Not seen before
+
+  const timeSinceProcessing = Date.now() - record.timestamp;
+  return timeSinceProcessing < IDEMPOTENCY_WINDOW_MS;
+};
+
+/**
+ * Mark an action as processed to prevent duplicate mutations
+ */
+const markActionAsProcessed = async (
+  notificationId: string,
+  actionIdentifier: string,
+): Promise<void> => {
+  const state = await readIdempotencyState();
+  const idempotencyKey = `${notificationId}::${actionIdentifier}`;
+  state[idempotencyKey] = { timestamp: Date.now() };
+
+  // Clean up old entries outside the idempotency window to avoid unbounded growth
+  const now = Date.now();
+  Object.entries(state).forEach(([key, value]) => {
+    if (now - value.timestamp > IDEMPOTENCY_WINDOW_MS) {
+      delete state[key];
+    }
+  });
+
+  await setItem(ACTION_IDEMPOTENCY_KEY, JSON.stringify(state));
 };
 
 const getNotificationUrl = (data: Record<string, unknown> = {}): string => {
@@ -289,70 +404,138 @@ export const openApp = async (notification: Notifications.Notification): Promise
   await Linking.openURL(getNotificationUrl(notification.request.content.data));
 };
 
-// ─── Deep Link Builders ───────────────────────────────────────────────────────
+// ─── Deep Link Builders & Validation ──────────────────────────────────────────
 
 /**
- * Extract deep link parameters from notification data
+ * Validates that a value is a non-empty string (for schema validation).
  */
-export const extractDeepLinkParams = (
-  data: Record<string, unknown>,
-): { route: string; params: Record<string, any> } | null => {
-  const type = data.type as NotificationGroup | undefined;
+function isValidString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
 
-  if (type === 'medication' && data.medicationId) {
+/**
+ * Validates a deep-link payload against a versioned schema.
+ * Ensures that only trusted routes and parameter shapes are accepted;
+ * rejects unknown routes, missing required params, and malformed param types.
+ *
+ * Returns the validated route and params, or null if schema validation fails.
+ *
+ * Note: This validates structural schema only. Destination screens must verify
+ * authorization/ownership (e.g., confirm current user owns the petId) separately.
+ */
+function validateDeepLinkPayload(
+  data: Record<string, unknown>,
+): { route: string; params: Record<string, any> } | null {
+  // Validate version field (currently only v1 supported)
+  if (!('version' in data) || data.version !== 1) {
+    return null;
+  }
+
+  const type = data.type as string | undefined;
+
+  // Medication notification: requires type='medication' and medicationId (string)
+  if (type === 'medication') {
+    if (!isValidString(data.medicationId)) {
+      return null;
+    }
     return {
       route: 'Medications',
       params: { medicationId: data.medicationId },
     };
   }
 
-  if (type === 'appointment' && data.appointmentId) {
+  // Appointment notification: requires type='appointment' and appointmentId (string)
+  if (type === 'appointment') {
+    if (!isValidString(data.appointmentId)) {
+      return null;
+    }
     return {
       route: 'Appointments',
       params: { appointmentId: data.appointmentId },
     };
   }
 
-  if (type === 'vaccination' && data.vaccinationId) {
+  // Vaccination notification: requires type='vaccination' and vaccinationId (string)
+  // Optional: petId (string) and dueDate (string)
+  if (type === 'vaccination') {
+    if (!isValidString(data.vaccinationId)) {
+      return null;
+    }
     const params: Record<string, any> = { vaccinationId: data.vaccinationId };
-    if (data.petId) params.petId = data.petId;
-    if (data.dueDate) params.dueDate = data.dueDate;
+    if (isValidString(data.petId)) {
+      params.petId = data.petId;
+    }
+    if (isValidString(data.dueDate)) {
+      params.dueDate = data.dueDate;
+    }
     return {
       route: 'Vaccinations',
       params,
     };
   }
 
-  if (type === 'sos' && data.sosId) {
+  // SOS notification: requires type='sos' and sosId (string)
+  if (type === 'sos') {
+    if (!isValidString(data.sosId)) {
+      return null;
+    }
     return {
       route: 'Emergency',
       params: { sosId: data.sosId },
     };
   }
 
-  // Fallback to petId if available
-  if (data.petId) {
+  // Fallback to petId if available (type='general' or unspecified, but petId present)
+  // Only allow if petId is a valid string; destination screen verifies ownership
+  if (isValidString(data.petId)) {
     return {
       route: 'PetDetail',
       params: { petId: data.petId },
     };
   }
 
-  // Type-based fallback without specific ID
-  if (type === 'medication') {
-    return { route: 'Medications', params: {} };
-  }
-  if (type === 'appointment') {
-    return { route: 'Appointments', params: {} };
-  }
-  if (type === 'vaccination') {
-    return { route: 'Vaccinations', params: {} };
-  }
-  if (type === 'sos') {
-    return { route: 'Emergency', params: {} };
-  }
-
+  // No valid route found; reject the payload
   return null;
+}
+
+/**
+ * Extract deep link parameters from notification data.
+ *
+ * Validates the payload against a versioned schema before returning navigation params.
+ * Ensures only trusted routes and parameter shapes are accepted.
+ * Destination screens remain responsible for verifying user authorization/ownership.
+ *
+ * @returns Validated route and params, or null if schema validation fails.
+ */
+export const extractDeepLinkParams = (
+  data: Record<string, unknown>,
+): { route: string; params: Record<string, any> } | null => {
+  return validateDeepLinkPayload(data);
+};
+
+/**
+ * Checks if a notification has already been processed for navigation in this session.
+ * Returns true if the notification ID has been seen before (dedup skip), false otherwise.
+ *
+ * @param notificationId - Stable ID from the push notification payload
+ * @returns true if already processed (skip navigation), false if new (proceed and mark)
+ */
+export const hasNotificationBeenProcessed = (notificationId: string | undefined): boolean => {
+  if (!notificationId) return false;
+  return processedNotificationIds.has(notificationId);
+};
+
+/**
+ * Marks a notification as processed for navigation in this session.
+ * Called after a notification has triggered navigation to prevent duplicates
+ * from cold-start and listener paths.
+ *
+ * @param notificationId - Stable ID from the push notification payload
+ */
+export const markNotificationAsProcessed = (notificationId: string | undefined): void => {
+  if (notificationId) {
+    processedNotificationIds.add(notificationId);
+  }
 };
 
 let medicationServiceModule: typeof import('./medicationService') | null = null;
@@ -371,8 +554,16 @@ async function findMedicationId(notification: Notifications.Notification): Promi
 }
 
 async function handleMarkAsTaken(notification: Notifications.Notification): Promise<void> {
+  const notificationId = notification.request.identifier;
+
+  // Check idempotency: skip if action already processed recently
+  if (await isActionAlreadyProcessed(notificationId, 'MARK_AS_TAKEN')) {
+    return;
+  }
+
   const medicationId = await findMedicationId(notification);
   if (!medicationId) return;
+
   try {
     const medService = await getMedicationService();
     await medService.logDose({
@@ -380,19 +571,40 @@ async function handleMarkAsTaken(notification: Notifications.Notification): Prom
       medicationId,
       takenAt: new Date().toISOString(),
     });
-    await markAsRead(notification.request.identifier);
+    await markAsRead(notificationId);
+
+    // Mark action as processed after successful mutation
+    await markActionAsProcessed(notificationId, 'MARK_AS_TAKEN');
   } catch {
     // Non-fatal — dose can be recorded manually
   }
 }
 
 async function handleSnooze30Min(notification: Notifications.Notification): Promise<void> {
+  const notificationId = notification.request.identifier;
+
+  // Check idempotency: skip if action already processed recently
+  if (await isActionAlreadyProcessed(notificationId, 'SNOOZE_30MIN')) {
+    return;
+  }
+
   await snooze(notification, 30 * 60 * 1000);
+
+  // Mark action as processed after successful snooze
+  await markActionAsProcessed(notificationId, 'SNOOZE_30MIN');
 }
 
 async function handleSkipDose(notification: Notifications.Notification): Promise<void> {
+  const notificationId = notification.request.identifier;
+
+  // Check idempotency: skip if action already processed recently
+  if (await isActionAlreadyProcessed(notificationId, 'SKIP_DOSE')) {
+    return;
+  }
+
   const medicationId = await findMedicationId(notification);
   if (!medicationId) return;
+
   try {
     const medService = await getMedicationService();
     await medService.logDose({
@@ -402,7 +614,10 @@ async function handleSkipDose(notification: Notifications.Notification): Promise
       skipped: true,
     });
     await cancelEntityNotification(medicationId);
-    await markAsRead(notification.request.identifier);
+    await markAsRead(notificationId);
+
+    // Mark action as processed after successful mutation
+    await markActionAsProcessed(notificationId, 'SKIP_DOSE');
   } catch {
     // Non-fatal
   }
@@ -480,16 +695,59 @@ export const isQuietHour = (start: string, end: string): boolean => {
 
 // ─── Permissions ──────────────────────────────────────────────────────────────
 
+export type PermissionState =
+  | 'granted'
+  | 'denied'
+  | 'provisional'
+  | 'ephemeral'
+  | 'not_determined'
+  | 'permanently_denied'
+  | 'unknown';
+
+export const checkPermissionState = async (): Promise<PermissionState> => {
+  try {
+    const result = await Notifications.getPermissionsAsync();
+    const ios = (result as any).ios;
+    const android = (result as any).android;
+
+    if (ios) {
+      const status = ios.status;
+      if (status === 'granted') return 'granted';
+      if (status === 'denied') return 'denied';
+      if (status === 'provisional') return 'provisional';
+      if (status === 'ephemeral') return 'ephemeral';
+      if (status === 'undetermined') return 'not_determined';
+    }
+
+    if (android) {
+      if (android.granted) return 'granted';
+      if (android.canAskAgain === false) return 'permanently_denied';
+      return 'denied';
+    }
+
+    const granted = (result as any).granted ?? (result as any).status === 'granted';
+    return granted ? 'granted' : 'not_determined';
+  } catch {
+    return 'unknown';
+  }
+};
+
 export const requestPermissions = async (): Promise<boolean> => {
-  const existing = await Notifications.getPermissionsAsync();
-  if ((existing as any).granted ?? (existing as any).status === 'granted') return true;
-  const result = await Notifications.requestPermissionsAsync();
-  return (result as any).granted ?? (result as any).status === 'granted';
+  const state = await checkPermissionState();
+  if (state === 'granted' || state === 'provisional') return true;
+  if (state === 'denied' || state === 'permanently_denied') return false;
+
+  try {
+    const result = await Notifications.requestPermissionsAsync();
+    return (result as any).granted ?? (result as any).status === 'granted';
+  } catch {
+    return false;
+  }
 };
 
 export const checkPermissions = async (): Promise<boolean> => {
-  const result = await Notifications.getPermissionsAsync();
-  return (result as any).granted ?? (result as any).status === 'granted';
+  const state = await checkPermissionState();
+  return state === 'granted' || state === 'provisional';
 };
 
 // ─── Preferences ─────────────────────────────────────────────────────────────
@@ -581,7 +839,63 @@ export const scheduleMedicationReminder = async (medication: Medication): Promis
   }
 
   await saveNotificationIds(medication.id, notificationIds);
+
+  // Store the timezone context for this medication's scheduled notifications
+  // Used to detect timezone changes and reschedule as needed
+  const currentTimezone = getDeviceTimezone();
+  await storeMedicationTimezone(medication.id, currentTimezone);
+
   return notificationIds;
+};
+
+/**
+ * Reconciles medication reminder notifications after a timezone change.
+ *
+ * When the device timezone changes (travel, DST boundary, system settings):
+ * 1. Detects timezone mismatch with stored intent
+ * 2. Cancels all pending scheduled notifications for the medication
+ * 3. Reschedules them using the new device timezone (maintaining local time intent)
+ * 4. Updates stored timezone to current device timezone
+ *
+ * Idempotent: running twice in succession produces the same result (no duplicates).
+ *
+ * @param medicationId - ID of the medication to reconcile
+ * @param medication - The medication object (for rescheduling)
+ */
+export const reconcileMedicationNotificationsForTimezone = async (
+  medicationId: string,
+  medication: Medication,
+): Promise<void> => {
+  const storedTimezone = await getMedicationTimezone(medicationId);
+  const currentTimezone = getDeviceTimezone();
+
+  // If timezone hasn't changed, nothing to do
+  if (storedTimezone === currentTimezone) return;
+
+  // Reschedule all notifications for this medication
+  // (scheduleMedicationReminder cancels old ones and creates new ones)
+  await scheduleMedicationReminder(medication);
+};
+
+/**
+ * Reconciles timezone for all medications with pending scheduled notifications.
+ * Called on app foreground to detect and respond to timezone changes (travel, DST, etc).
+ *
+ * @param medications - Array of active medications to check
+ */
+export const reconcileAllMedicationNotificationsForTimezone = async (
+  medications: Medication[],
+): Promise<void> => {
+  const currentTimezone = getDeviceTimezone();
+
+  // Detect if any medication was scheduled in a different timezone
+  for (const med of medications) {
+    const storedTimezone = await getMedicationTimezone(med.id);
+    if (storedTimezone && storedTimezone !== currentTimezone) {
+      // Timezone has changed since last scheduling; reconcile this medication
+      await reconcileMedicationNotificationsForTimezone(med.id, med);
+    }
+  }
 };
 
 // ─── Appointment reminders ────────────────────────────────────────────────────
@@ -961,3 +1275,83 @@ export async function updateServerPreferences(
 ): Promise<void> {
   await apiClient.patch('/api/notifications/preferences', prefs);
 }
+
+// ─── Privacy-aware notification content ─────────────────────────────────────
+
+export const getPrivateNotificationContent = (
+  category: NotificationCategory | NotificationGroup,
+  originalContent: { title: string; body: string },
+): { title: string; body: string } => {
+  const isPrivate =
+    (category === 'medication') || (category === 'appointment') || (category === 'vaccination' || category === 'health');
+
+  if (!isPrivate) return originalContent;
+
+  return {
+    title:
+      category === 'medication'
+        ? '💊 Reminder'
+        : category === 'appointment'
+          ? '📅 Reminder'
+          : category === 'vaccination' || category === 'health'
+            ? '🏥 Reminder'
+            : originalContent.title,
+    body: 'You have a reminder',
+  };
+};
+
+// ─── Push token lifecycle (rotation & revocation) ────────────────────────────
+
+const PUSH_TOKEN_KEY = '@push_token';
+
+export const registerPushToken = async (token?: string): Promise<string | null> => {
+  try {
+    const pushToken = token || (await Notifications.getExpoPushTokenAsync()).data;
+    if (!pushToken) return null;
+
+    await apiClient.post('/api/push/tokens', {
+      token: pushToken,
+      platform: 'mobile',
+      deviceId: 'device-fingerprint',
+    });
+
+    await setItem(PUSH_TOKEN_KEY, pushToken);
+    return pushToken;
+  } catch {
+    return null;
+  }
+};
+
+export const rotatePushToken = async (oldToken: string, newToken: string): Promise<void> => {
+  try {
+    await apiClient.post('/api/push/tokens', {
+      token: newToken,
+      platform: 'mobile',
+    });
+    await apiClient.delete(`/api/push/tokens/${oldToken}`);
+    await setItem(PUSH_TOKEN_KEY, newToken);
+  } catch {
+    // Non-critical
+  }
+};
+
+export const revokePushToken = async (token: string): Promise<void> => {
+  try {
+    await apiClient.delete(`/api/push/tokens/${token}`);
+    const stored = await getItem(PUSH_TOKEN_KEY);
+    if (stored === token) await removeItem(PUSH_TOKEN_KEY);
+  } catch {
+    // Non-critical
+  }
+};
+
+export const revokeAllDeviceTokensOnLogout = async (): Promise<void> => {
+  try {
+    const token = await getItem(PUSH_TOKEN_KEY);
+    if (token) {
+      await revokePushToken(token);
+    }
+  } catch {
+    // Non-critical
+  }
+};

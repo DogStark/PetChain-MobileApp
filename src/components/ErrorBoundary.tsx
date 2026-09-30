@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 
 import ErrorFallback from './ErrorFallback';
 import crashReporting from '../services/crashReporting';
@@ -32,9 +32,12 @@ export class ErrorBoundary extends React.Component<Props, State> {
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     this.setState({ info });
     void errorLogger.logError(error, info.componentStack ?? '');
-    // Report to Sentry with component stack as extra context
+    // Report to Sentry with component stack as extra context.
+    // Only non-sensitive metadata is sent; crashReporting applies the
+    // existing privacy redaction rules before the event leaves the app.
     crashReporting.captureException(error, {
       componentStack: info.componentStack ?? '',
+      screenName: this.props.context?.screenName,
     });
   }
 
@@ -50,7 +53,24 @@ export class ErrorBoundary extends React.Component<Props, State> {
     }
   };
 
-  handleClearCache = async () => {
+  handleClearCache = () => {
+    Alert.alert(
+      'Reset app data?',
+      'This clears app-scoped caches and settings. Your account and pet data are not affected.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: () => {
+            void this.performClearCache();
+          },
+        },
+      ],
+    );
+  };
+
+  performClearCache = async () => {
     try {
       await encryptedAsyncStorage.clear();
     } catch (e) {

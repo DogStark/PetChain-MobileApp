@@ -2,10 +2,19 @@ module.exports = {
   testEnvironment: 'node',
   testMatch: ['**/__tests__/**/*.test.ts', '**/__tests__/**/*.test.tsx'],
   transform: {
-    '^.+\\.[jt]sx?$': 'babel-jest',
+    // Includes .mjs/.cjs: MSW's dependency graph ships .mjs, which the
+    // narrower [jt]sx? pattern silently skipped even once it was allowed
+    // through transformIgnorePatterns.
+    '^.+\\.(js|jsx|ts|tsx|mjs|cjs)$': 'babel-jest',
   },
-  transformIgnorePatterns: ['/node_modules/(?!(otplib|@otplib|expo-updates|expo-constants)/)'],
-  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json'],
+  // MSW and its dependency graph ship ESM only. Without transforming them,
+  // `jest.setup.js` throws "Cannot use import statement outside a module" while
+  // loading src/__mocks__/server.ts, which fails every suite in the repo before
+  // a single test runs.
+  transformIgnorePatterns: [
+    '/node_modules/(?!(otplib|@otplib|expo-updates|expo-constants|msw|@mswjs|rettime|until-async|outvariant|strict-event-emitter|headers-polyfill|is-node-process|@open-draft|@bundled-es-modules|graphql|tough-cookie|universalify|psl|punycode)/)',
+  ],
+  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'json'],
   moduleNameMapper: {
     '^test-renderer$': 'react-test-renderer',
     '^react-native$': '<rootDir>/src/__mocks__/react-native.ts',
@@ -81,4 +90,19 @@ module.exports = {
   setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
   testTimeout: 10000,
   verbose: true,
+  // Issue #1093: shared database/storage fixtures made suites order-dependent.
+  // Give every suite its own worker-scoped namespace so parallel and in-band
+  // runs cannot observe each other's fixtures, and expose the namespace to
+  // tests via globals so fixtures can be keyed per suite.
+  globals: {
+    __TEST_ISOLATION__: true,
+  },
+  // Each test file runs in its own module registry and worker, so module-level
+  // fixture state (in-memory DB rows, storage keys) cannot leak across suites.
+  resetModules: true,
+  // Restore spies/mocks between tests so a suite's fixture stubs never bleed
+  // into the next suite regardless of execution order.
+  restoreMocks: true,
+  clearMocks: true,
+  resetMocks: true,
 };

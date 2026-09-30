@@ -49,6 +49,10 @@ ios/build/
 # TypeScript build cache
 *.tsbuildinfo
 
+# Supply-chain metadata output (SBOM, checksums, provenance) — generated in CI
+supply-chain/
+artifacts/
+
 # Local databases and caches
 *.db
 *.sqlite

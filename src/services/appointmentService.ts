@@ -422,3 +422,101 @@ export async function checkConflicts(
     };
   }
 }
+
+// ─── Slot-conflict-safe booking (issue #961) ─────────────────────────────────
+
+/**
+ * Fields the user typed that are safe to carry back into the form after a slot
+ * conflict — never the (now-invalid) date/time, never anything server-assigned.
+ */
+export type PreservableBookingInput = Pick<
+  Appointment,
+  'petId' | 'title' | 'location' | 'vetName' | 'notes' | 'durationMinutes'
+> & { vetId?: string };
+
+export interface BookAppointmentRequest extends PreservableBookingInput {
+  /** Requested slot, `YYYY-MM-DD`. */
+  date: string;
+  /** Requested slot, `HH:mm`. */
+  time: string;
+  vetId: string;
+  /**
+   * Stable key identifying this booking attempt. Re-sent verbatim on retry so
+   * the server can dedupe and never create two appointments for one intent.
+   */
+  idempotencyKey: string;
+}
+
+export type BookAppointmentResult =
+  | { status: 'booked'; appointment: Appointment }
+  | {
+      status: 'conflict';
+      /** Fresh alternative slots (`HH:mm`) for the same vet/date, if any. */
+      alternatives: string[];
+      /** The user's inputs minus the conflicted slot, ready to re-seed the form. */
+      preservedInput: PreservableBookingInput & { date: string };
+      message: string;
+    };
+
+function pickPreservable(req: BookAppointmentRequest): PreservableBookingInput {
+  const { petId, title, location, vetName, notes, durationMinutes, vetId } = req;
+  return { petId, title, location, vetName, notes, durationMinutes, vetId };
+}
+
+function httpStatusOf(error: unknown): number | undefined {
+  const resp = (error as { response?: { status?: number } })?.response;
+  return typeof resp?.status === 'number' ? resp.status : undefined;
+}
+
+/**
+ * Book an appointment, tolerating the slot being taken between selection and
+ * submit:
+ *  - On HTTP 409 the form state is preserved (minus the dead slot) and a fresh
+ *    list of alternative slots is fetched so the user can re-pick in place.
+ *  - The caller-supplied `idempotencyKey` is sent as a header so a retry of the
+ *    same intent can never double-book.
+ *
+ * Throws for non-409 errors so existing error handling still applies.
+ */
+export async function bookAppointmentWithConflictHandling(
+  req: BookAppointmentRequest,
+): Promise<BookAppointmentResult> {
+  try {
+    const response = await apiClient.post<{ data: Appointment }>(
+      BASE_URL,
+      {
+        petId: req.petId,
+        vetId: req.vetId,
+        date: req.date,
+        time: req.time,
+        durationMinutes: req.durationMinutes,
+        title: req.title,
+        location: req.location,
+        vetName: req.vetName,
+        notes: req.notes,
+      },
+      { headers: { 'Idempotency-Key': req.idempotencyKey } },
+    );
+    const appointment = response.data.data;
+    await upsertAppointment(appointment);
+    return { status: 'booked', appointment };
+  } catch (error) {
+    if (httpStatusOf(error) !== 409) throw error;
+
+    let alternatives: string[] = [];
+    try {
+      const availability = await getAvailability(req.vetId, req.date);
+      alternatives = (availability.availableSlots ?? []).filter((slot) => slot !== req.time);
+    } catch {
+      alternatives = [];
+    }
+
+    return {
+      status: 'conflict',
+      alternatives,
+      preservedInput: { ...pickPreservable(req), date: req.date },
+      message:
+        'That time was just booked by someone else. Your details are saved — pick another slot below.',
+    };
+  }
+}

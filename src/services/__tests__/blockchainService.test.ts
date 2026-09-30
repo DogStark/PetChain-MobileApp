@@ -9,6 +9,7 @@ import {
   fundTestnetAccount,
   getStellarAccountDetails,
   getStellarNetworkInfo,
+  getTransactionDetails,
   getTransactionHistory,
   retrieveRecordHash,
   storeMedicalRecordOnChain,
@@ -127,6 +128,50 @@ describe('blockchainService', () => {
       const result = await getTransactionHistory('record1');
 
       expect(result).toEqual(mockHistory);
+    });
+  });
+
+  describe('getTransactionDetails', () => {
+    it('should return matching transaction from history', async () => {
+      const mockHistory = [
+        { hash: 'tx1', successful: true },
+        { hash: 'tx-target', successful: true },
+      ];
+      mockedAxios.get.mockResolvedValue({ data: mockHistory });
+
+      const result = await getTransactionDetails('tx-target');
+
+      expect(result).toEqual({ hash: 'tx-target', successful: true });
+    });
+
+    it('should throw error if transaction not found', async () => {
+      const mockHistory = [{ hash: 'tx1', successful: true }];
+      mockedAxios.get.mockResolvedValue({ data: mockHistory });
+
+      await expect(getTransactionDetails('tx-missing')).rejects.toThrow('Transaction not found');
+    });
+  });
+
+  describe('cache behavior', () => {
+    it('should return cached result on cache hit', async () => {
+      const mockTx = { hash: 'tx-cached', successful: true };
+      mockedAxios.post.mockResolvedValue({ data: mockTx });
+
+      await storeRecordOnChain('record-cache', 'hash-cache');
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+
+      await storeRecordOnChain('record-cache', 'hash-cache');
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('should fetch from API on cache miss', async () => {
+      clearBlockchainCache();
+      const mockTx = { hash: 'tx-new', successful: true };
+      mockedAxios.post.mockResolvedValue({ data: mockTx });
+
+      await storeRecordOnChain('record-miss', 'hash-miss');
+
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     });
   });
 

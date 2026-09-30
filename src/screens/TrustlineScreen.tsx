@@ -36,6 +36,9 @@ import {
   publicKeyFromSecret,
   isValidSecretKey,
   isValidPublicKey,
+  describeReserveImpact,
+  canAffordNewTrustline,
+  assertTrustlineRemovable,
   PETCHAIN_ASSETS,
   XLM_RESERVE_PER_TRUSTLINE,
   TrustlineError,
@@ -151,38 +154,43 @@ const TrustlineScreen: React.FC<Props> = ({ onBack }) => {
       issuerPublicKey = customIssuer.trim();
     }
 
-    // Reserve warning
-    Alert.alert(
-      'XLM Reserve Required',
-      `Adding this trustline will lock ${XLM_RESERVE_PER_TRUSTLINE} XLM as a reserve. You need at least ${XLM_RESERVE_PER_TRUSTLINE} XLM available. Continue?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Add Trustline',
-          onPress: async () => {
-            setActionLoading(true);
-            try {
-              const txHash = await addTrustline({
-                accountSecretKey: secretKey,
-                assetCode,
-                issuerPublicKey,
-                limit: customLimit.trim() || undefined,
-              });
-              Alert.alert('Success', `Trustline added!\nTX: ${txHash.slice(0, 16)}…`);
-              setView('dashboard');
-              await loadAccount(publicKey);
-            } catch (err) {
-              Alert.alert(
-                'Failed',
-                err instanceof TrustlineError ? err.message : 'Add trustline failed.',
-              );
-            } finally {
-              setActionLoading(false);
-            }
-          },
+    // Reserve impact — explain the exact XLM that will be locked and block the
+    // action when the account cannot cover the additional reserve.
+    if (state && !canAffordNewTrustline(state)) {
+      Alert.alert('Insufficient XLM', describeReserveImpact(state, 'add').summary);
+      return;
+    }
+    const reserveMessage = state
+      ? `${describeReserveImpact(state, 'add').summary}\n\nContinue?`
+      : `Adding this trustline will lock ${XLM_RESERVE_PER_TRUSTLINE} XLM as a reserve. Continue?`;
+
+    Alert.alert('XLM Reserve Required', reserveMessage, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Add Trustline',
+        onPress: async () => {
+          setActionLoading(true);
+          try {
+            const txHash = await addTrustline({
+              accountSecretKey: secretKey,
+              assetCode,
+              issuerPublicKey,
+              limit: customLimit.trim() || undefined,
+            });
+            Alert.alert('Success', `Trustline added!\nTX: ${txHash.slice(0, 16)}…`);
+            setView('dashboard');
+            await loadAccount(publicKey);
+          } catch (err) {
+            Alert.alert(
+              'Failed',
+              err instanceof TrustlineError ? err.message : 'Add trustline failed.',
+            );
+          } finally {
+            setActionLoading(false);
+          }
         },
-      ],
-    );
+      },
+    ]);
   };
 
   // ── Remove trustline ────────────────────────────────────────────────────────
@@ -192,16 +200,26 @@ const TrustlineScreen: React.FC<Props> = ({ onBack }) => {
       setKeyModalVisible(true);
       return;
     }
-    if (parseFloat(tl.balance) > 0) {
+    try {
+      // Blocks non-zero balances AND stranded liabilities from open offers.
+      assertTrustlineRemovable(tl);
+    } catch (err) {
       Alert.alert(
         'Cannot Remove',
-        `Balance is ${tl.balance} ${tl.assetCode}. Transfer or burn the balance before removing the trustline.`,
+        err instanceof TrustlineError
+          ? err.message
+          : 'Transfer or burn the balance before removing the trustline.',
       );
       return;
     }
+
+    const releaseNote = state
+      ? describeReserveImpact(state, 'remove').summary
+      : `This will release ${XLM_RESERVE_PER_TRUSTLINE} XLM from reserve.`;
+
     Alert.alert(
       'Remove Trustline',
-      `Remove trustline for ${tl.assetCode}? This will release ${XLM_RESERVE_PER_TRUSTLINE} XLM from reserve.`,
+      `Remove trustline for ${tl.assetCode}?\n\n${releaseNote}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {

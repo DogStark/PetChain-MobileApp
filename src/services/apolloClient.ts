@@ -83,4 +83,39 @@ const apolloClient: ApolloClient<NormalizedCacheObject> = new ApolloClient({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Cross-account cache isolation (#978)
+//
+// The normalized InMemoryCache is keyed by object type + id, not by the
+// authenticated account. Without an explicit wipe on logout / account switch,
+// a `cache-and-network` read can hand the next account a prior account's pets
+// or medical records before the network response lands.
+//
+// `resetApolloStore()` drops all normalized state atomically. It uses
+// `clearStore()` (not `resetStore()`) so no active query is refetched with a
+// missing/stale token during teardown. Call it *after* auth tokens are cleared
+// and *before* the offline queue is drained for the new session.
+// ---------------------------------------------------------------------------
+
+let _cacheResetInFlight: Promise<void> | null = null;
+
+export async function resetApolloStore(): Promise<void> {
+  // Coalesce concurrent callers (e.g. logout + inactivity timeout firing
+  // together) so the cache is only torn down once.
+  if (_cacheResetInFlight) return _cacheResetInFlight;
+
+  _cacheResetInFlight = (async () => {
+    try {
+      await apolloClient.clearStore();
+    } catch {
+      // clearStore() rejects if an in-flight query errors while unsubscribing.
+      // The cache is still wiped, so continue teardown rather than surface it.
+    } finally {
+      _cacheResetInFlight = null;
+    }
+  })();
+
+  return _cacheResetInFlight;
+}
+
 export default apolloClient;

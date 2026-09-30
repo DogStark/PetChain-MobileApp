@@ -15,6 +15,11 @@ export interface CachedQR {
   petId: string;
   payload: string; // base64-encoded QR string
   cachedAt: number;
+  /** Set when the owning QR token is revoked; stale data must not be shown. */
+  revoked?: boolean;
+  revokedAt?: number;
+  /** Mirror of the embedded payload `expiresAt` (Unix ms) when known. */
+  expiresAt?: number;
 }
 
 // ─── Format helpers ───────────────────────────────────────────────────────────
@@ -83,7 +88,12 @@ export const decodePayload = (raw: string): Record<string, unknown> => {
  * Persist a generated QR payload so it can be displayed offline.
  */
 export const cacheQRPayload = async (petId: string, payload: string): Promise<void> => {
-  const entry: CachedQR = { petId, payload, cachedAt: Date.now() };
+  const entry: CachedQR = {
+    petId,
+    payload,
+    cachedAt: Date.now(),
+    expiresAt: readPayloadExpiry(payload),
+  };
   await setItem(`${QR_CACHE_PREFIX}${petId}`, JSON.stringify(entry));
 
   // Keep an index of cached pet IDs
@@ -138,9 +148,55 @@ export const extractPetFromPayload = (payload: Record<string, unknown>): Partial
   return pet as Partial<Pet>;
 };
 
+// ─── Revocation / verification metadata ──────────────────────────────────────
+
+/**
+ * Mark the cached QR for a pet as revoked, but only when the cached payload
+ * actually embeds the given token. This prevents a rotated/regenerated QR
+ * (which issues a new token under the same pet) from being incorrectly revoked
+ * because an older token was revoked.
+ *
+ * @returns true if the cache entry was updated, false otherwise.
+ */
+export const markQRRevoked = async (petId: string, token: string): Promise<boolean> => {
+  const entry = await readCachedEntry(petId);
+  if (!entry) return false;
+  if (readPayloadToken(entry.payload) !== token) return false;
+  const now = Date.now();
+  await writeCachedEntry({ ...entry, revoked: true, revokedAt: now });
+  return true;
+};
+
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
 const getCacheIndex = async (): Promise<string[]> => {
   const raw = await getItem(QR_CACHE_INDEX_KEY);
   return raw ? JSON.parse(raw) : [];
+};
+
+const readCachedEntry = async (petId: string): Promise<CachedQR | null> => {
+  const raw = await getItem(`${QR_CACHE_PREFIX}${petId}`);
+  return raw ? (JSON.parse(raw) as CachedQR) : null;
+};
+
+const writeCachedEntry = async (entry: CachedQR): Promise<void> => {
+  await setItem(`${QR_CACHE_PREFIX}${entry.petId}`, JSON.stringify(entry));
+};
+
+const readPayloadExpiry = (payload: string): number | undefined => {
+  try {
+    const obj = decodePayload(payload);
+    return typeof obj.expiresAt === 'number' ? obj.expiresAt : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const readPayloadToken = (payload: string): string | undefined => {
+  try {
+    const obj = decodePayload(payload);
+    return typeof obj.token === 'string' ? obj.token : undefined;
+  } catch {
+    return undefined;
+  }
 };

@@ -139,3 +139,35 @@ export async function scheduleMedicationNotification(
     },
   });
 }
+
+// ─── Reconciliation (prevent duplicates on upgrade) ──────────────────────────
+
+/**
+ * Reconcile desired schedules (from current medication data) vs actual native schedules.
+ * Cancels orphaned/obsolete notifications that remain from previous app versions.
+ */
+export async function reconcileScheduledNotifications(): Promise<number> {
+  try {
+    const medications = await getMedications();
+    const activeMedicationIds = new Set(medications.map((m) => m.id));
+
+    const allScheduled = await Notifications.getAllScheduledNotificationsAsync();
+    const medicationNotifs = allScheduled.filter(
+      (n) => (n.content.data as Record<string, unknown>)?.type === 'medication_reminder',
+    );
+
+    let cancelledCount = 0;
+    for (const notif of medicationNotifs) {
+      const medId = (notif.content.data as Record<string, unknown>)?.medicationId as string | undefined;
+      if (medId && !activeMedicationIds.has(medId)) {
+        await Notifications.cancelScheduledNotificationAsync(notif.identifier);
+        cancelledCount++;
+      }
+    }
+
+    return cancelledCount;
+  } catch (err) {
+    logError(err as Error, { context: 'reconcileScheduledNotifications' });
+    return 0;
+  }
+}

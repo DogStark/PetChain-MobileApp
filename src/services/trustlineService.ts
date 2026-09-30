@@ -79,6 +79,95 @@ export class TrustlineError extends Error {
   }
 }
 
+// ─── Reserve & liability checks (Issue #950) ─────────────────────────────────
+
+export interface ReserveImpact {
+  action: 'add' | 'remove';
+  /** +0.5 when adding a trustline, -0.5 when removing one */
+  reserveDeltaXlm: number;
+  /** Total XLM that would be locked in reserves after the action */
+  projectedReservedXlm: number;
+  /** XLM that would remain spendable after the action (never negative) */
+  projectedAvailableXlm: string;
+  /** For `add`: whether the account can cover the extra reserve */
+  sufficient: boolean;
+  /** Human-readable explanation suitable for a confirmation dialog */
+  summary: string;
+}
+
+/**
+ * Explain how adding or removing a single trustline changes the account's
+ * locked XLM reserve, and whether the account can afford an addition.
+ */
+export function describeReserveImpact(
+  state: TrustlineState,
+  action: 'add' | 'remove',
+): ReserveImpact {
+  const reserveDeltaXlm =
+    action === 'add' ? XLM_RESERVE_PER_TRUSTLINE : -XLM_RESERVE_PER_TRUSTLINE;
+  const projectedReservedXlm = Math.max(0, state.totalReservedXlm + reserveDeltaXlm);
+  const rawAvailable = parseFloat(state.xlmBalance) - projectedReservedXlm;
+  const sufficient = action === 'remove' || rawAvailable >= 0;
+
+  const summary =
+    action === 'add'
+      ? `Adding this trustline locks an extra ${XLM_RESERVE_PER_TRUSTLINE} XLM ` +
+        `(reserve ${state.totalReservedXlm} → ${projectedReservedXlm} XLM). ` +
+        (sufficient
+          ? `You would have ${Math.max(0, rawAvailable).toFixed(7)} XLM available.`
+          : `You are short ${Math.abs(rawAvailable).toFixed(7)} XLM — fund the account first.`)
+      : `Removing this trustline frees ${XLM_RESERVE_PER_TRUSTLINE} XLM ` +
+        `(reserve ${state.totalReservedXlm} → ${projectedReservedXlm} XLM).`;
+
+  return {
+    action,
+    reserveDeltaXlm,
+    projectedReservedXlm,
+    projectedAvailableXlm: Math.max(0, rawAvailable).toFixed(7),
+    sufficient,
+    summary,
+  };
+}
+
+/** True when the account can cover the +0.5 XLM reserve for one more trustline. */
+export function canAffordNewTrustline(state: TrustlineState): boolean {
+  return describeReserveImpact(state, 'add').sufficient;
+}
+
+/**
+ * Guard trustline removal. Removal is only safe when the line holds no balance
+ * and has no buying/selling liabilities — open offers referencing the asset
+ * would otherwise be stranded and the `change_trust` op would fail with
+ * `CHANGE_TRUST_INVALID_LIMIT`.
+ */
+export function assertTrustlineRemovable(line: {
+  assetCode: string;
+  balance: string;
+  selling_liabilities?: string;
+  buying_liabilities?: string;
+  sellingLiabilities?: string;
+  buyingLiabilities?: string;
+}): void {
+  if (parseFloat(line.balance || '0') > 0) {
+    throw new TrustlineError(
+      `Cannot remove trustline: balance is ${line.balance} ${line.assetCode}. ` +
+        `Transfer or burn the balance first.`,
+      'NON_ZERO_BALANCE',
+    );
+  }
+
+  const selling = parseFloat(line.selling_liabilities ?? line.sellingLiabilities ?? '0');
+  const buying = parseFloat(line.buying_liabilities ?? line.buyingLiabilities ?? '0');
+  if (selling > 0 || buying > 0) {
+    throw new TrustlineError(
+      `Cannot remove trustline for ${line.assetCode}: open offers hold ` +
+        `${selling > 0 ? `${selling} (selling)` : `${buying} (buying)`} in liabilities. ` +
+        `Cancel those offers first.`,
+      'HAS_LIABILITIES',
+    );
+  }
+}
+
 // ─── Horizon server (lazy singleton) ─────────────────────────────────────────
 
 let _server: StellarSdk.Horizon.Server | null = null;
@@ -102,12 +191,15 @@ function parseBalance(balances: StellarSdk.Horizon.HorizonApi.BalanceLine[]): {
     } else if (b.asset_type === 'credit_alphanum4' || b.asset_type === 'credit_alphanum12') {
       const code = b.asset_code;
       const issuer = b.asset_issuer;
+      const line = b as { selling_liabilities?: string; buying_liabilities?: string };
       trustlines.push({
         assetCode: code,
         issuerPublicKey: issuer,
         issuerLabel: PETCHAIN_ASSETS.find((a) => a.assetCode === code)?.name,
         balance: b.balance,
         limit: b.limit,
+        sellingLiabilities: line.selling_liabilities ?? '0',
+        buyingLiabilities: line.buying_liabilities ?? '0',
         isPetChainAsset: PETCHAIN_ASSET_CODES.has(code),
       });
     }
@@ -202,12 +294,13 @@ export async function removeTrustline(params: RemoveTrustlineParams): Promise<st
     if (!existing) {
       throw new TrustlineError('Trustline does not exist', 'NOT_FOUND');
     }
-    if (parseFloat(existing.balance) > 0) {
-      throw new TrustlineError(
-        `Cannot remove trustline: balance is ${existing.balance} ${assetCode}. Transfer or burn the balance first.`,
-        'NON_ZERO_BALANCE',
-      );
-    }
+    // Block removal on non-zero balance OR outstanding buying/selling liabilities.
+    assertTrustlineRemovable({
+      assetCode,
+      balance: existing.balance,
+      selling_liabilities: (existing as { selling_liabilities?: string }).selling_liabilities,
+      buying_liabilities: (existing as { buying_liabilities?: string }).buying_liabilities,
+    });
 
     const asset = new StellarSdk.Asset(assetCode, issuerPublicKey);
     // Setting limit to '0' removes the trustline

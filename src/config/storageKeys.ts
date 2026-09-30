@@ -28,4 +28,15 @@ export const storageKeys = {
     /** Backoff state for sync retries. */
     backoff: '@sync/backoff',
   },
+  stellar: {
+    /**
+     * Submitted-but-unconfirmed Stellar transactions (issue #947).
+     *
+     * Holds signed envelopes only. A signed envelope carries the source public
+     * key and a signature — it is the same data the network sees, and contains
+     * no secret key. The secret stays in secure storage and is never written
+     * here.
+     */
+    pendingTransactions: '@stellar/pending_transactions',
+  },
 } as const;

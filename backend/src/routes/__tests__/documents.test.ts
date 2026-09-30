@@ -127,6 +127,22 @@ describe('POST /api/documents', () => {
     expect(res.body.error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
   });
 
+  it('accepts image/heic MIME type (server-client consistency)', async () => {
+    const res = await request(app)
+      .post('/api/documents')
+      .set(authHeader(OWNER_ID))
+      .send(
+        validDocBody(PET_ID, {
+          mimeType: 'image/heic',
+          name: 'photo.heic',
+          sizeBytes: 1024,
+        }),
+      );
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+  });
+
   it('rejects oversized file', async () => {
     const res = await request(app)
       .post('/api/documents')

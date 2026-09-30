@@ -18,6 +18,11 @@ const ReactNative = {
   Linking: {
     openURL: jest.fn().mockResolvedValue(true),
     canOpenURL: jest.fn().mockResolvedValue(true),
+    openSettings: jest.fn().mockResolvedValue(true),
+  },
+  AppState: {
+    currentState: 'active',
+    addEventListener: jest.fn(() => ({ remove: jest.fn() })),
   },
   Share: {
     share: jest.fn().mockResolvedValue({ action: 'sharedAction' }),

@@ -8,7 +8,9 @@
  *  - Socket.IO signaling via the /signaling endpoint
  *  - Waiting room with estimated wait time
  *  - Screen sharing (show medical documents to the vet)
- *  - Recording consent dialog — recording only starts after both parties consent
+ *  - Versioned, per-scope consent (Issue #969): camera/microphone capture is
+ *    not started until the participant answers, screen sharing is consented to
+ *    separately, and denials are recorded as explicitly as grants
  *  - Adaptive bitrate indicator (network quality badge)
  *  - Graceful handling of poor network conditions
  */
@@ -35,6 +37,10 @@ import {
 import { io, type Socket } from 'socket.io-client';
 
 import config from '../config';
+import consentService, {
+  CONSENT_POLICY_VERSION,
+  type ConsentScope,
+} from '../services/consultationConsentService';
 import { logError } from '../utils/errorLogger';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -113,6 +119,11 @@ const VideoConsultationScreen: React.FC<Props> = ({
   const [estimatedWait, setEstimatedWait] = useState<number>(0);
   const [showConsentModal, setShowConsentModal] = useState(false);
   const [consentGiven, setConsentGiven] = useState(false);
+  /**
+   * Null until the participant answers the consent prompt. Camera and
+   * microphone are not touched while this is null — see `startLocalMedia`.
+   */
+  const [consentAnswered, setConsentAnswered] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -202,24 +213,66 @@ const VideoConsultationScreen: React.FC<Props> = ({
     }, STATS_POLL_INTERVAL_MS);
   }, []);
 
+  // ---- Consent -----------------------------------------------------------
+  /** Record one scope decision for this participant. Never throws. */
+  const submitConsent = useCallback(
+    async (scope: ConsentScope, decision: 'granted' | 'denied') => {
+      try {
+        await consentService.recordConsent({
+          consultationId,
+          participantId: userId,
+          participantRole: userRole,
+          scope,
+          decision,
+        });
+      } catch (err) {
+        logError(err instanceof Error ? err : new Error(String(err)), {
+          screen: 'VideoConsultationScreen',
+          action: 'submitConsent',
+          scope,
+        });
+      }
+    },
+    [consultationId, userId, userRole],
+  );
+
   // ---- Start local media -------------------------------------------------
   const startLocalMedia = useCallback(async () => {
+    // Contextual permission: the participant must have answered the prompt
+    // before we open the camera or microphone. Acquiring the stream *is* the
+    // permission request on both platforms, so doing it earlier would prompt
+    // the OS before the user knows what the call involves.
+    if (!consentAnswered) {
+      logError(new Error('startLocalMedia called before consent was answered'), {
+        screen: 'VideoConsultationScreen',
+        action: 'startLocalMedia_blocked',
+      });
+      return null;
+    }
+
     try {
       const stream = await mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
+      void submitConsent('camera', 'granted');
+      void submitConsent('microphone', 'granted');
       return stream;
     } catch (err) {
       logError(err instanceof Error ? err : new Error(String(err)), {
         screen: 'VideoConsultationScreen',
         action: 'startLocalMedia',
       });
+      // An OS-level denial is a denial: record it so the consultation record
+      // shows why no media was captured.
+      void submitConsent('camera', 'denied');
+      void submitConsent('microphone', 'denied');
       Alert.alert(
         'Camera / Microphone',
-        'Please grant camera and microphone permissions to join the consultation.',
+        'PetChain needs camera and microphone access for this consultation. ' +
+          'You can grant them in Settings and rejoin.',
       );
       return null;
     }
-  }, []);
+  }, [consentAnswered, submitConsent]);
 
   // ---- Build RTCPeerConnection -------------------------------------------
   const buildPeerConnection = useCallback(
@@ -400,6 +453,28 @@ const VideoConsultationScreen: React.FC<Props> = ({
     if (!socketRef.current) return;
 
     if (!isSharingScreen) {
+      // Screen sharing can expose anything on the device — unrelated documents,
+      // notifications, other patients' records. It gets its own consent, asked
+      // at the moment of use rather than bundled into the join prompt.
+      const confirmed = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          'Share your screen?',
+          'The vet will see everything on your screen, including notifications and ' +
+            'any other app you open, until you stop sharing.',
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Share screen', onPress: () => resolve(true) },
+          ],
+          { cancelable: false },
+        );
+      });
+
+      if (!confirmed) {
+        void submitConsent('screen_share', 'denied');
+        return;
+      }
+      void submitConsent('screen_share', 'granted');
+
       try {
         const screenStream = await (mediaDevices as any).getDisplayMedia({ video: true });
         const screenTrack = screenStream.getVideoTracks()[0];
@@ -433,7 +508,7 @@ const VideoConsultationScreen: React.FC<Props> = ({
       setIsSharingScreen(false);
       socketRef.current.emit('toggle_screen', { consultationId, enabled: false });
     }
-  }, [consultationId, isSharingScreen]);
+  }, [consultationId, isSharingScreen, submitConsent]);
 
   const switchToAudioOnly = useCallback(async () => {
     // Disable video track
@@ -470,6 +545,10 @@ const VideoConsultationScreen: React.FC<Props> = ({
     socketRef.current?.emit('leave_room', { consultationId });
     socketRef.current?.disconnect();
 
+    // Consent is per-consultation: drop it so a later call re-asks rather than
+    // silently inheriting this session's answers.
+    consentService.clearConsents(consultationId);
+
     setCallState('ended');
     onEnd();
   }, [consultationId, localStream, networkQuality, onEnd]);
@@ -484,35 +563,46 @@ const VideoConsultationScreen: React.FC<Props> = ({
       <Modal transparent animationType="slide" visible>
         <View style={styles.consentOverlay}>
           <View style={styles.consentCard}>
-            <Text style={styles.consentTitle}>Session Recording Consent</Text>
+            <Text style={styles.consentTitle}>Before you join</Text>
             <Text style={styles.consentBody}>
-              This telemedicine consultation may be recorded for your medical records. Both the pet
-              owner and the vet must consent before recording begins.{'\n\n'}
-              You can change your preference during the call.
+              This consultation uses your camera and microphone. Nothing is captured until you
+              choose below.{'\n\n'}
+              <Text style={styles.consentEmphasis}>Recording:</Text> the vet may record this session
+              into {petName}'s medical record. Recording only begins if both you and the vet agree.
+              You can join without agreeing to a recording.{'\n\n'}
+              You will be asked separately before sharing your screen.
+            </Text>
+            <Text style={styles.consentVersion} testID="consent-policy-version">
+              Consent policy {CONSENT_POLICY_VERSION}
             </Text>
             <View style={styles.consentButtons}>
               <TouchableOpacity
                 style={[styles.consentBtn, styles.consentBtnDecline]}
+                accessibilityRole="button"
+                testID="consent-decline"
                 onPress={() => {
                   setConsentGiven(false);
+                  setConsentAnswered(true);
                   setShowConsentModal(false);
+                  // A decline is recorded as explicitly as a grant: without it
+                  // the backend cannot distinguish "refused" from "never asked".
+                  void submitConsent('recording', 'denied');
                 }}
               >
-                <Text style={styles.consentBtnTextDecline}>No Recording</Text>
+                <Text style={styles.consentBtnTextDecline}>Join without recording</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.consentBtn, styles.consentBtnAccept]}
+                accessibilityRole="button"
+                testID="consent-accept"
                 onPress={() => {
                   setConsentGiven(true);
+                  setConsentAnswered(true);
                   setShowConsentModal(false);
-                  // Notify backend of consent
-                  void fetch(`${config.api.baseUrl}/consultations/${consultationId}/consent`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                  }).catch(() => null);
+                  void submitConsent('recording', 'granted');
                 }}
               >
-                <Text style={styles.consentBtnTextAccept}>I Consent</Text>
+                <Text style={styles.consentBtnTextAccept}>Allow recording</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -556,9 +646,11 @@ const VideoConsultationScreen: React.FC<Props> = ({
     return (
       <View style={styles.centered}>
         <Text style={styles.endedTitle}>Consultation Ended</Text>
-        {consentGiven && (
-          <Text style={styles.endedSub}>Your session recording has been saved securely.</Text>
-        )}
+        <Text style={styles.endedSub}>
+          {consentGiven
+            ? 'You allowed this session to be recorded into the medical record.'
+            : 'This session was not recorded.'}
+        </Text>
         <TouchableOpacity style={styles.doneBtn} onPress={onEnd}>
           <Text style={styles.doneBtnText}>Done</Text>
         </TouchableOpacity>
@@ -864,6 +956,8 @@ const styles = StyleSheet.create({
     maxWidth: 400,
   },
   consentTitle: { fontSize: 20, fontWeight: '700', color: '#1a1a1a', marginBottom: 12 },
+  consentEmphasis: { fontWeight: '700', color: '#1a1a1a' },
+  consentVersion: { fontSize: 11, color: '#888', marginBottom: 16 },
   consentBody: { fontSize: 14, color: '#444', lineHeight: 22, marginBottom: 24 },
   consentButtons: { flexDirection: 'row', gap: 12 },
   consentBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },

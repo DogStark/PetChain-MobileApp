@@ -24,13 +24,93 @@ const TRACES_SAMPLE_RATE: Record<string, number> = {
   development: 1.0,
 };
 
-// ─── PII sanitisation ────────────────────────────────────────────────────────
+// ─── PII and sensitive data sanitisation ──────────────────────────────────
 
+export const REDACTED = '[redacted]';
+
+// Sensitive key patterns: health, location, wallet, token
+const SENSITIVE_KEY_PATTERNS = [
+  // Health-related
+  'health',
+  'medical',
+  'diagnosis',
+  'treatment',
+  'medicalhistory',
+  'bloodtype',
+  'vitals',
+  'prescription',
+  // Location-related
+  'latitude',
+  'longitude',
+  'coordinates',
+  'address',
+  'location',
+  'geolocation',
+  'latlng',
+  // Wallet and crypto-related
+  'wallet',
+  'address',
+  'publickey',
+  'contract',
+  'balance',
+  'ethereum',
+  'blockchain',
+  // Token and auth-related
+  'token',
+  'apikey',
+  'sessionid',
+  'refreshtoken',
+  'authtoken',
+  'secret',
+  'password',
+  'email',
+  'phone',
+];
+
+export function isSensitiveKey(key: string): boolean {
+  const lowerKey = key.toLowerCase();
+  return SENSITIVE_KEY_PATTERNS.some((pattern) => lowerKey.includes(pattern));
+}
+
+/**
+ * Recursively redact sensitive fields from an object using an allowlist approach.
+ * Top-level keys are checked; nested objects/arrays are traversed and their
+ * sensitive fields are also redacted.
+ */
+export function redactSensitiveData(data: unknown): unknown {
+  if (data === null || data === undefined) {
+    return data;
+  }
+
+  if (Array.isArray(data)) {
+    return data.map((item) => redactSensitiveData(item));
+  }
+
+  if (typeof data !== 'object') {
+    return data;
+  }
+
+  const result: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(data)) {
+    if (isSensitiveKey(key)) {
+      result[key] = REDACTED;
+    } else if (typeof value === 'object' && value !== null) {
+      result[key] = redactSensitiveData(value);
+    } else {
+      result[key] = value;
+    }
+  }
+
+  return result;
+}
+
+// Deprecated: kept for backward compatibility
 const PII_KEYS = new Set(['email', 'password', 'token', 'phone', 'address', 'name', 'secret']);
 
 function sanitize(data: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(data).map(([k, v]) => [k, PII_KEYS.has(k.toLowerCase()) ? '[redacted]' : v]),
+    Object.entries(data).map(([k, v]) => [k, PII_KEYS.has(k.toLowerCase()) ? REDACTED : v]),
   );
 }
 
@@ -55,11 +135,18 @@ export function init(): void {
     attachStacktrace: true,
     maxBreadcrumbs: 100,
     beforeSend(event) {
-      // Strip PII from extra context before sending
+      // Redact sensitive health, location, wallet, and token data from extras
       if (event.extra) {
-        event.extra = sanitize(event.extra as Record<string, unknown>);
+        event.extra = redactSensitiveData(event.extra);
       }
       return event;
+    },
+    beforeBreadcrumb(breadcrumb) {
+      // Redact sensitive data from breadcrumb context
+      if (breadcrumb.data && typeof breadcrumb.data === 'object') {
+        breadcrumb.data = redactSensitiveData(breadcrumb.data);
+      }
+      return breadcrumb;
     },
   });
 }
@@ -73,7 +160,7 @@ export function captureException(error: unknown, context?: Record<string, unknow
   }
   if (context) {
     Sentry.withScope((scope) => {
-      scope.setExtras(sanitize(context));
+      scope.setExtras(redactSensitiveData(context));
       Sentry.captureException(error);
     });
   } else {
@@ -88,7 +175,7 @@ export function captureMessage(
 ): void {
   if (context) {
     Sentry.withScope((scope) => {
-      scope.setExtras(sanitize(context));
+      scope.setExtras(redactSensitiveData(context));
       Sentry.captureMessage(message, level);
     });
   } else {
@@ -127,7 +214,7 @@ export function breadcrumbNavigation(routeName: string, params?: Record<string, 
   Sentry.addBreadcrumb({
     category: 'navigation',
     message: `Navigated to ${routeName}`,
-    data: params ? sanitize(params) : undefined,
+    data: params ? (redactSensitiveData(params) as Record<string, unknown>) : undefined,
     level: 'info',
   });
 }

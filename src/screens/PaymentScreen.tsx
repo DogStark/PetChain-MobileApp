@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 
+import { getStellarNetworkProfile } from '../config/stellarNetwork';
 import type { Subscription, SubscriptionPlan, SubscriptionPlanDetails } from '../models/Payment';
 import paymentService from '../services/paymentService';
 import { getPublicKeyFromStoredSecret, getStoredSecret } from '../services/stellarAccountService';
@@ -18,6 +19,33 @@ import stellarPathPaymentService, {
   type PathPaymentQuote,
   type PreparedPayment,
 } from '../services/stellarPathPaymentService';
+import {
+  canSignQuote,
+  compareQuoteToSimulation,
+  evaluateQuoteFreshness,
+  simulateTransactionXdr,
+  type Discrepancy,
+  type TransactionSimulation,
+} from '../services/transactionSimulation';
+
+/**
+ * One spoken sentence summarising the transaction, so a screen-reader user gets
+ * the same review as a sighted one instead of a stream of separate labels.
+ */
+function buildReviewAccessibilityLabel(simulation: TransactionSimulation): string {
+  const parts = [
+    `Network ${simulation.network}`,
+    `fee ${simulation.feeXlm} XLM`,
+    simulation.memo.type === 'none' ? 'no memo' : `memo ${simulation.memo.value ?? ''}`,
+    `${simulation.operationCount} operation${simulation.operationCount === 1 ? '' : 's'}`,
+  ];
+  for (const op of simulation.operations) {
+    const amount = op.destinationAmount ? ` ${op.destinationAmount}` : '';
+    const asset = op.destinationAsset ? ` ${op.destinationAsset}` : '';
+    parts.push(`${op.type}${amount}${asset}`);
+  }
+  return `You are signing: ${parts.join(', ')}.`;
+}
 
 const PaymentScreen: React.FC = () => {
   const [plans, setPlans] = useState<SubscriptionPlanDetails[]>([]);
@@ -32,6 +60,17 @@ const PaymentScreen: React.FC = () => {
   const [preparedPayment, setPreparedPayment] = useState<PreparedPayment | null>(null);
   const [quote, setQuote] = useState<PathPaymentQuote | null>(null);
   const [audits, setAudits] = useState<PathPaymentAuditEntry[]>([]);
+  /**
+   * Ticks once a second while a quote is on screen so the expiry countdown and
+   * the disabled state of the confirm button stay truthful (issue #945).
+   */
+  const [now, setNow] = useState(() => Date.now());
+  /**
+   * Synchronous double-submit guard (issue #946). `submitting` is React state,
+   * so a second tap in the same frame can still get past `disabled` before the
+   * re-render lands. A ref flips immediately.
+   */
+  const submitLock = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -54,6 +93,58 @@ const PaymentScreen: React.FC = () => {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Only run the ticker while a quote is actually displayed.
+  useEffect(() => {
+    if (!quote) return undefined;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [quote]);
+
+  const networkProfile = useMemo(() => getStellarNetworkProfile(), []);
+
+  /**
+   * Decode the envelope that will actually be signed (issue #945).
+   *
+   * The previous screen displayed fields from the server-supplied quote and
+   * then signed `preparedPayment.transactionXdr` — two different objects, never
+   * cross-checked.
+   */
+  const simulation = useMemo<TransactionSimulation | null>(() => {
+    if (!preparedPayment) return null;
+    try {
+      return simulateTransactionXdr(
+        preparedPayment.transactionXdr,
+        networkProfile.networkPassphrase,
+      );
+    } catch {
+      return null;
+    }
+  }, [preparedPayment, networkProfile.networkPassphrase]);
+
+  const discrepancies = useMemo<Discrepancy[]>(() => {
+    if (!quote || !simulation) return [];
+    return compareQuoteToSimulation(quote, simulation, networkProfile.network);
+  }, [quote, simulation, networkProfile.network]);
+
+  const freshness = useMemo(
+    () => (quote ? evaluateQuoteFreshness(quote, now) : null),
+    [quote, now],
+  );
+
+  const signDecision = useMemo(() => {
+    if (!freshness) return { allowed: false, reason: 'No quote prepared yet.' };
+    if (!simulation) {
+      return {
+        allowed: false,
+        reason: 'This transaction could not be decoded for review, so it will not be signed.',
+      };
+    }
+    return canSignQuote(freshness, discrepancies);
+  }, [freshness, simulation, discrepancies]);
+
+  const confirmDisabled = submitting || !signDecision.allowed;
 
   const currentPrice = useCallback((plan: SubscriptionPlanDetails) => {
     return plan.id === 'premium_annual' ? plan.priceAnnual : plan.priceMonthly;
@@ -110,8 +201,25 @@ const PaymentScreen: React.FC = () => {
   };
 
   const handleConfirmPayment = async () => {
-    if (!preparedPayment) return;
+    if (!preparedPayment || !quote) return;
 
+    // Issue #946: refuse a second entry synchronously. `submitting` state alone
+    // leaves a window in which a rapid second tap is still accepted.
+    if (submitLock.current) return;
+
+    // Issue #945: re-evaluate at the moment of signing rather than trusting the
+    // last render. The ticker may not have fired since the quote lapsed.
+    const freshNow = evaluateQuoteFreshness(quote, Date.now());
+    const decision = simulation
+      ? canSignQuote(freshNow, discrepancies)
+      : { allowed: false, reason: 'This transaction could not be decoded for review.' };
+
+    if (!decision.allowed) {
+      Alert.alert('Cannot sign', decision.reason ?? 'This quote is no longer valid.');
+      return;
+    }
+
+    submitLock.current = true;
     setSubmitting(true);
     try {
       const secret = await getStoredSecret();
@@ -140,6 +248,7 @@ const PaymentScreen: React.FC = () => {
       );
     } finally {
       setSubmitting(false);
+      submitLock.current = false;
     }
   };
 
@@ -293,10 +402,83 @@ const PaymentScreen: React.FC = () => {
             <Text style={styles.auditLine}>Direct payment to the treasury account</Text>
           )}
 
+          {/* Issue #945: what the envelope actually does, decoded from the XDR
+              about to be signed rather than from the server-supplied quote. */}
+          <Text style={styles.auditTitle}>You are signing</Text>
+          {simulation ? (
+            <View accessible accessibilityLabel={buildReviewAccessibilityLabel(simulation)}>
+              <Text style={styles.quoteLine}>Network: {simulation.network}</Text>
+              <Text style={styles.quoteLine}>Fee: {simulation.feeXlm} XLM</Text>
+              <Text style={styles.quoteLine}>
+                Memo:{' '}
+                {simulation.memo.type === 'none'
+                  ? 'None'
+                  : `${simulation.memo.value ?? ''} (${simulation.memo.type})`}
+              </Text>
+              <Text style={styles.quoteLine}>Operations: {simulation.operationCount}</Text>
+              {simulation.operations.map((op) => (
+                <Text key={op.index} style={styles.auditLine}>
+                  {op.index + 1}. {op.type}
+                  {op.destinationAmount ? ` — ${op.destinationAmount}` : ''}
+                  {op.destinationAsset ? ` ${op.destinationAsset}` : ''}
+                  {op.destination
+                    ? ` to ${op.destination.slice(0, 8)}…${op.destination.slice(-4)}`
+                    : ''}
+                </Text>
+              ))}
+            </View>
+          ) : (
+            <Text style={styles.fallbackText}>
+              This transaction could not be decoded for review. It will not be signed.
+            </Text>
+          )}
+
+          {discrepancies.length > 0 ? (
+            <View
+              style={styles.warnBanner}
+              accessible
+              accessibilityRole="alert"
+              accessibilityLabel={`Warning. ${discrepancies.map((d) => d.message).join(' ')}`}
+            >
+              {discrepancies.map((d) => (
+                <Text key={d.field} style={styles.warnText}>
+                  {d.message}
+                </Text>
+              ))}
+            </View>
+          ) : null}
+
+          {freshness ? (
+            <Text
+              style={
+                freshness.isExpired || freshness.isExpiringSoon
+                  ? styles.fallbackText
+                  : styles.quoteLine
+              }
+              accessibilityLiveRegion={freshness.isExpiringSoon ? 'polite' : 'none'}
+            >
+              {freshness.isExpired
+                ? 'This quote has expired. Refresh it to get a current rate.'
+                : `Quote valid for ${freshness.secondsRemaining}s`}
+            </Text>
+          ) : null}
+
           <TouchableOpacity
-            style={[styles.confirmButton, submitting && styles.confirmButtonDisabled]}
+            style={[styles.confirmButton, confirmDisabled && styles.confirmButtonDisabled]}
             onPress={() => void handleConfirmPayment()}
-            disabled={submitting}
+            disabled={confirmDisabled}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: confirmDisabled, busy: submitting }}
+            accessibilityLabel={
+              simulation
+                ? `Sign and confirm payment of ${quote.sourceAmount} ${quote.sourceAsset.code}`
+                : 'Sign and confirm payment'
+            }
+            accessibilityHint={
+              signDecision.allowed
+                ? 'Signs the transaction locally and submits it. This cannot be undone.'
+                : signDecision.reason
+            }
           >
             {submitting ? (
               <ActivityIndicator size="small" color="#fff" />
@@ -304,6 +486,26 @@ const PaymentScreen: React.FC = () => {
               <Text style={styles.confirmButtonText}>Sign and confirm</Text>
             )}
           </TouchableOpacity>
+
+          {!signDecision.allowed && !submitting ? (
+            <Text style={styles.fallbackText}>{signDecision.reason}</Text>
+          ) : null}
+
+          {freshness?.isExpired && selectedPlan ? (
+            <TouchableOpacity
+              style={styles.confirmButton}
+              onPress={() => void handlePrepareQuote(selectedPlan)}
+              disabled={preparing}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: preparing, busy: preparing }}
+              accessibilityLabel="Refresh quote"
+            >
+              <Text style={styles.confirmButtonText}>
+                {preparing ? 'Refreshing…' : 'Refresh quote'}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+
           <Text style={styles.helperText}>
             The transaction is signed locally using the stored Stellar secret key and then submitted
             to Horizon.
