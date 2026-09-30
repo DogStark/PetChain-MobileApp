@@ -18,6 +18,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "app.petchain.mobile",
+      "buildNumber": "1",
       "associatedDomains": [
         "applinks:petchain.app"
       ],
@@ -111,6 +112,7 @@
         "backgroundColor": "#ffffff"
       },
       "package": "app.petchain.mobile",
+      "versionCode": 1,
       "intentFilters": [
         {
           "action": "VIEW",
@@ -172,6 +174,32 @@
     "extra": {
       "APP_ENV": "development",
       "SENTRY_DSN": "",
+      "diagnostics": {
+        "enabled": true,
+        "access": "support",
+        "redact": [
+          "SENTRY_DSN",
+          "API_BASE_URL",
+          "AUTH_TOKEN",
+          "userContent"
+        ],
+        "fields": [
+          "appVersion",
+          "buildNumber",
+          "environment",
+          "releaseChannel",
+          "commitId",
+          "apiBaseUrlOrigin",
+          "featureFlags"
+        ],
+        "provenance": {
+          "source": "eas",
+          "commitId": "EAS_BUILD_GIT_COMMIT_HASH",
+          "releaseChannel": "EAS_BUILD_PROFILE",
+          "environment": "APP_ENV",
+          "apiBaseUrl": "API_BASE_URL"
+        }
+      },
       "backgroundRefresh": {
         "enabled": true,
         "taskIdentifier": "app.petchain.mobile.refresh",
@@ -296,6 +324,82 @@
           "dataEncryptedInTransit": true,
           "dataDeletionRequestSupported": true
         }
+      },
+      "notificationChannels": {
+        "policyVersion": 1,
+        "channels": [
+          {
+            "id": "petchain.medication.v1",
+            "name": "Medication reminders",
+            "description": "Reminders to give your pet scheduled medication.",
+            "importance": "high",
+            "purpose": "medication",
+            "sensitive": true,
+            "showBadge": true,
+            "enableVibrate": true,
+            "lockscreenVisibility": "private",
+            "sound": "default"
+          },
+          {
+            "id": "petchain.appointment.v1",
+            "name": "Appointment reminders",
+            "description": "Reminders for upcoming vet appointments.",
+            "importance": "default",
+            "purpose": "appointment",
+            "sensitive": true,
+            "showBadge": true,
+            "enableVibrate": true,
+            "lockscreenVisibility": "private",
+            "sound": "default"
+          },
+          {
+            "id": "petchain.sos.v1",
+            "name": "Emergency (SOS) alerts",
+            "description": "Critical emergency alerts for your pet.",
+            "importance": "max",
+            "purpose": "sos",
+            "sensitive": true,
+            "showBadge": true,
+            "enableVibrate": true,
+            "lockscreenVisibility": "private",
+            "sound": "default"
+          }
+        ],
+        "reminderChannelMap": {
+          "medication": "petchain.medication.v1",
+          "appointment": "petchain.appointment.v1",
+          "sos": "petchain.sos.v1"
+        },
+        "deprecatedChannels": [
+          {
+            "id": "petchain.medication",
+            "replacedBy": "petchain.medication.v1",
+            "retire": true,
+            "reuse": false
+          },
+          {
+            "id": "petchain.appointment",
+            "replacedBy": "petchain.appointment.v1",
+            "retire": true,
+            "reuse": false
+          },
+          {
+            "id": "petchain.sos",
+            "replacedBy": "petchain.sos.v1",
+            "retire": true,
+            "reuse": false
+          }
+        ],
+        "disabledState": {
+          "detect": true,
+          "explain": true,
+          "promptFrequency": "once-per-channel",
+          "deepLinkToSettings": true
+        }
+      }
+    }
+  }
+}
       }
     }
   }
