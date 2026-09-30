@@ -105,3 +105,56 @@ appId: app.petchain.mobile.staging
 
 # Offline activation is queued and reported rather than silently dropped
 - assertVisible: "SOS Queued"
+
+# ── Scenario 6: Crash-safe SOS draft recovery ──────────────────────────────
+# Seed a valid, unexpired SOS draft scoped to the signed-in account
+- runScript:
+    file: ../scripts/seedSosDraft.js
+
+# Relaunch to simulate a crash-restart after the SOS flow was interrupted
+- launchApp
+- tapOn: "Emergency"
+
+# A recovery confirmation is shown before any draft data is reused
+- assertVisible:
+    id: "sos-draft-recovery-prompt"
+
+# Recovery never sends without explicit confirmation
+- assertNotVisible: "SOS Sent"
+
+# Explicitly confirm recovery to reuse the draft
+- tapOn:
+    id: "sos-draft-recover-button"
+
+# Stale location is reacquired rather than silently reused
+- assertVisible:
+    id: "sos-location-reacquiring"
+
+# ── Scenario 7: Expired SOS draft is discarded ─────────────────────────────
+# Seed a draft whose expiration timestamp is in the past
+- runScript:
+    file: ../scripts/seedExpiredSosDraft.js
+
+- launchApp
+- tapOn: "Emergency"
+
+# Expired drafts are deleted on startup and never offered for recovery
+- assertNotVisible:
+    id: "sos-draft-recovery-prompt"
+- assertVisible:
+    id: "sos-button"
+
+# ── Scenario 8: Drafts are cleared on account logout ───────────────────────
+# Seed a valid draft, then log out and back in
+- runScript:
+    file: ../scripts/seedSosDraft.js
+- runScript:
+    file: ../scripts/logoutAndLogin.js
+
+- tapOn: "Emergency"
+
+# Drafts are scoped to the signed-in account and cleared on logout
+- assertNotVisible:
+    id: "sos-draft-recovery-prompt"
+- assertVisible:
+    id: "sos-button"

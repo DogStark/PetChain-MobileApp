@@ -9,6 +9,12 @@ import OfflineIndicator from './src/components/OfflineIndicator';
 import { useSplashGuard } from './src/components/SplashGuard';
 import ThemeTransitionView from './src/components/ThemeTransitionView';
 import UpdatePrompt from './src/components/UpdatePrompt';
+import {
+  ConfigurationError,
+  describeConfig,
+  resolveProfile,
+  validateConfig,
+} from './src/config/envSchema';
 import { PetProvider } from './src/context/PetContext';
 import { ThemeProvider } from './src/context/ThemeContext';
 import { ToastProvider } from './src/context/ToastContext';
@@ -41,6 +47,24 @@ const isStorybookEnabled = process.env.STORYBOOK_ENABLED === 'true';
 
 // Initialise Sentry before the first render
 errorTracking.init();
+
+// Issue #1069: validate environment values at startup with typed schemas.
+// Missing required values fail fast with a named ConfigurationError, and the
+// redacted summary never renders or logs secret values.
+const appProfile = resolveProfile(process.env.APP_ENV);
+let startupConfig: ReturnType<typeof validateConfig> | null = null;
+try {
+  startupConfig = validateConfig(process.env as Record<string, string | undefined>, appProfile);
+  // eslint-disable-next-line no-console
+  console.info('[config] startup configuration', describeConfig(startupConfig));
+} catch (error) {
+  if (error instanceof ConfigurationError) {
+    // eslint-disable-next-line no-console
+    console.error(error.message);
+    throw error;
+  }
+  throw error;
+}
 
 // Apply RTL direction based on the active language at startup.
 //
@@ -350,6 +374,76 @@ function App() {
     };
   }, []);
 
-  // Handle initial notification if app was launched from a notificati
+  // Handle initial notification if app was launched from a notification
+  useEffect(() => {
+    void (async () => {
+      const response = await Notifications.getLastNotificationResponseAsync();
+      if (response) {
+        const url = response.notification.request.content.data?.url;
+        if (typeof url === 'string' && validateDeepLink(url)) {
+          handleNotificationDeepLink(url);
+        }
+      }
+    })();
+  }, []);
 
-/* … truncated 2300 chars — edit only what you need near the top … */
+  // Drain any deep links queued while the navigator was not ready.
+  useEffect(() => {
+    if (!appReady) return;
+    void navigationQueueService.flush();
+  }, [appReady]);
+
+  // Clear persisted lock timestamps when the app is intentionally unlocked.
+  useEffect(() => {
+    if (!locked) {
+      void clearPersistedTimestamps();
+    }
+  }, [locked]);
+
+  if (isStorybookEnabled) {
+    return <StorybookUIRoot />;
+  }
+
+  if (locked) {
+    return (
+      <LockScreen
+        onUnlock={() => {
+          setPinFallback(false);
+          setLocked(false);
+        }}
+        onFallback={() => setPinFallback(true)}
+        pinFallback={pinFallback}
+      />
+    );
+  }
+
+  return (
+    <ErrorBoundary>
+      <ThemeProvider>
+        <ToastProvider>
+          <PetProvider>
+            <ThemeTransitionView style={styles.container}>
+              <AppNavigator />
+              <OfflineIndicator />
+              <UpdatePrompt
+                visible={updateStatus.visible}
+                variant={updateStatus.visible ? updateStatus.variant : 'optional'}
+                storeUrl={updateStatus.visible ? updateStatus.storeUrl : undefined}
+                onUpdate={handleUpdate}
+                onDismiss={handleDismiss}
+              />
+            </ThemeTransitionView>
+          </PetProvider>
+        </ToastProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+});
+
+export default App;

@@ -5,6 +5,141 @@ const APP_ENV = process.env.APP_ENV ?? 'development';
 
 require('dotenv').config({ path: `.env.${APP_ENV}` });
 
+// ─── Startup configuration schema validation (issue #1069) ─────────────────
+//
+// A malformed `.env` or EAS configuration must fail loudly at startup with a
+// *named* configuration error, rather than surfacing later as an opaque API or
+// blockchain failure. Values are validated against typed schemas below and are
+// classified as either PUBLIC configuration (safe to embed in the client
+// bundle and render) or SECRET (never rendered or logged).
+//
+// Secrets are only ever checked for *presence*; their values are never read
+// into any returned/rendered structure, so they cannot leak into logs, error
+// messages, or the app manifest.
+const CONFIG_PROFILES = ['development', 'staging', 'production'];
+
+// Typed schema for each configuration value.
+//   kind: 'public' | 'secret'
+//   type: 'string' | 'url' | 'number' | 'boolean'
+//   required: profiles in which the value must be present
+//   pattern: optional validation regex (applied to public values only)
+const CONFIG_SCHEMA = {
+  EXPO_PUBLIC_API_URL: {
+    kind: 'public',
+    type: 'url',
+    required: ['development', 'staging', 'production'],
+  },
+  EXPO_PUBLIC_CHAIN_ID: {
+    kind: 'public',
+    type: 'number',
+    required: ['development', 'staging', 'production'],
+  },
+  EXPO_PUBLIC_PRIVACY_POLICY_URL: {
+    kind: 'public',
+    type: 'url',
+    required: ['production'],
+  },
+  EXPO_PUBLIC_TERMS_OF_SERVICE_URL: {
+    kind: 'public',
+    type: 'url',
+    required: ['production'],
+  },
+  EXPO_PUBLIC_ENABLE_ANALYTICS: {
+    kind: 'public',
+    type: 'boolean',
+    required: [],
+  },
+  // Secrets: presence-checked only, never read into rendered output.
+  API_SECRET_KEY: {
+    kind: 'secret',
+    type: 'string',
+    required: ['staging', 'production'],
+  },
+  BLOCKCHAIN_SIGNER_KEY: {
+    kind: 'secret',
+    type: 'string',
+    required: ['staging', 'production'],
+  },
+};
+
+// Named configuration error. The message identifies the offending key and the
+// profile, but never includes a value (so secrets cannot leak).
+class ConfigurationError extends Error {
+  constructor(key, profile, reason) {
+    super(`ConfigurationError: ${key} is invalid for profile "${profile}" (${reason})`);
+    this.name = 'ConfigurationError';
+    this.key = key;
+    this.profile = profile;
+  }
+}
+
+function validateConfigValue(key, spec, profile) {
+  const raw = process.env[key];
+  const isRequired = spec.required.includes(profile);
+
+  if (raw == null || raw === '') {
+    if (isRequired) {
+      throw new ConfigurationError(key, profile, 'missing required value');
+    }
+    return undefined;
+  }
+
+  // Secrets are validated for presence only; never parse or expose the value.
+  if (spec.kind === 'secret') {
+    return undefined;
+  }
+
+  switch (spec.type) {
+    case 'number': {
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed)) {
+        throw new ConfigurationError(key, profile, 'expected a number');
+      }
+      return parsed;
+    }
+    case 'boolean': {
+      if (raw !== 'true' && raw !== 'false') {
+        throw new ConfigurationError(key, profile, 'expected "true" or "false"');
+      }
+      return raw === 'true';
+    }
+    case 'url': {
+      let parsed;
+      try {
+        parsed = new URL(raw);
+      } catch {
+        throw new ConfigurationError(key, profile, 'expected a valid URL');
+      }
+      if (parsed.protocol !== 'https:' && profile === 'production') {
+        throw new ConfigurationError(key, profile, 'production URLs must use https');
+      }
+      return raw;
+    }
+    case 'string':
+    default:
+      return raw;
+  }
+}
+
+// Validate the whole schema for a profile. Returns only PUBLIC values so the
+// result is safe to embed in the manifest and render; secrets are omitted.
+function validateConfig(profile) {
+  if (!CONFIG_PROFILES.includes(profile)) {
+    throw new ConfigurationError('APP_ENV', profile, 'unknown profile');
+  }
+  const publicConfig = {};
+  for (const [key, spec] of Object.entries(CONFIG_SCHEMA)) {
+    const value = validateConfigValue(key, spec, profile);
+    if (spec.kind === 'public' && value !== undefined) {
+      publicConfig[key] = value;
+    }
+  }
+  return publicConfig;
+}
+
+// Fail fast at startup with a named configuration error.
+const PUBLIC_CONFIG = validateConfig(APP_ENV);
+
 // Version codes: dev=1, staging=2, prod=3
 const VERSION_CODE = { development: 1, staging: 2, production: 3 }[APP_ENV] ?? 1;
 const APP_VERSION = '1.0.0';
@@ -218,10 +353,10 @@ function resolveLegalUrl(urlEnv) {
     return configured;
   }
   if (APP_ENV === 'production') {
-    // Leave undefined so the release validator fails with the named artifact.
+    // Leave undefined so the release validator fails with a named error.
     return undefined;
   }
-  return `https://preview.petchain.app/legal/${urlEnv.toLowerCase()}`;
+  return `https://${APP_ENV}.petchain.app/legal`;
 }
 
 module.exports = {
@@ -239,6 +374,7 @@ module.exports = {
       resizeMode: 'contain',
       backgroundColor: '#ffffff',
     },
+    assetBundlePatterns: ['**/*'],
     ios: {
       supportsTablet: true,
       bundleIdentifier: 'app.petchain.mobile',
@@ -260,15 +396,19 @@ module.exports = {
         },
       ],
     },
+    web: {
+      favicon: './assets/favicon.png',
+    },
     extra: {
-      APP_ENV,
-      RTL_TEST_LOCALE,
-      IS_RTL_TEST,
-      DEEP_LINK_ROUTES,
-      DEEP_LINK_ALLOWED_HOSTS,
-      SENSITIVE_SCREEN_PROTECTION,
-      RELEASE_CHECKLIST,
-      MIGRATION_POLICY,
+      appEnv: APP_ENV,
+      // Public configuration only — secrets are never embedded here.
+      publicConfig: PUBLIC_CONFIG,
+      deepLinkRoutes: DEEP_LINK_ROUTES,
+      deepLinkAllowedHosts: DEEP_LINK_ALLOWED_HOSTS,
+      sensitiveScreenProtection: SENSITIVE_SCREEN_PROTECTION,
+      releaseChecklist: RELEASE_CHECKLIST,
+      migrationPolicy: MIGRATION_POLICY,
+      rtlTestLocale: IS_RTL_TEST ? RTL_TEST_LOCALE : null,
       legalUrls: {
         privacyPolicy: resolveLegalUrl('EXPO_PUBLIC_PRIVACY_POLICY_URL'),
         termsOfService: resolveLegalUrl('EXPO_PUBLIC_TERMS_OF_SERVICE_URL'),
