@@ -344,3 +344,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1096 -->
 - #1096: [Mobile] Add attachment preview isolation from untrusted document content
+
+<!-- handsoff-issue-1063 -->
+- #1063: [Mobile] Add secure import validation for encrypted health-record backups
