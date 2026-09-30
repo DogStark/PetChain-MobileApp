@@ -356,3 +356,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1065 -->
 - #1065: [Mobile] Add medication label OCR review before saving extracted data
+
+<!-- handsoff-issue-1074 -->
+- #1074: [Mobile] Add document-picker MIME and extension consistency checks
