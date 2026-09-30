@@ -130,3 +130,16 @@ jobs:
             echo "::error::Release build provenance resolver is missing"
             exit 1
           fi
+
+  localization-completeness-check:
+    name: Localization completeness gate (runtime keys)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run check-translations gate
+        run: |
+          # Scans runtime namespaces, enforces required locales, and fails CI
+          # for missing or extra critical keys. Output names the file and key
+          # path for every violation.
+          node scripts/check-translations.js
