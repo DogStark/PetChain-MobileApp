@@ -107,3 +107,44 @@ appId: app.petchain.mobile.staging
       - assertVisible: "Save"
       - tapOn: "Save"
       - setFontScale: 1.0
+
+# Android back-button confirmation coverage for destructive clinical actions (issue #1078)
+# Verifies that system back never confirms a destructive action, that unsaved
+# forms warn before leaving, and that the navigation stack is restored after
+# cancellation for delete, archive, and transfer flows.
+- runFlow:
+    when:
+      true: true
+    commands:
+      # Delete flow: back must dismiss the confirmation without deleting.
+      - tapOn: "Medications"
+      - tapOn: "Amoxicillin"
+      - tapOn: "Delete"
+      - assertVisible: "Delete Medication?"
+      - pressKey: Back
+      - assertVisible: "Amoxicillin"
+      - assertNotVisible: "Delete Medication?"
+      # Archive flow: back must cancel the archive confirmation.
+      - tapOn: "Archive"
+      - assertVisible: "Archive Medication?"
+      - pressKey: Back
+      - assertVisible: "Amoxicillin"
+      - assertNotVisible: "Archive Medication?"
+      # Transfer flow: back must cancel the transfer confirmation.
+      - tapOn: "Transfer"
+      - assertVisible: "Transfer Medication?"
+      - pressKey: Back
+      - assertVisible: "Amoxicillin"
+      - assertNotVisible: "Transfer Medication?"
+      # Unsaved form: back must warn before leaving and restore the stack.
+      - tapOn: "Add Medication"
+      - tapOn: "Dosage"
+      - inputText: "2.5"
+      - pressKey: Back
+      - assertVisible: "Discard changes?"
+      - tapOn: "Keep Editing"
+      - assertVisible: "Dosage"
+      - pressKey: Back
+      - assertVisible: "Discard changes?"
+      - tapOn: "Discard"
+      - assertVisible: "Medications"
