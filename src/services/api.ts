@@ -2,12 +2,84 @@ import axios from 'axios';
 
 const API_BASE_URL = 'https://api.handsoff.app/api';
 
+/**
+ * Documented maximum size for an API response body. Responses larger than
+ * this are rejected before JSON parsing so a compromised or misconfigured
+ * endpoint cannot exhaust mobile memory. 5 MiB comfortably covers normal
+ * pagination pages and attachment metadata while bounding worst-case usage.
+ */
+export const MAX_API_RESPONSE_BYTES = 5 * 1024 * 1024;
+
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
+  // Bound the raw response before it is buffered/parsed. This covers both
+  // content-length and streamed/chunked bodies.
+  maxContentLength: MAX_API_RESPONSE_BYTES,
+  maxBodyLength: MAX_API_RESPONSE_BYTES,
 });
+
+/**
+ * Recoverable, typed error raised when a response exceeds the documented
+ * size limit. It deliberately carries no response body or body-derived
+ * content — only the limit and the observed size (when known).
+ */
+export class ApiResponseTooLargeError extends Error {
+  readonly code = 'API_RESPONSE_TOO_LARGE';
+  readonly limit: number;
+  readonly observed?: number;
+
+  constructor(limit: number, observed?: number) {
+    super(
+      observed !== undefined
+        ? `API response exceeded the ${limit} byte limit (received ${observed} bytes).`
+        : `API response exceeded the ${limit} byte limit.`,
+    );
+    this.name = 'ApiResponseTooLargeError';
+    this.limit = limit;
+    this.observed = observed;
+  }
+}
+
+/**
+ * Detect an oversized-response failure. Axios surfaces the maxContentLength
+ * guard as a generic error, so we match on its message rather than treating
+ * it as a network failure. No response body is ever inspected here.
+ */
+export function isResponseTooLargeError(error: unknown): boolean {
+  if (error instanceof ApiResponseTooLargeError) {
+    return true;
+  }
+  if (!axios.isAxiosError(error)) {
+    return false;
+  }
+  const message = (error.message ?? '').toLowerCase();
+  return message.includes('maxcontentlength') || message.includes('max content length');
+}
+
+// Reject oversized responses before JSON parsing. The interceptor runs on
+// every response, so pagination and attachment flows are bounded too, while
+// normal-sized payloads pass through untouched.
+api.interceptors.response.use(
+  (response) => {
+    const declared = response.headers?.['content-length'];
+    if (declared !== undefined) {
+      const size = Number(declared);
+      if (Number.isFinite(size) && size > MAX_API_RESPONSE_BYTES) {
+        throw new ApiResponseTooLargeError(MAX_API_RESPONSE_BYTES, size);
+      }
+    }
+    return response;
+  },
+  (error) => {
+    if (isResponseTooLargeError(error)) {
+      throw new ApiResponseTooLargeError(MAX_API_RESPONSE_BYTES);
+    }
+    throw error;
+  },
+);
 
 // --- Certificate pinning --------------------------------------------------
 // Pinning is enforced at the native networking layer (see app.config.js).
