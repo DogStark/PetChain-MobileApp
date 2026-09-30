@@ -26,6 +26,18 @@ export interface ConflictRecord {
   serverData: Record<string, unknown>;
   localTimestamp: number;
   serverTimestamp: number;
+  localVersion?: string;
+  serverVersion?: string;
+  conflictingFields?: string[];
+  autoMergedFields?: string[];
+}
+
+export interface ConflictResolution {
+  entityId: string;
+  type: SyncEntityType;
+  /** Field-level choices: field name -> 'local' | 'remote' */
+  fieldChoices: Record<string, 'local' | 'remote'>;
+  resolvedAt: number;
 }
 
 export interface SyncStatus {
@@ -42,7 +54,8 @@ export interface SyncStatus {
 
 const SYNC_QUEUE_KEY = '@sync_queue';
 const SYNC_STATUS_KEY = '@sync_status';
-const _CONFLICTS_KEY = '@sync_conflicts';
+const CONFLICTS_KEY = '@sync_conflicts';
+const RESOLUTIONS_KEY = '@sync_resolutions';
 const MAX_RETRIES = 3;
 
 const DEFAULT_STATUS: SyncStatus = {
@@ -121,7 +134,7 @@ export class SyncService {
           const localRaw = await getItem(key);
           if (localRaw) {
             const local = JSON.parse(localRaw) as Record<string, unknown>;
-            const resolved = await this.resolveConflict(type, local, item, 'last-write-wins');
+            const resolved = await this.resolveConflict(type, local, item, 'manual');
             await setItem(key, JSON.stringify(resolved));
           } else {
             await setItem(key, JSON.stringify(item));
@@ -180,16 +193,175 @@ export class SyncService {
     type: SyncEntityType,
     localData: Record<string, unknown>,
     serverData: Record<string, unknown>,
-    strategy: ConflictResolutionStrategy = 'last-write-wins',
+    strategy: ConflictResolutionStrategy = 'manual',
   ): Promise<Record<string, unknown>> {
-    const localTs = (localData.updatedAt as number) || 0;
-    const serverTs = (serverData.updatedAt as number) || 0;
+    const localVersion = this.getVersion(localData);
+    const serverVersion = this.getVersion(serverData);
 
+    // No version metadata on either side → nothing to compare, keep server.
+    if (!localVersion && !serverVersion) {
+      return serverData;
+    }
+
+    // Versions match → no concurrent edit, safe to take server.
+    if (localVersion && serverVersion && localVersion === serverVersion) {
+      return serverData;
+    }
+
+    // Explicit last-write-wins is only honored when the caller opts in.
     if (strategy === 'last-write-wins') {
+      const localTs = (localData.updatedAt as number) || 0;
+      const serverTs = (serverData.updatedAt as number) || 0;
       return serverTs >= localTs ? serverData : localData;
     }
 
-    return serverData;
+    // Manual strategy: never silently overwrite. Auto-merge unchanged fields
+    // and surface the remaining conflicting fields for user review.
+    const { merged, conflictingFields, autoMergedFields } = this.mergeFields(
+      localData,
+      serverData,
+    );
+
+    if (conflictingFields.length > 0) {
+      await this.recordConflict({
+        entityId: (localData.id as string) || (serverData.id as string),
+        type,
+        localData,
+        serverData,
+        localTimestamp: (localData.updatedAt as number) || 0,
+        serverTimestamp: (serverData.updatedAt as number) || 0,
+        localVersion,
+        serverVersion,
+        conflictingFields,
+        autoMergedFields,
+      });
+    }
+
+    return merged;
+  }
+
+  /**
+   * Field-aware merge. Fields that are identical on both sides (or only
+   * present on one side) are merged automatically. Fields that differ are
+   * reported as conflicting and left at the local value until the user
+   * resolves them via the review screen.
+   */
+  private mergeFields(
+    localData: Record<string, unknown>,
+    serverData: Record<string, unknown>,
+  ): {
+    merged: Record<string, unknown>;
+    conflictingFields: string[];
+    autoMergedFields: string[];
+  } {
+    const merged: Record<string, unknown> = { ...serverData };
+    const conflictingFields: string[] = [];
+    const autoMergedFields: string[] = [];
+
+    const keys = new Set([...Object.keys(localData), ...Object.keys(serverData)]);
+
+    for (const key of keys) {
+      if (key === 'version' || key === 'etag') continue;
+
+      const hasLocal = Object.prototype.hasOwnProperty.call(localData, key);
+      const hasServer = Object.prototype.hasOwnProperty.call(serverData, key);
+
+      if (hasLocal && hasServer) {
+        if (this.isEqual(localData[key], serverData[key])) {
+          autoMergedFields.push(key);
+        } else {
+          conflictingFields.push(key);
+          // Keep local value pending user review; never silently drop it.
+          merged[key] = localData[key];
+        }
+      } else if (hasLocal) {
+        merged[key] = localData[key];
+        autoMergedFields.push(key);
+      } else {
+        autoMergedFields.push(key);
+      }
+    }
+
+    return { merged, conflictingFields, autoMergedFields };
+  }
+
+  private isEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (a === null || b === null || a === undefined || b === undefined) return false;
+    if (typeof a !== 'object' || typeof b !== 'object') return false;
+    try {
+      return JSON.stringify(a) === JSON.stringify(b);
+    } catch {
+      return false;
+    }
+  }
+
+  private getVersion(data: Record<string, unknown>): string | undefined {
+    const version = data.version ?? data.etag;
+    return version === undefined || version === null ? undefined : String(version);
+  }
+
+  // ── Conflict persistence & resolution ──
+
+  async getConflicts(): Promise<ConflictRecord[]> {
+    const stored = await getItem(CONFLICTS_KEY);
+    return stored ? (JSON.parse(stored) as ConflictRecord[]) : [];
+  }
+
+  private async recordConflict(conflict: ConflictRecord): Promise<void> {
+    const conflicts = await this.getConflicts();
+    const idx = conflicts.findIndex(
+      (c) => c.entityId === conflict.entityId && c.type === conflict.type,
+    );
+    if (idx >= 0) conflicts[idx] = conflict;
+    else conflicts.push(conflict);
+
+    await setItem(CONFLICTS_KEY, JSON.stringify(conflicts));
+    await this.patchStatus({ conflicts });
+  }
+
+  /**
+   * Apply a user's field-level resolution. Records the choice so it is
+   * replay-safe, merges the chosen values, and clears the pending conflict.
+   */
+  async applyResolution(resolution: ConflictResolution): Promise<Record<string, unknown>> {
+    const conflicts = await this.getConflicts();
+    const conflict = conflicts.find(
+      (c) => c.entityId === resolution.entityId && c.type === resolution.type,
+    );
+
+    if (!conflict) {
+      throw new Error(`No pending conflict for ${resolution.type}:${resolution.entityId}`);
+    }
+
+    const merged: Record<string, unknown> = { ...conflict.serverData };
+    for (const [field, choice] of Object.entries(resolution.fieldChoices)) {
+      merged[field] = choice === 'local' ? conflict.localData[field] : conflict.serverData[field];
+    }
+
+    // Persist the resolved record locally.
+    const key = `@${conflict.type}_${conflict.entityId}`;
+    await setItem(key, JSON.stringify(merged));
+
+    // Record the resolution for replay-safety.
+    const stored = await getItem(RESOLUTIONS_KEY);
+    const resolutions: ConflictResolution[] = stored ? JSON.parse(stored) : [];
+    resolutions.push({ ...resolution, resolvedAt: Date.now() });
+    await setItem(RESOLUTIONS_KEY, JSON.stringify(resolutions));
+
+    // Clear the resolved conflict.
+    const remaining = conflicts.filter(
+      (c) => !(c.entityId === resolution.entityId && c.type === resolution.type),
+    );
+    await setItem(CONFLICTS_KEY, JSON.stringify(remaining));
+    await this.patchStatus({ conflicts: remaining });
+
+    return merged;
+  }
+
+  async getResolutions(): Promise<ConflictResolution[]> {
+    const stored = await getItem(RESOLUTIONS_KEY);
+    return stored ? (JSON.parse(stored) as ConflictResolution[]) : [];
   }
 
   // ── Helpers ──
