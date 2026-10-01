@@ -54,4 +54,211 @@ function loggingConfig(): LoggingConfig {
   };
 }
 
+/**
+ * Issue #1089 — Support bundle redaction for backend and device diagnostics.
+ *
+ * Support exports must never leak authorization headers, account identifiers,
+ * or full endpoint URLs. Only allowlisted diagnostic fields survive; forbidden
+ * keys and values are stripped recursively before serialization, and the
+ * resulting bundle is bounded in size.
+ */
+export const SUPPORT_BUNDLE_MAX_BYTES = 256 * 1024;
+
+/** Diagnostic keys that are safe to include in a support bundle. */
+export const SUPPORT_BUNDLE_ALLOWED_KEYS: readonly string[] = [
+  'level',
+  'message',
+  'timestamp',
+  'service',
+  'serviceName',
+  'environment',
+  'env',
+  'version',
+  'appVersion',
+  'platform',
+  'os',
+  'osVersion',
+  'deviceModel',
+  'deviceId',
+  'buildNumber',
+  'errorCode',
+  'errorName',
+  'stack',
+  'statusCode',
+  'durationMs',
+  'requestId',
+  'correlationId',
+  'component',
+  'module',
+  'count',
+  'tags',
+];
+
+/** Keys that must never appear in a support bundle, regardless of allowlist. */
+export const SUPPORT_BUNDLE_FORBIDDEN_KEYS: readonly string[] = [
+  'authorization',
+  'auth',
+  'token',
+  'accessToken',
+  'refreshToken',
+  'idToken',
+  'apiKey',
+  'apikey',
+  'secret',
+  'password',
+  'passwd',
+  'cookie',
+  'set-cookie',
+  'session',
+  'sessionId',
+  'accountId',
+  'accountNumber',
+  'userId',
+  'userEmail',
+  'email',
+  'phone',
+  'ssn',
+  'dob',
+  'dateOfBirth',
+  'url',
+  'endpoint',
+  'host',
+  'hostname',
+  'ip',
+  'ipAddress',
+  'headers',
+  'requestHeaders',
+  'responseHeaders',
+  'query',
+  'queryParams',
+  'body',
+  'requestBody',
+  'responseBody',
+  'payload',
+];
+
+const FORBIDDEN_KEY_SET = new Set(SUPPORT_BUNDLE_FORBIDDEN_KEYS.map((k) => k.toLowerCase()));
+const ALLOWED_KEY_SET = new Set(SUPPORT_BUNDLE_ALLOWED_KEYS.map((k) => k.toLowerCase()));
+
+/** Value patterns that indicate sensitive content even under an allowed key. */
+const FORBIDDEN_VALUE_PATTERNS: readonly RegExp[] = [
+  /\bbearer\s+[a-z0-9._\-]+/i,
+  /\bbasic\s+[a-z0-9+/=]+/i,
+  /\beyJ[a-z0-9_\-]+\.[a-z0-9_\-]+\.[a-z0-9_\-]+/i,
+  /\bhttps?:\/\/[^\s"']+/i,
+  /\b[\w.+-]+@[\w-]+\.[\w.-]+\b/,
+  /\b\d{3}-\d{2}-\d{4}\b/,
+  /\b(?:\d[ -]?){13,19}\b/,
+];
+
+function isForbiddenKey(key: string): boolean {
+  const normalized = key.toLowerCase();
+  if (FORBIDDEN_KEY_SET.has(normalized)) return true;
+  // Catch compound keys such as `x-authorization-header` or `user_email`.
+  return SUPPORT_BUNDLE_FORBIDDEN_KEYS.some((forbidden) =>
+    normalized.includes(forbidden.toLowerCase()),
+  );
+}
+
+function isAllowedKey(key: string): boolean {
+  return ALLOWED_KEY_SET.has(key.toLowerCase());
+}
+
+function isForbiddenValue(value: string): boolean {
+  return FORBIDDEN_VALUE_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+/**
+ * Recursively redact a diagnostic payload against the allowlisted schema.
+ * Forbidden keys and values are removed; unknown keys are dropped.
+ */
+export function redactSupportBundle(input: unknown): unknown {
+  if (input === null || input === undefined) return input;
+
+  if (typeof input === 'string') {
+    return isForbiddenValue(input) ? '[REDACTED]' : input;
+  }
+
+  if (typeof input === 'number' || typeof input === 'boolean') return input;
+
+  if (Array.isArray(input)) {
+    return input
+      .map((item) => redactSupportBundle(item))
+      .filter((item) => item !== undefined);
+  }
+
+  if (typeof input === 'object') {
+    const output: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+      if (isForbiddenKey(key) || !isAllowedKey(key)) continue;
+      const redacted = redactSupportBundle(value);
+      if (redacted !== undefined) output[key] = redacted;
+    }
+    return output;
+  }
+
+  return undefined;
+}
+
+/**
+ * Redact and serialize a support bundle, bounding the result to
+ * SUPPORT_BUNDLE_MAX_BYTES. Returns null when serialization fails.
+ */
+export function serializeSupportBundle(input: unknown): string | null {
+  try {
+    const redacted = redactSupportBundle(input);
+    const serialized = JSON.stringify(redacted);
+    if (serialized === undefined) return null;
+    if (Buffer.byteLength(serialized, 'utf8') <= SUPPORT_BUNDLE_MAX_BYTES) return serialized;
+
+    // Bound the bundle by trimming the largest arrays until it fits.
+    const bounded = boundSupportBundle(redacted);
+    const boundedSerialized = JSON.stringify(bounded);
+    if (boundedSerialized === undefined) return null;
+    if (Buffer.byteLength(boundedSerialized, 'utf8') <= SUPPORT_BUNDLE_MAX_BYTES) {
+      return boundedSerialized;
+    }
+    return JSON.stringify({ truncated: true, reason: 'bundle-size-limit' });
+  } catch {
+    return null;
+  }
+}
+
+function boundSupportBundle(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    let items = value.map((item) => boundSupportBundle(item));
+    while (items.length > 0 && Buffer.byteLength(JSON.stringify(items), 'utf8') > SUPPORT_BUNDLE_MAX_BYTES) {
+      items = items.slice(0, Math.floor(items.length / 2));
+    }
+    return items;
+  }
+  if (value && typeof value === 'object') {
+    const output: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      output[key] = boundSupportBundle(item);
+    }
+    return output;
+  }
+  return value;
+}
+
+/**
+ * Build a user-visible export result without exposing bundle contents.
+ */
+export function buildSupportBundleExportResult(input: unknown): {
+  success: boolean;
+  message: string;
+  bytes?: number;
+} {
+  const serialized = serializeSupportBundle(input);
+  if (serialized === null) {
+    return { success: false, message: 'Support bundle export failed. Please try again.' };
+  }
+  return {
+    success: true,
+    message: 'Support bundle exported successfully.',
+    bytes: Buffer.byteLength(serialized, 'utf8'),
+  };
+}
+
 export default loggingConfig();
