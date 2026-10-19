@@ -12,6 +12,7 @@ import {
 
 import useOfflineSync from '../hooks/useOfflineSync';
 import { offlineQueue, type QueuedMutation } from '../services/offlineQueue';
+import { motionDuration, useReducedMotion } from '../utils/motion';
 
 // ─── Type labels ─────────────────────────────────────────────────────────────
 
@@ -36,6 +37,7 @@ function buildBreakdown(queue: QueuedMutation[]): string[] {
 
 const OfflineIndicator: React.FC = () => {
   const { isOnline, isSyncing, pendingCount } = useOfflineSync();
+  const reduceMotion = useReducedMotion();
   const [savedVisible, setSavedVisible] = useState(false);
   const [sheetVisible, setSheetVisible] = useState(false);
   const [pendingItems, setPendingItems] = useState<QueuedMutation[]>([]);
@@ -69,10 +71,10 @@ const OfflineIndicator: React.FC = () => {
   useEffect(() => {
     Animated.timing(visibleAnim, {
       toValue: shouldShow ? 1 : 0,
-      duration: 300,
+      duration: motionDuration(300, reduceMotion),
       useNativeDriver: true,
     }).start();
-  }, [shouldShow, visibleAnim]);
+  }, [shouldShow, visibleAnim, reduceMotion]);
 
   const handlePress = async () => {
     const items = await offlineQueue.getPersistentQueue();
@@ -136,7 +138,7 @@ const OfflineIndicator: React.FC = () => {
       <Modal
         visible={sheetVisible}
         transparent
-        animationType="slide"
+        animationType={reduceMotion ? 'none' : 'slide'}
         onRequestClose={() => setSheetVisible(false)}
         accessibilityViewIsModal
       >

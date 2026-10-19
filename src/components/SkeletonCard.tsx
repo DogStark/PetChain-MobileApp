@@ -10,6 +10,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { useAppTheme } from '../theme';
+import { allowDecorativeAnimation, useReducedMotion } from '../utils/motion';
 
 interface SkeletonCardProps {
   /**
@@ -52,11 +53,16 @@ export const SkeletonCard: React.FC<SkeletonCardProps> = ({
   lineGap = 8,
 }) => {
   const colors = useAppTheme();
+  const reduceMotion = useReducedMotion();
   const shimmerAnim = useSharedValue(0);
 
+  // Under Reduce Motion the shimmer holds at its midpoint: the placeholder stays
+  // visible and the loading state stays clear without the looping pulse.
   useEffect(() => {
-    shimmerAnim.value = withRepeat(withTiming(1, { duration: 1000 }), -1, true);
-  }, [shimmerAnim]);
+    shimmerAnim.value = allowDecorativeAnimation(reduceMotion)
+      ? withRepeat(withTiming(1, { duration: 1000 }), -1, true)
+      : 0.5;
+  }, [shimmerAnim, reduceMotion]);
 
   const animatedStyle = useAnimatedStyle(() => {
     const opacity = interpolate(shimmerAnim.value, [0, 1], [0.3, 0.7], Extrapolate.CLAMP);
