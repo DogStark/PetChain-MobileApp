@@ -362,3 +362,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1145 -->
 - #1145: [Mobile] Add caregiver assignment to recurring tasks
+
+<!-- handsoff-issue-1148 -->
+- #1148: [Mobile] Provide a medication administration history filter
