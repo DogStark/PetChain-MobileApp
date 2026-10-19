@@ -359,3 +359,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1074 -->
 - #1074: [Mobile] Add document-picker MIME and extension consistency checks
+
+<!-- handsoff-issue-1136 -->
+- #1136: [Mobile] Create a symptom observation journal
