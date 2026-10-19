@@ -120,3 +120,98 @@ const isValidImageUrl = (url: string): boolean => {
     return false;
   }
 };
+
+/**
+ * Status of a single step in an adoption application.
+ */
+export type AdoptionStepStatus =
+  | 'not_started'
+  | 'in_progress'
+  | 'completed'
+  | 'blocked';
+
+/**
+ * Status of a document requested as part of an adoption application.
+ */
+export type AdoptionDocumentStatus =
+  | 'requested'
+  | 'uploaded'
+  | 'under_review'
+  | 'approved'
+  | 'rejected';
+
+/**
+ * Overall review status of an adoption application.
+ */
+export type AdoptionReviewStatus =
+  | 'draft'
+  | 'submitted'
+  | 'in_review'
+  | 'action_required'
+  | 'approved'
+  | 'rejected';
+
+/**
+ * A single required step in the adoption application flow.
+ */
+export interface AdoptionApplicationStep {
+  /** Stable step identifier */
+  id: string;
+  /** Human-readable step title */
+  title: string;
+  /** Current status of the step */
+  status: AdoptionStepStatus;
+  /** ISO-8601 due date, when the step has a deadline */
+  dueDate?: string;
+}
+
+/**
+ * A document requested from the applicant as part of the application.
+ */
+export interface AdoptionRequestedDocument {
+  /** Stable document identifier */
+  id: string;
+  /** Human-readable document name */
+  name: string;
+  /** Current status of the document */
+  status: AdoptionDocumentStatus;
+  /** ISO-8601 due date, when the document has a deadline */
+  dueDate?: string;
+}
+
+/**
+ * Applicant-scoped view of an adoption application's progress.
+ *
+ * Only the current applicant's own data is represented here; the service
+ * layer is responsible for filtering out any other applicant's information
+ * before constructing this model.
+ */
+export interface AdoptionApplicationProgress {
+  /** Id of the applicant this progress belongs to (the current user) */
+  applicantId: string;
+  /** Id of the adoption application */
+  applicationId: string;
+  /** Required steps and their statuses */
+  steps: AdoptionApplicationStep[];
+  /** Documents requested from the applicant */
+  requestedDocuments: AdoptionRequestedDocument[];
+  /** Overall review status of the application */
+  reviewStatus: AdoptionReviewStatus;
+  /** ISO-8601 timestamp of the last update */
+  lastUpdatedAt: string;
+}
+
+/**
+ * Factory to safely create an AdoptionApplicationProgress object from raw
+ * data, ensuring required fields have sensible defaults.
+ */
+export const createAdoptionApplicationProgress = (
+  data: Partial<AdoptionApplicationProgress>,
+): AdoptionApplicationProgress => ({
+  applicantId: data.applicantId || '',
+  applicationId: data.applicationId || '',
+  steps: data.steps ?? [],
+  requestedDocuments: data.requestedDocuments ?? [],
+  reviewStatus: data.reviewStatus || 'submitted',
+  lastUpdatedAt: data.lastUpdatedAt || new Date().toISOString(),
+});
