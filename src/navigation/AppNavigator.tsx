@@ -25,6 +25,9 @@ import PetListScreen from '../screens/PetListScreen';
 // ── Non-critical screens (lazy loaded) ───────────────────────────────────────
 const AdoptionScreen = React.lazy(() => import('../screens/AdoptionScreen'));
 const AppointmentScreen = React.lazy(() => import('../screens/AppointmentScreen'));
+const AccountDeletionProgressScreen = React.lazy(
+  () => import('../screens/AccountDeletionProgressScreen'),
+);
 const AuditHistoryScreen = React.lazy(() => import('../screens/AuditHistoryScreen'));
 const ClinicalNotesScreen = React.lazy(() => import('../screens/ClinicalNotesScreen'));
 const CommunityScreen = React.lazy(() => import('../screens/CommunityScreen'));
@@ -278,7 +281,10 @@ function PetNavigator() {
       <PetStack.Screen name="PrivacyDashboard" options={{ title: 'Privacy Dashboard' }}>
         {({ navigation }) => (
           <LazyScreen screenName="PrivacyDashboard">
-            <PrivacyDashboardScreen onDeleteAccount={() => navigation.navigate('DeleteAccount')} />
+            <PrivacyDashboardScreen
+              onDeleteAccount={() => navigation.navigate('DeleteAccount')}
+              onViewDeletionStatus={() => navigation.navigate('AccountDeletionProgress')}
+            />
           </LazyScreen>
         )}
       </PetStack.Screen>
@@ -288,6 +294,21 @@ function PetNavigator() {
             <DeleteAccountScreen
               onBack={() => navigation.goBack()}
               onDeleted={() =>
+                navigation
+                  .getParent()
+                  ?.getParent()
+                  ?.reset({ index: 0, routes: [{ name: 'Auth' }] })
+              }
+            />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen name="AccountDeletionProgress" options={{ title: 'Account Deletion' }}>
+        {({ navigation }) => (
+          <LazyScreen screenName="AccountDeletionProgress">
+            <AccountDeletionProgressScreen
+              onBack={() => navigation.goBack()}
+              onSignedOut={() =>
                 navigation
                   .getParent()
                   ?.getParent()
