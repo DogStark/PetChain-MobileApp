@@ -84,6 +84,7 @@ const OS_STATUS_LABEL: Record<OsPermissionState, string> = {
 
 interface Props {
   onDeleteAccount?: () => void;
+  onViewDeletionStatus?: () => void;
 }
 
 /**
@@ -135,7 +136,7 @@ async function collectDiagnosticSnapshot(): Promise<DiagnosticSnapshot> {
   };
 }
 
-const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
+const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeletionStatus }) => {
   const [consents, setConsents] = useState<ConsentState>({
     necessary: true,
     functional: false,
@@ -563,6 +564,16 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
           <Text style={styles.btnTextSecondary}>Export Diagnostics for Support</Text>
         )}
       </TouchableOpacity>
+
+      {onViewDeletionStatus && (
+        <TouchableOpacity
+          style={[styles.btn, styles.btnSecondary]}
+          onPress={onViewDeletionStatus}
+          accessibilityLabel="View account deletion status"
+        >
+          <Text style={styles.btnTextSecondary}>Deletion Status</Text>
+        </TouchableOpacity>
+      )}
 
       <TouchableOpacity
         style={[styles.btn, styles.btnDanger]}
