@@ -67,6 +67,7 @@ export type PetStackParamList = {
   MedicalRecordViewer: { petId: string; petName?: string };
   PetShare: { petId: string; petName: string };
   TravelCertificate: { petId: string; petName?: string };
+  TravelPackingChecklist: { petId: string; tripId?: string; tripName?: string };
   DosageCalculator: { petId?: string; species?: string; weightKg?: number };
   ReconciliationReport: { reportId?: string };
   TrustlineManager: undefined;

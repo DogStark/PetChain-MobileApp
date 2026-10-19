@@ -27,7 +27,8 @@ export type SyncEntity =
   | 'appointment'
   | 'medicalRecord'
   | 'medication'
-  | 'healthMetric';
+  | 'healthMetric'
+  | 'travelPackingChecklist';
 
 /** Maximum retry attempts before an item is left in `FAILED`. */
 export const MAX_SYNC_RETRIES = 5;

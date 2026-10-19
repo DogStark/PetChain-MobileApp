@@ -38,6 +38,27 @@ removing movement, **not** the state change:
 - decorative / looping / parallax / gesture-driven animation: gate on `allowDecorativeAnimation(reduceMotion)`
 - chart draw-in: start at `chartDrawProgress(reduceMotion)` (jumps to the final frame)
 
+## Pet travel packing checklist (`src/screens/PackingChecklistScreen.tsx`)
+
+The per-trip packing checklist is fully operable with a screen reader and never
+relies on colour or motion to convey progress.
+
+- **Category headings** (Food, Records, Medication, Equipment) use
+  `accessibilityRole="header"` so users can jump between sections.
+- **Each item** is a checkbox: set `accessibilityRole="checkbox"` with
+  `accessibilityState={{ checked }}` and a label that includes both the category
+  and the item text (e.g. "Food: kibble"). Never signal checked state with a
+  strike-through or colour alone.
+- **Progress** ("3 of 8 packed") is announced through a container with
+  `accessibilityLiveRegion="polite"`; update the text rather than firing a
+  separate announcement on every toggle.
+- **Denied and offline states** render through `StateView` — a permission
+  denial, a stale/unsynced trip, or an offline load must show an explanatory
+  state with a retry action, never an empty list.
+- **Reduced motion**: gate any check/expand transitions on
+  `allowDecorativeAnimation(reduceMotion)` and shorten them with
+  `motionDuration(ms, reduceMotion)`; the checked state itself must still change.
+
 ## Colour-independent health status (`src/theme/healthStatus.ts`)
 
 Severity and trend must never rely on hue alone (WCAG 1.4.1). Every status token

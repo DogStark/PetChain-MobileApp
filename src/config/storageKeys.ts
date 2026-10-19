@@ -39,4 +39,12 @@ export const storageKeys = {
      */
     pendingTransactions: '@stellar/pending_transactions',
   },
+  travelPackingChecklist: {
+    /** Cached list of packing checklist templates for the current user. */
+    list: '@travel/packing_checklists',
+    /** Prefix for per-trip packing checklist progress entries. */
+    detailPrefix: '@travel/packing_checklist:',
+    /** Entity name used when enqueuing checklist mutations for sync. */
+    syncQueueEntity: 'travel_packing_checklist',
+  },
 } as const;

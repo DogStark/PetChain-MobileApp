@@ -56,6 +56,9 @@ const ReconciliationScreen = React.lazy(() => import('../screens/ReconciliationS
 const ReferralScreen = React.lazy(() => import('../screens/ReferralScreen'));
 const TelemedicineScreen = React.lazy(() => import('../screens/TelemedicineScreen'));
 const TravelCertificateScreen = React.lazy(() => import('../screens/TravelCertificateScreen'));
+const TravelPackingChecklistScreen = React.lazy(
+  () => import('../screens/TravelPackingChecklistScreen'),
+);
 const TrustlineScreen = React.lazy(() => import('../screens/TrustlineScreen'));
 const VaccinationScreen = React.lazy(() => import('../screens/VaccinationScreen'));
 const VetMapScreen = React.lazy(() => import('../screens/VetMapScreen'));
@@ -209,6 +212,21 @@ function PetNavigator() {
             <TravelCertificateScreen
               petId={route.params.petId}
               petName={route.params.petName}
+              onBack={() => navigation.goBack()}
+            />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen
+        name="TravelPackingChecklist"
+        options={{ title: 'Travel Packing Checklist' }}
+      >
+        {({ route, navigation }) => (
+          <LazyScreen screenName="TravelPackingChecklist">
+            <TravelPackingChecklistScreen
+              petId={route.params.petId}
+              tripId={route.params.tripId}
+              tripName={route.params.tripName}
               onBack={() => navigation.goBack()}
             />
           </LazyScreen>
