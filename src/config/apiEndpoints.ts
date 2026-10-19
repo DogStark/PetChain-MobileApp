@@ -272,6 +272,17 @@ export const API_ENDPOINTS = {
     connect: '/insurance/connect',
   },
 
+  // -------------------------------------------------------------------------
+  // Adoption
+  // -------------------------------------------------------------------------
+  adoption: {
+    /** Progress details for the signed-in applicant's own application. */
+    myApplicationProgress: '/adoption/applications/me/progress',
+    /** Progress details for a specific application (server-confirmed access only). */
+    applicationProgress: (applicationId: string) =>
+      `/adoption/applications/${seg(applicationId)}/progress`,
+  },
+
   referrals: {
     me: '/referrals/me',
     apply: '/referrals/apply',
