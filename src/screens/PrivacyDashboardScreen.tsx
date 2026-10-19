@@ -46,9 +46,10 @@ const CATEGORIES: { key: keyof ConsentState; label: string; description: string 
 
 interface Props {
   onDeleteAccount?: () => void;
+  onManageSessions?: () => void;
 }
 
-const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
+const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onManageSessions }) => {
   const [consents, setConsents] = useState<ConsentState>({
     necessary: true,
     functional: false,
@@ -423,6 +424,17 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
           <Text style={styles.btnTextSecondary}>Export Local Audit History</Text>
         )}
       </TouchableOpacity>
+
+      {onManageSessions && (
+        <TouchableOpacity
+          style={[styles.btn, styles.btnSecondary]}
+          onPress={onManageSessions}
+          accessibilityRole="button"
+          accessibilityLabel="Manage active sessions"
+        >
+          <Text style={styles.btnTextSecondary}>Manage Active Sessions</Text>
+        </TouchableOpacity>
+      )}
 
       <TouchableOpacity
         style={[styles.btn, styles.btnSecondary]}

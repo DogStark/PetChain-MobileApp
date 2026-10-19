@@ -74,6 +74,7 @@ export type PetStackParamList = {
   VetMap: undefined;
   VetDirectory: undefined;
   PrivacyDashboard: undefined;
+  SecuritySessions: undefined;
   Insurance: undefined;
   Search: undefined;
   NotificationPreferences: undefined;
