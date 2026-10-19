@@ -50,6 +50,10 @@ export const API_ENDPOINTS = {
       refresh: '/auth/oauth/refresh',
       revoke: '/auth/oauth/revoke',
     },
+    sessions: {
+      list: '/auth/sessions',
+      revoke: (sessionId: string) => `/auth/sessions/${seg(sessionId)}`,
+    },
   },
 
   users: {

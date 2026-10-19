@@ -427,7 +427,9 @@ const PetFormScreen: React.FC<Props> = ({ pet, ownerId = '', onBack, onSaved }) 
         >
           <Text style={styles.backText}>‹ Back</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>{isEdit ? 'Edit Pet' : 'Add Pet'}</Text>
+        <Text style={styles.headerTitle} numberOfLines={1} accessibilityRole="header">
+          {isEdit ? `Edit ${pet?.name}` : 'Add Pet'}
+        </Text>
         {isLastStep ? (
           <TouchableOpacity
             onPress={() => void handleSave()}

@@ -439,8 +439,18 @@ export async function requestPasswordReset(email: string): Promise<void> {
   }
 }
 
-export async function resetPassword(_token: string, _newPassword: string): Promise<void> {
-  throw new AuthError('Password reset not yet implemented', 'NOT_IMPLEMENTED');
+export async function resetPassword(token: string, newPassword: string): Promise<void> {
+  try {
+    await authClient.post(API_ENDPOINTS.AUTH_RESET_PASSWORD, { token, newPassword });
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404) {
+      // The server does not distinguish expired from already-used links, so both
+      // are reported as one state that tells the user to request a new link.
+      throw new AuthError('This reset link has expired or was already used', 'RESET_LINK_EXPIRED');
+    }
+    logError(err as Error, { service: 'authService', action: 'reset_password' });
+    throw new AuthError('Failed to reset password', 'RESET_FAILED');
+  }
 }
 
 export async function isBiometricAuthenticationAvailable(): Promise<boolean> {
