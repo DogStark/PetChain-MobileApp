@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Button } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 
 import LazyScreen from '../components/LazyScreen';
 import PetSelectorBar from '../components/PetSelectorBar';
@@ -12,6 +13,7 @@ interface SummaryRow {
 }
 
 export default function ActivityScreen() {
+  const navigation = useNavigation();
   const { activePet } = usePetContext();
   const petId = activePet?.id ?? null;
   const [summary, setSummary] = useState<SummaryRow[]>([]);
@@ -48,6 +50,19 @@ export default function ActivityScreen() {
           />
         </View>
 
+        <View style={styles.streakLink}>
+          <Button
+            title="View routine streak calendar"
+            disabled={!petId}
+            accessibilityLabel="View routine streak calendar"
+            accessibilityHint="Opens the routine completion streak calendar for the selected pet"
+            onPress={() =>
+              petId &&
+              navigation.navigate('RoutineStreak' as never, { petId } as never)
+            }
+          />
+        </View>
+
         <ScrollView style={styles.body}>
           {loading && <Text>Loading...</Text>}
           {!loading && summary.length === 0 && <Text>No recent activity</Text>}
@@ -73,6 +88,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   title: { fontSize: 20, fontWeight: '600' },
+  streakLink: { paddingHorizontal: 16, paddingBottom: 8 },
   body: { padding: 16 },
   row: { marginBottom: 12 },
   metric: { fontSize: 16, fontWeight: '600' },
