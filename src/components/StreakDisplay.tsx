@@ -3,12 +3,23 @@ import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'rea
 
 import type { StreakRecord } from '../services/gamificationService';
 
+/**
+ * Optional summary of routine completion days. `unknown` days represent
+ * missing data and must never be treated as missed care.
+ */
+export interface RoutineStreakSummary {
+  completed: number;
+  skipped: number;
+  unknown: number;
+}
+
 interface Props {
   streaks: StreakRecord[];
   petNames: Record<string, string>;
   petAvatars?: Record<string, string>;
   loading?: boolean;
   onPress: () => void;
+  routineStreak?: RoutineStreakSummary;
 }
 
 const MILESTONES = [7, 30, 90];
@@ -17,7 +28,24 @@ function nextMilestone(current: number): number {
   return MILESTONES.find((m) => m > current) ?? 90;
 }
 
-export default function StreakDisplay({ streaks, petNames, loading, onPress }: Props) {
+function routineAccessibilityLabel(routine: RoutineStreakSummary): string {
+  const parts = [
+    `${routine.completed} completed days`,
+    `${routine.skipped} skipped days`,
+  ];
+  if (routine.unknown > 0) {
+    parts.push(`${routine.unknown} days with no data, not counted as missed`);
+  }
+  return `Routine streak: ${parts.join(', ')}`;
+}
+
+export default function StreakDisplay({
+  streaks,
+  petNames,
+  loading,
+  onPress,
+  routineStreak,
+}: Props) {
   if (loading) {
     return (
       <TouchableOpacity style={styles.card} onPress={onPress}>
@@ -28,8 +56,25 @@ export default function StreakDisplay({ streaks, petNames, loading, onPress }: P
 
   if (streaks.length === 0) {
     return (
-      <TouchableOpacity style={styles.card} onPress={onPress}>
+      <TouchableOpacity
+        style={styles.card}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={
+          routineStreak
+            ? routineAccessibilityLabel(routineStreak)
+            : 'No streaks yet. Start your first streak today!'
+        }
+      >
         <Text style={styles.empty}>🔥 Start your first streak today!</Text>
+        {routineStreak ? (
+          <Text style={styles.routineSummary}>
+            {routineStreak.completed} completed · {routineStreak.skipped} skipped
+            {routineStreak.unknown > 0
+              ? ` · ${routineStreak.unknown} no data (not missed)`
+              : ''}
+          </Text>
+        ) : null}
       </TouchableOpacity>
     );
   }
@@ -38,8 +83,18 @@ export default function StreakDisplay({ streaks, petNames, loading, onPress }: P
   const next = nextMilestone(top.currentStreak);
   const progress = Math.min(top.currentStreak / next, 1);
 
+  const streakLabel = `${petNames[top.petId] ?? 'Your pet'}: ${top.currentStreak} day streak, ${top.currentStreak}/${next} days to next badge`;
+  const accessibilityLabel = routineStreak
+    ? `${streakLabel}. ${routineAccessibilityLabel(routineStreak)}`
+    : streakLabel;
+
   return (
-    <TouchableOpacity style={styles.card} onPress={onPress} accessibilityRole="button">
+    <TouchableOpacity
+      style={styles.card}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+    >
       <View style={styles.row}>
         <Text style={styles.flame}>🔥</Text>
         <View style={styles.info}>
@@ -53,6 +108,14 @@ export default function StreakDisplay({ streaks, petNames, loading, onPress }: P
       <Text style={styles.milestone}>
         {top.currentStreak}/{next} days to next badge
       </Text>
+      {routineStreak ? (
+        <Text style={styles.routineSummary}>
+          {routineStreak.completed} completed · {routineStreak.skipped} skipped
+          {routineStreak.unknown > 0
+            ? ` · ${routineStreak.unknown} no data (not missed)`
+            : ''}
+        </Text>
+      ) : null}
     </TouchableOpacity>
   );
 }
@@ -78,5 +141,6 @@ const styles = StyleSheet.create({
   barBg: { height: 6, backgroundColor: '#E8F5E9', borderRadius: 3, overflow: 'hidden' },
   barFill: { height: 6, backgroundColor: '#4CAF50', borderRadius: 3 },
   milestone: { fontSize: 11, color: '#999', marginTop: 4 },
+  routineSummary: { fontSize: 11, color: '#777', marginTop: 4 },
   empty: { fontSize: 14, color: '#4CAF50', textAlign: 'center', paddingVertical: 4 },
 });

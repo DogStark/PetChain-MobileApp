@@ -25,6 +25,17 @@ import shelterIntegrationService, {
   type ShelterProvider,
   type ShelterSpecies,
 } from '../services/shelterIntegrationService';
+import { useAdoptionApplicationProgress } from '../hooks/useAdoptionApplicationProgress';
+import type {
+  AdoptionApplicationStep,
+  AdoptionDocumentRequest,
+  AdoptionReviewStatus,
+} from '../services/adoptionApplicationProgressService';
+import LoadingState from '../components/LoadingState';
+import SkeletonCard from '../components/SkeletonCard';
+import StateView from '../components/StateView';
+import RetryError from '../components/RetryError';
+import EmptyState from '../components/EmptyState';
 
 const PROVIDERS: ShelterProvider[] = ['petfinder', 'adopt-a-pet'];
 const SPECIES_OPTIONS: Array<ShelterSpecies | 'all'> = ['all', 'dog', 'cat', 'rabbit', 'other'];
@@ -38,6 +49,37 @@ function ageLabel(months: number): string {
 
 function providerLabel(provider: ShelterProvider): string {
   return provider === 'petfinder' ? 'Petfinder' : 'Adopt-a-Pet';
+}
+
+function reviewStatusLabel(status: AdoptionReviewStatus): string {
+  switch (status) {
+    case 'approved':
+      return 'Approved';
+    case 'rejected':
+      return 'Not approved';
+    case 'in_review':
+      return 'In review';
+    case 'action_required':
+      return 'Action required';
+    case 'pending':
+    default:
+      return 'Pending';
+  }
+}
+
+function formatDueDate(dueDate: string | null | undefined): string {
+  if (!dueDate) return 'No due date';
+  const parsed = new Date(dueDate);
+  if (Number.isNaN(parsed.getTime())) return 'No due date';
+  try {
+    return parsed.toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return dueDate;
+  }
 }
 
 const AdoptionScreen: React.FC = () => {
@@ -62,6 +104,15 @@ const AdoptionScreen: React.FC = () => {
   const [matchBreakdownVisible, setMatchBreakdownVisible] = useState(false);
 
   const activeProvider = filters.provider ?? 'petfinder';
+
+  const {
+    steps: applicationSteps,
+    status: applicationStatus,
+    error: applicationError,
+    isStale: applicationIsStale,
+    lastUpdatedAt: applicationLastUpdatedAt,
+    refresh: refreshApplicationProgress,
+  } = useAdoptionApplicationProgress();
 
   useEffect(() => {
     let active = true;
@@ -181,6 +232,141 @@ const AdoptionScreen: React.FC = () => {
     [pets, matchScores],
   );
 
+  const renderApplicationStep = (step: AdoptionApplicationStep) => {
+    const documents: AdoptionDocumentRequest[] = step.documents ?? [];
+    const statusLabel = reviewStatusLabel(step.reviewStatus);
+    const dueLabel = formatDueDate(step.dueDate);
+    return (
+      <View
+        key={step.id}
+        style={styles.applicationStepCard}
+        accessible
+        accessibilityRole="summary"
+        accessibilityLabel={`${step.title}. Status ${statusLabel}. Due ${dueLabel}.`}
+      >
+        <View style={styles.applicationStepHeader}>
+          <Text style={styles.applicationStepTitle} accessibilityRole="header">
+            {step.title}
+          </Text>
+          <Text
+            style={[
+              styles.applicationStatusBadge,
+              step.reviewStatus === 'approved' && styles.applicationStatusApproved,
+              step.reviewStatus === 'rejected' && styles.applicationStatusRejected,
+              step.reviewStatus === 'action_required' && styles.applicationStatusAction,
+            ]}
+            accessibilityLabel={`Review status: ${statusLabel}`}
+          >
+            {statusLabel}
+          </Text>
+        </View>
+        {step.description ? (
+          <Text style={styles.applicationStepDescription}>{step.description}</Text>
+        ) : null}
+        <Text style={styles.applicationDueText} accessibilityLabel={`Due date: ${dueLabel}`}>
+          Due: {dueLabel}
+        </Text>
+        {documents.length > 0 ? (
+          <View style={styles.applicationDocuments}>
+            <Text style={styles.applicationDocumentsTitle} accessibilityRole="header">
+              Requested documents
+            </Text>
+            {documents.map((doc) => (
+              <Text
+                key={doc.id}
+                style={styles.applicationDocumentItem}
+                accessibilityLabel={`Document ${doc.name}. ${doc.provided ? 'Provided' : 'Not yet provided'}.`}
+              >
+                {doc.provided ? '✓' : '○'} {doc.name}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
+  const renderApplicationProgress = () => {
+    if (applicationStatus === 'loading') {
+      return (
+        <View accessibilityLabel="Loading application progress">
+          <LoadingState message="Loading application progress…" />
+          <SkeletonCard />
+        </View>
+      );
+    }
+
+    if (applicationStatus === 'permission_denied') {
+      return (
+        <StateView
+          title="Application progress unavailable"
+          message="You do not have permission to view this application's progress."
+          accessibilityLabel="Permission denied for application progress"
+        />
+      );
+    }
+
+    if (applicationStatus === 'offline') {
+      return (
+        <StateView
+          title="You're offline"
+          message="Application progress will refresh once you're back online."
+          accessibilityLabel="Offline. Application progress may be out of date."
+        />
+      );
+    }
+
+    if (applicationStatus === 'error') {
+      return (
+        <RetryError
+          message={applicationError ?? 'Unable to load application progress.'}
+          onRetry={() => void refreshApplicationProgress()}
+          accessibilityLabel="Failed to load application progress. Retry available."
+        />
+      );
+    }
+
+    if (applicationSteps.length === 0) {
+      return (
+        <EmptyState
+          title="No application steps yet"
+          message="Once your application is submitted, its required steps will appear here."
+          accessibilityLabel="No application steps"
+        />
+      );
+    }
+
+    return (
+      <View>
+        {applicationIsStale ? (
+          <View
+            style={styles.staleNotice}
+            accessible
+            accessibilityRole="alert"
+            accessibilityLabel="Application progress may be out of date."
+          >
+            <Text style={styles.staleNoticeText}>
+              Showing saved progress
+              {applicationLastUpdatedAt
+                ? ` from ${formatDueDate(applicationLastUpdatedAt)}`
+                : ''}
+              . It may be out of date.
+            </Text>
+            <TouchableOpacity
+              style={styles.staleRefreshButton}
+              onPress={() => void refreshApplicationProgress()}
+              accessibilityRole="button"
+              accessibilityLabel="Refresh application progress"
+            >
+              <Text style={styles.staleRefreshText}>Refresh</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+        {applicationSteps.map(renderApplicationStep)}
+      </View>
+    );
+  };
+
   const renderPet = ({ item }: { item: ShelterPet }) => {
     // Kick off lazy score fetch on first render of this card
     void loadMatchScore(item.id);
@@ -254,7 +440,16 @@ const AdoptionScreen: React.FC = () => {
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Provider access</Text>
+        <Text style={styles.sectionTitle} accessibilityRole="header">
+          Application progress
+        </Text>
+        {renderApplicationProgress()}
+      </View>
+
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle} accessibilityRole="header">
+          Provider access
+        </Text>
         {PROVIDERS.map(renderProviderCard)}
       </View>
 
@@ -897,6 +1092,100 @@ const styles = StyleSheet.create({
     color: '#618074',
     fontSize: 12,
     lineHeight: 16,
+  },
+  // Application progress
+  applicationStepCard: {
+    backgroundColor: '#fbfcfb',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#edf2ef',
+    padding: 14,
+    marginBottom: 12,
+  },
+  applicationStepHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  applicationStepTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#12372a',
+  },
+  applicationStatusBadge: {
+    backgroundColor: '#e5e7eb',
+    color: '#374151',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    fontSize: 11,
+    fontWeight: '800',
+    overflow: 'hidden',
+  },
+  applicationStatusApproved: {
+    backgroundColor: '#dcfce7',
+    color: '#166534',
+  },
+  applicationStatusRejected: {
+    backgroundColor: '#fee2e2',
+    color: '#991b1b',
+  },
+  applicationStatusAction: {
+    backgroundColor: '#fef3c7',
+    color: '#92400e',
+  },
+  applicationStepDescription: {
+    color: '#355045',
+    marginTop: 8,
+    lineHeight: 18,
+  },
+  applicationDueText: {
+    color: '#61796f',
+    marginTop: 8,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  applicationDocuments: {
+    marginTop: 10,
+  },
+  applicationDocumentsTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#12372a',
+    marginBottom: 6,
+  },
+  applicationDocumentItem: {
+    color: '#355045',
+    marginBottom: 4,
+  },
+  staleNotice: {
+    backgroundColor: '#fef3c7',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  staleNoticeText: {
+    flex: 1,
+    color: '#92400e',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  staleRefreshButton: {
+    backgroundColor: '#92400e',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  staleRefreshText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 12,
   },
 });
 

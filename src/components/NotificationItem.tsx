@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 
 import type { AppNotification, NotificationCategory } from '../services/notificationStore';
+import { formatQuietHoursDeferral } from '../utils/quietHours';
 
 // Re-export so existing imports from this file continue to work.
 export { resolveNavPayload } from '../utils/notificationNavigation';
@@ -62,6 +63,7 @@ function NotificationItem({
   testID,
 }: NotificationItemProps) {
   const meta = CATEGORY_META[notification.category] ?? CATEGORY_META.system;
+  const deferral = formatQuietHoursDeferral(notification);
 
   const handlePress = useCallback(() => onPress(notification), [onPress, notification]);
   const handleLongPress = useCallback(
@@ -73,7 +75,7 @@ function NotificationItem({
     <TouchableOpacity
       testID={testID ?? `notification-item-${notification.id}`}
       accessibilityRole="button"
-      accessibilityLabel={`${meta.label}: ${notification.title}. ${notification.isRead ? 'Read' : 'Unread'}`}
+      accessibilityLabel={`${meta.label}: ${notification.title}. ${notification.isRead ? 'Read' : 'Unread'}${deferral ? `. ${deferral.accessibilityLabel}` : ''}`}
       accessibilityHint="Tap to open, long press for options"
       onPress={handlePress}
       onLongPress={onLongPress ? handleLongPress : undefined}
@@ -102,7 +104,25 @@ function NotificationItem({
         <Text style={styles.body} numberOfLines={2}>
           {notification.body}
         </Text>
-        <Text style={styles.category}>{meta.label}</Text>
+        <View style={styles.footerRow}>
+          <Text style={styles.category}>{meta.label}</Text>
+          {deferral && (
+            <View
+              style={styles.deferredBadge}
+              accessible
+              accessibilityRole="text"
+              accessibilityLabel={deferral.accessibilityLabel}
+              testID={`notification-deferred-${notification.id}`}
+            >
+              <Text style={styles.deferredIcon} accessibilityElementsHidden>
+                🌙
+              </Text>
+              <Text style={styles.deferredText} numberOfLines={1}>
+                {deferral.shortLabel}
+              </Text>
+            </View>
+          )}
+        </View>
       </View>
     </TouchableOpacity>
   );
@@ -173,5 +193,29 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  footerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+  },
+  deferredBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginStart: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    backgroundColor: '#EEF2FF',
+  },
+  deferredIcon: {
+    fontSize: 11,
+    marginEnd: 4,
+  },
+  deferredText: {
+    fontSize: 11,
+    color: '#4338CA',
+    flexShrink: 1,
   },
 });
