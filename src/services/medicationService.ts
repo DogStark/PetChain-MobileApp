@@ -67,6 +67,87 @@ export interface MedicationAdherence {
   score: number;
 }
 
+// ── Medication schedule conflict detection (#1147) ───────────────────────────
+
+/**
+ * A single scheduled dose time for a medication, expressed as minutes since
+ * local midnight. `endMinutes` is optional and only present when the entry
+ * describes a time *range* (e.g. "take between 08:00 and 10:00").
+ */
+export interface DoseScheduleEntry {
+  /** Minutes since local midnight for the start of the dose window. */
+  startMinutes: number;
+  /** Minutes since local midnight for the end of the window (inclusive). */
+  endMinutes?: number;
+}
+
+/** A detected overlap between two dose schedule entries for the same medicine. */
+export interface MedicationScheduleConflict {
+  /** Index of the first conflicting entry in the input array. */
+  firstIndex: number;
+  /** Index of the second conflicting entry in the input array. */
+  secondIndex: number;
+  /** Human-readable reason, suitable for an accessibility announcement. */
+  reason: 'duplicate-time' | 'overlapping-window';
+}
+
+/** Normalise a schedule entry into a closed [start, end] minute range. */
+function toRange(entry: DoseScheduleEntry): { start: number; end: number } {
+  const start = entry.startMinutes;
+  const end = entry.endMinutes ?? entry.startMinutes;
+  return start <= end ? { start, end } : { start: end, end: start };
+}
+
+/**
+ * Detect overlapping dose schedules for the same medicine from entered data.
+ *
+ * Purely local and synchronous — no network dependency — so conflict warnings
+ * keep working offline. Two entries conflict when their (inclusive) minute
+ * ranges intersect; identical single times are reported as `duplicate-time`
+ * so the UI can distinguish an accidental double entry from a genuine window
+ * overlap.
+ */
+export function detectScheduleConflicts(
+  entries: DoseScheduleEntry[],
+): MedicationScheduleConflict[] {
+  const conflicts: MedicationScheduleConflict[] = [];
+  for (let i = 0; i < entries.length; i += 1) {
+    const a = toRange(entries[i]);
+    for (let j = i + 1; j < entries.length; j += 1) {
+      const b = toRange(entries[j]);
+      if (a.start <= b.end && b.start <= a.end) {
+        const duplicate = a.start === a.end && b.start === b.end && a.start === b.start;
+        conflicts.push({
+          firstIndex: i,
+          secondIndex: j,
+          reason: duplicate ? 'duplicate-time' : 'overlapping-window',
+        });
+      }
+    }
+  }
+  return conflicts;
+}
+
+/**
+ * Persist a medication only after the caller has acknowledged any schedule
+ * conflicts. When conflicts exist and `confirmed` is not `true`, the write is
+ * blocked and the conflicts are returned so the UI can prompt the user.
+ *
+ * Conflict detection is local, so this preserves existing offline behaviour.
+ */
+export async function saveMedicationWithConflictCheck(
+  med: Medication,
+  entries: DoseScheduleEntry[],
+  confirmed: boolean,
+): Promise<{ saved: boolean; conflicts: MedicationScheduleConflict[] }> {
+  const conflicts = detectScheduleConflicts(entries);
+  if (conflicts.length > 0 && !confirmed) {
+    return { saved: false, conflicts };
+  }
+  await upsertMedication(med);
+  return { saved: true, conflicts };
+}
+
 export async function getMedications(): Promise<Medication[]> {
   return getAllMedications<Medication>();
 }
@@ -212,168 +293,56 @@ export async function transitionDose(
   const log: DoseLog = {
     id: doseId,
     medicationId,
+    takenAt: now.toISOString(),
     scheduledFor: scheduledIso,
     scheduledDoseId: doseId,
-    takenAt: now.toISOString(),
-    acknowledgedAt: now.toISOString(),
     state: next,
-    skipped: next === 'skipped',
-    skipReason: next === 'skipped' ? options.skipReason : undefined,
-    snoozedUntil:
-      next === 'snoozed'
-        ? new Date(now.getTime() + (options.snoozeMs ?? DEFAULT_SNOOZE_MS)).toISOString()
-        : undefined,
+    acknowledgedAt: now.toISOString(),
     notes: options.notes,
   };
+  if (next === 'skipped') {
+    log.skipped = true;
+    log.skipReason = options.skipReason;
+  }
+  if (next === 'snoozed') {
+    const snoozeMs = options.snoozeMs ?? DEFAULT_SNOOZE_MS;
+    log.snoozedUntil = new Date(now.getTime() + snoozeMs).toISOString();
+  }
 
   await dbAddDoseLog(log);
   return { log, duplicate: false, state: next };
 }
 
-/**
- * Escalate overdue doses to `missed` by writing a missed log for each dose
- * whose grace period has expired without acknowledgement. Idempotent: doses
- * that already have a log are skipped, so repeated sweeps never duplicate
- * history. Returns the missed logs that were newly written.
- */
-export async function escalateMissedDoses(
-  medications: Medication[],
-  fromDate: Date,
-  toDate: Date,
-  now: Date = new Date(),
-  gracePeriodMs: number = DEFAULT_GRACE_PERIOD_MS,
-): Promise<DoseLog[]> {
-  const logs = await getDoseLogs();
-  const written: DoseLog[] = [];
-  for (const med of medications) {
-    for (const doseTime of getScheduleForRange(med, fromDate, toDate)) {
-      if (resolveDoseState(med.id, doseTime, logs, now, gracePeriodMs) !== 'missed') continue;
-      const doseId = scheduledDoseId(med.id, doseTime);
-      if (logs.some((l) => resolveDoseId(l) === doseId)) continue;
-      const log: DoseLog = {
-        id: doseId,
-        medicationId: med.id,
-        scheduledFor: doseTime.toISOString(),
-        scheduledDoseId: doseId,
-        takenAt: doseTime.toISOString(),
-        state: 'missed',
-      };
-      await dbAddDoseLog(log);
-      logs.push(log);
-      written.push(log);
-    }
-  }
-  return written;
-}
-
-// ── Timezone-safe schedule reconciliation (#957) ─────────────────────────────
-
-export interface ScheduledDose {
-  /** OS notification identifier, when this dose is already scheduled. */
-  notificationId?: string;
-  medicationId: string;
-  /** Absolute instant the dose is due (Date or ISO string). */
-  fireDate: Date | string;
-}
+// ── Reminder scheduling (#1049) ──────────────────────────────────────────────
 
 /**
- * Identity of a scheduled dose as an absolute UTC instant (snapped to the
- * minute). Editing a schedule or crossing a timezone — including DST
- * transitions and overnight doses — must not change this key for a dose still
- * due at the same real-world moment, so reconciliation drops duplicates instead
- * of stacking overlapping local notifications.
- */
-export function doseIdentityKey(dose: ScheduledDose): string {
-  const ms = dose.fireDate instanceof Date ? dose.fireDate.getTime() : new Date(dose.fireDate).getTime();
-  if (Number.isNaN(ms)) {
-    throw new Error('doseIdentityKey: invalid fireDate');
-  }
-  const minuteIso = new Date(Math.floor(ms / 60_000) * 60_000).toISOString();
-  return `${dose.medicationId}@${minuteIso}`;
-}
-
-/**
- * Reconcile a freshly-computed desired schedule against what is already
- * scheduled with the OS, keyed by dose identity.
+ * Schedule a local notification reminder for a medication dose.
  *
- * @returns `toCancel` — notification IDs that are stale or exact duplicates;
- *          `toSchedule` — desired doses not yet scheduled;
- *          `keep` — notification IDs that already match a desired dose.
+ * Reminders are local-only (no server round-trip) so they keep working while
+ * offline. The notification carries the stable `scheduledDoseId` so a tap can
+ * be reconciled idempotently via {@link transitionDose}.
  */
-export function reconcileDoseSchedules(
-  existing: ScheduledDose[],
-  desired: ScheduledDose[],
-): { toCancel: string[]; toSchedule: ScheduledDose[]; keep: string[] } {
-  const existingByKey = new Map<string, ScheduledDose[]>();
-  for (const dose of existing) {
-    const key = doseIdentityKey(dose);
-    const group = existingByKey.get(key);
-    if (group) group.push(dose);
-    else existingByKey.set(key, [dose]);
-  }
-
-  const desiredKeys = new Set(desired.map(doseIdentityKey));
-  const toCancel: string[] = [];
-  const keep: string[] = [];
-
-  for (const [key, group] of existingByKey) {
-    const [first, ...duplicates] = group;
-    for (const dup of duplicates) {
-      if (dup.notificationId) toCancel.push(dup.notificationId);
-    }
-    if (desiredKeys.has(key)) {
-      if (first.notificationId) keep.push(first.notificationId);
-    } else if (first.notificationId) {
-      toCancel.push(first.notificationId);
-    }
-  }
-
-  const existingKeys = new Set(existing.map(doseIdentityKey));
-  const toSchedule = desired.filter((dose) => !existingKeys.has(doseIdentityKey(dose)));
-
-  return { toCancel, toSchedule, keep };
-}
-
-export function getDoseStatus(
+export async function scheduleDoseReminder(
   medicationId: string,
-  scheduledTime: Date,
-  logs: DoseLog[],
-): 'taken' | 'skipped' | 'missed' | 'pending' {
-  const windowMs = 30 * 60 * 1000;
-  const match = logs.find((log) => {
-    if (log.medicationId !== medicationId) return false;
-    if (log.scheduledFor)
-      return Math.abs(new Date(log.scheduledFor).getTime() - scheduledTime.getTime()) <= windowMs;
-    return Math.abs(new Date(log.takenAt).getTime() - scheduledTime.getTime()) <= windowMs;
+  medicationName: string,
+  scheduledFor: string | Date,
+): Promise<string> {
+  const scheduledIso =
+    scheduledFor instanceof Date ? scheduledFor.toISOString() : new Date(scheduledFor).toISOString();
+  const doseId = scheduledDoseId(medicationId, scheduledIso);
+  const triggerDate = new Date(scheduledIso);
+
+  return Notifications.scheduleNotificationAsync({
+    content: {
+      title: 'Medication reminder',
+      body: `Time to take ${medicationName}`,
+      data: { medicationId, scheduledDoseId: doseId, scheduledFor: scheduledIso },
+    },
+    trigger: { type: 'date', date: triggerDate } as Notifications.DateTriggerInput,
   });
-  if (match?.skipped) return 'skipped';
-  if (match) return 'taken';
-  return scheduledTime.getTime() + windowMs < Date.now() ? 'missed' : 'pending';
 }
 
-export function calculateAdherence(
-  medications: Medication[],
-  logs: DoseLog[],
-  fromDate: Date,
-  toDate: Date,
-): MedicationAdherence {
-  let scheduled = 0;
-  let taken = 0;
-  let skipped = 0;
-  let missed = 0;
-  medications.forEach((med) => {
-    getScheduleForRange(med, fromDate, toDate).forEach((doseTime) => {
-      scheduled += 1;
-      const status = getDoseStatus(med.id, doseTime, logs);
-      if (status === 'taken') taken += 1;
-      if (status === 'skipped') skipped += 1;
-      if (status === 'missed') missed += 1;
-    });
-  });
-  const denominator = Math.max(1, scheduled - skipped);
-  return { scheduled, taken, skipped, missed, score: Math.round((taken / denominator) * 100) };
+/** Cancel a previously scheduled dose reminder by its notification id. */
+export async function cancelDoseReminder(notificationId: string): Promise<void> {
+  await Notifications.cancelScheduledNotificationAsync(notificationId);
 }
-
-export function getLowRefillMedications(medications: Medication[], threshold = 0.2): Medication[] {
-  return medications.filter(
-    (med) =>

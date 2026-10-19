@@ -79,6 +79,7 @@ export type PetStackParamList = {
   Search: undefined;
   NotificationPreferences: undefined;
   DeleteAccount: undefined;
+  AccountDeletionProgress: undefined;
   ClinicalNotes: { petId: string; vetId?: string };
 };
 
