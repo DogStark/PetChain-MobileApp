@@ -57,6 +57,7 @@ const ProfileScreen = React.lazy(() => import('../screens/ProfileScreen'));
 const QRScannerScreen = React.lazy(() => import('../screens/QRScannerScreen'));
 const ReconciliationScreen = React.lazy(() => import('../screens/ReconciliationScreen'));
 const ReferralScreen = React.lazy(() => import('../screens/ReferralScreen'));
+const SecuritySessionsScreen = React.lazy(() => import('../screens/SecuritySessionsScreen'));
 const TelemedicineScreen = React.lazy(() => import('../screens/TelemedicineScreen'));
 const TravelCertificateScreen = React.lazy(() => import('../screens/TravelCertificateScreen'));
 const TrustlineScreen = React.lazy(() => import('../screens/TrustlineScreen'));
@@ -283,8 +284,16 @@ function PetNavigator() {
           <LazyScreen screenName="PrivacyDashboard">
             <PrivacyDashboardScreen
               onDeleteAccount={() => navigation.navigate('DeleteAccount')}
+              onManageSessions={() => navigation.navigate('SecuritySessions')}
               onViewDeletionStatus={() => navigation.navigate('AccountDeletionProgress')}
             />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen name="SecuritySessions" options={{ title: 'Active Sessions' }}>
+        {({ navigation }) => (
+          <LazyScreen screenName="SecuritySessions">
+            <SecuritySessionsScreen onBack={() => navigation.goBack()} />
           </LazyScreen>
         )}
       </PetStack.Screen>

@@ -84,6 +84,7 @@ const OS_STATUS_LABEL: Record<OsPermissionState, string> = {
 
 interface Props {
   onDeleteAccount?: () => void;
+  onManageSessions?: () => void;
   onViewDeletionStatus?: () => void;
 }
 
@@ -136,7 +137,7 @@ async function collectDiagnosticSnapshot(): Promise<DiagnosticSnapshot> {
   };
 }
 
-const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeletionStatus }) => {
+const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onManageSessions, onViewDeletionStatus }) => {
   const [consents, setConsents] = useState<ConsentState>({
     necessary: true,
     functional: false,
@@ -551,6 +552,17 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeleti
           <Text style={styles.btnTextSecondary}>Export Local Audit History</Text>
         )}
       </TouchableOpacity>
+
+      {onManageSessions && (
+        <TouchableOpacity
+          style={[styles.btn, styles.btnSecondary]}
+          onPress={onManageSessions}
+          accessibilityRole="button"
+          accessibilityLabel="Manage active sessions"
+        >
+          <Text style={styles.btnTextSecondary}>Manage Active Sessions</Text>
+        </TouchableOpacity>
+      )}
 
       <TouchableOpacity
         style={[styles.btn, styles.btnSecondary]}
