@@ -11,13 +11,20 @@ import {
   View,
 } from 'react-native';
 
-import { requestPasswordReset, resetPassword } from '../services/authService';
+import { AuthError, requestPasswordReset, resetPassword } from '../services/authService';
 
 interface Props {
   onBack: () => void;
 }
 
-type Step = 'request' | 'reset' | 'done';
+/**
+ * request → reset (pending: link requested, waiting on email)
+ *        → done (completed)
+ *        → expired (server rejected the link; request a new one)
+ * The copy never confirms whether the email is registered; the server responds
+ * the same way for known and unknown addresses.
+ */
+type Step = 'request' | 'reset' | 'expired' | 'done';
 
 const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
   const [step, setStep] = useState<Step>('request');
@@ -27,6 +34,12 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
   const [confirm, setConfirm] = useState('');
   const [loading, setLoading] = useState(false);
 
+  const clearSecrets = () => {
+    setToken('');
+    setNewPassword('');
+    setConfirm('');
+  };
+
   const handleRequest = async () => {
     if (!email.trim()) {
       Alert.alert('Validation', 'Please enter your email.');
@@ -35,6 +48,7 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
     setLoading(true);
     try {
       await requestPasswordReset(email.trim());
+      clearSecrets();
       setStep('reset');
     } catch (err: unknown) {
       Alert.alert('Error', err instanceof Error ? err.message : 'Please try again.');
@@ -59,12 +73,23 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
     setLoading(true);
     try {
       await resetPassword(token.trim(), newPassword);
+      clearSecrets();
       setStep('done');
     } catch (err: unknown) {
+      if (err instanceof AuthError && err.code === 'RESET_LINK_EXPIRED') {
+        clearSecrets();
+        setStep('expired');
+        return;
+      }
       Alert.alert('Error', err instanceof Error ? err.message : 'Please try again.');
     } finally {
       setLoading(false);
     }
+  };
+
+  const startNewRequest = () => {
+    clearSecrets();
+    setStep('request');
   };
 
   return (
@@ -74,7 +99,12 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
     >
       <View style={styles.inner}>
         {/* Back */}
-        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+        <TouchableOpacity
+          onPress={onBack}
+          style={styles.backBtn}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+        >
           <Text style={styles.backText}>‹ Back</Text>
         </TouchableOpacity>
 
@@ -82,12 +112,15 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
 
         {step === 'request' && (
           <>
-            <Text style={styles.title}>Forgot Password</Text>
+            <Text style={styles.title} accessibilityRole="header">
+              Forgot Password
+            </Text>
             <Text style={styles.subtitle}>Enter your email and we'll send a reset link.</Text>
             <TextInput
               style={styles.input}
               placeholder="Email"
               placeholderTextColor="#aaa"
+              accessibilityLabel="Email"
               autoCapitalize="none"
               keyboardType="email-address"
               value={email}
@@ -97,6 +130,9 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
               style={[styles.btn, loading && styles.btnDisabled]}
               onPress={() => void handleRequest()}
               disabled={loading}
+              accessibilityRole="button"
+              accessibilityLabel="Send reset link"
+              accessibilityState={{ disabled: loading, busy: loading }}
             >
               {loading ? (
                 <ActivityIndicator color="#fff" />
@@ -109,13 +145,20 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
 
         {step === 'reset' && (
           <>
-            <Text style={styles.title}>Reset Password</Text>
-            <Text style={styles.subtitle}>Check your email for the reset token.</Text>
+            <Text style={styles.title} accessibilityRole="header">
+              Reset Password
+            </Text>
+            <Text style={styles.subtitle} accessibilityLiveRegion="polite">
+              If an account exists for that email, a reset link is on its way. Check your inbox
+              and spam folder, then enter the token from the link.
+            </Text>
             <TextInput
               style={styles.input}
               placeholder="Reset Token"
               placeholderTextColor="#aaa"
+              accessibilityLabel="Reset token"
               autoCapitalize="none"
+              autoCorrect={false}
               value={token}
               onChangeText={setToken}
             />
@@ -123,6 +166,7 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
               style={styles.input}
               placeholder="New Password"
               placeholderTextColor="#aaa"
+              accessibilityLabel="New password"
               secureTextEntry
               value={newPassword}
               onChangeText={setNewPassword}
@@ -131,6 +175,7 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
               style={styles.input}
               placeholder="Confirm New Password"
               placeholderTextColor="#aaa"
+              accessibilityLabel="Confirm new password"
               secureTextEntry
               value={confirm}
               onChangeText={setConfirm}
@@ -139,6 +184,9 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
               style={[styles.btn, loading && styles.btnDisabled]}
               onPress={() => void handleReset()}
               disabled={loading}
+              accessibilityRole="button"
+              accessibilityLabel="Reset password"
+              accessibilityState={{ disabled: loading, busy: loading }}
             >
               {loading ? (
                 <ActivityIndicator color="#fff" />
@@ -146,15 +194,54 @@ const ForgotPasswordScreen: React.FC<Props> = ({ onBack }) => {
                 <Text style={styles.btnText}>Reset Password</Text>
               )}
             </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.linkBtn}
+              onPress={() => void handleRequest()}
+              disabled={loading}
+              accessibilityRole="button"
+              accessibilityLabel="Send a new reset link"
+              accessibilityState={{ disabled: loading }}
+            >
+              <Text style={styles.linkText}>Didn't get it? Send a new link</Text>
+            </TouchableOpacity>
+          </>
+        )}
+
+        {step === 'expired' && (
+          <>
+            <Text style={styles.successIcon}>⌛</Text>
+            <Text style={styles.title} accessibilityRole="header">
+              Link Expired
+            </Text>
+            <Text style={styles.subtitle} accessibilityLiveRegion="polite">
+              This reset link has expired or was already used. Request a new one to continue.
+            </Text>
+            <TouchableOpacity
+              style={styles.btn}
+              onPress={startNewRequest}
+              accessibilityRole="button"
+              accessibilityLabel="Request a new reset link"
+            >
+              <Text style={styles.btnText}>Request New Link</Text>
+            </TouchableOpacity>
           </>
         )}
 
         {step === 'done' && (
           <>
             <Text style={styles.successIcon}>✅</Text>
-            <Text style={styles.title}>Password Reset!</Text>
-            <Text style={styles.subtitle}>You can now sign in with your new password.</Text>
-            <TouchableOpacity style={styles.btn} onPress={onBack}>
+            <Text style={styles.title} accessibilityRole="header">
+              Password Reset!
+            </Text>
+            <Text style={styles.subtitle} accessibilityLiveRegion="polite">
+              You can now sign in with your new password.
+            </Text>
+            <TouchableOpacity
+              style={styles.btn}
+              onPress={onBack}
+              accessibilityRole="button"
+              accessibilityLabel="Back to sign in"
+            >
               <Text style={styles.btnText}>Back to Sign In</Text>
             </TouchableOpacity>
           </>
@@ -199,6 +286,8 @@ const styles = StyleSheet.create({
   },
   btnDisabled: { opacity: 0.6 },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  linkBtn: { alignItems: 'center', marginTop: 16, paddingVertical: 8 },
+  linkText: { color: '#4CAF50', fontSize: 15 },
 });
 
 export default ForgotPasswordScreen;

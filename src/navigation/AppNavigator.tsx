@@ -25,6 +25,9 @@ import PetListScreen from '../screens/PetListScreen';
 // ── Non-critical screens (lazy loaded) ───────────────────────────────────────
 const AdoptionScreen = React.lazy(() => import('../screens/AdoptionScreen'));
 const AppointmentScreen = React.lazy(() => import('../screens/AppointmentScreen'));
+const AccountDeletionProgressScreen = React.lazy(
+  () => import('../screens/AccountDeletionProgressScreen'),
+);
 const AuditHistoryScreen = React.lazy(() => import('../screens/AuditHistoryScreen'));
 const ClinicalNotesScreen = React.lazy(() => import('../screens/ClinicalNotesScreen'));
 const CommunityScreen = React.lazy(() => import('../screens/CommunityScreen'));
@@ -55,8 +58,12 @@ const QRScannerScreen = React.lazy(() => import('../screens/QRScannerScreen'));
 const ReconciliationScreen = React.lazy(() => import('../screens/ReconciliationScreen'));
 const ReferralScreen = React.lazy(() => import('../screens/ReferralScreen'));
 const RoutineStreakScreen = React.lazy(() => import('../screens/RoutineStreakScreen'));
+const SecuritySessionsScreen = React.lazy(() => import('../screens/SecuritySessionsScreen'));
 const TelemedicineScreen = React.lazy(() => import('../screens/TelemedicineScreen'));
 const TravelCertificateScreen = React.lazy(() => import('../screens/TravelCertificateScreen'));
+const TravelPackingChecklistScreen = React.lazy(
+  () => import('../screens/TravelPackingChecklistScreen'),
+);
 const TrustlineScreen = React.lazy(() => import('../screens/TrustlineScreen'));
 const VaccinationScreen = React.lazy(() => import('../screens/VaccinationScreen'));
 const VetMapScreen = React.lazy(() => import('../screens/VetMapScreen'));
@@ -226,6 +233,21 @@ function PetNavigator() {
           </LazyScreen>
         )}
       </PetStack.Screen>
+      <PetStack.Screen
+        name="TravelPackingChecklist"
+        options={{ title: 'Travel Packing Checklist' }}
+      >
+        {({ route, navigation }) => (
+          <LazyScreen screenName="TravelPackingChecklist">
+            <TravelPackingChecklistScreen
+              petId={route.params.petId}
+              tripId={route.params.tripId}
+              tripName={route.params.tripName}
+              onBack={() => navigation.goBack()}
+            />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
       <PetStack.Screen name="NearbyVet" options={{ title: 'Nearby Vet Clinics' }}>
         {({ navigation }) => (
           <LazyScreen screenName="NearbyVet">
@@ -290,7 +312,18 @@ function PetNavigator() {
       <PetStack.Screen name="PrivacyDashboard" options={{ title: 'Privacy Dashboard' }}>
         {({ navigation }) => (
           <LazyScreen screenName="PrivacyDashboard">
-            <PrivacyDashboardScreen onDeleteAccount={() => navigation.navigate('DeleteAccount')} />
+            <PrivacyDashboardScreen
+              onDeleteAccount={() => navigation.navigate('DeleteAccount')}
+              onManageSessions={() => navigation.navigate('SecuritySessions')}
+              onViewDeletionStatus={() => navigation.navigate('AccountDeletionProgress')}
+            />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen name="SecuritySessions" options={{ title: 'Active Sessions' }}>
+        {({ navigation }) => (
+          <LazyScreen screenName="SecuritySessions">
+            <SecuritySessionsScreen onBack={() => navigation.goBack()} />
           </LazyScreen>
         )}
       </PetStack.Screen>
@@ -300,6 +333,21 @@ function PetNavigator() {
             <DeleteAccountScreen
               onBack={() => navigation.goBack()}
               onDeleted={() =>
+                navigation
+                  .getParent()
+                  ?.getParent()
+                  ?.reset({ index: 0, routes: [{ name: 'Auth' }] })
+              }
+            />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen name="AccountDeletionProgress" options={{ title: 'Account Deletion' }}>
+        {({ navigation }) => (
+          <LazyScreen screenName="AccountDeletionProgress">
+            <AccountDeletionProgressScreen
+              onBack={() => navigation.goBack()}
+              onSignedOut={() =>
                 navigation
                   .getParent()
                   ?.getParent()

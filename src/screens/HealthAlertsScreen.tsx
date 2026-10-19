@@ -1,10 +1,12 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AccessibilityInfo,
   ActivityIndicator,
   Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
   View,
@@ -17,7 +19,39 @@ import {
   type HealthAlertFeedback,
   type HealthPredictionAlert,
 } from '../services/healthAlertService';
+import {
+  getCareReminderQuietHours,
+  getNextEligibleDeliveryTime,
+  updateCareReminderQuietHours,
+  type QuietHoursSettings,
+} from '../services/notificationService';
 import { useSecureScreen } from '../utils/secureScreen';
+
+const QUIET_HOUR_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23];
+
+function formatHour(hour: number): string {
+  const suffix = hour < 12 ? 'AM' : 'PM';
+  const display = hour % 12 === 0 ? 12 : hour % 12;
+  return `${display}:00 ${suffix}`;
+}
+
+function formatDeliveryTime(date: Date): string {
+  return date.toLocaleString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function currentTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
 
 function formatDate(iso: string): string {
   const date = new Date(iso);
@@ -44,10 +78,91 @@ const HealthAlertsScreen: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [running, setRunning] = useState(false);
 
+  const [quietHours, setQuietHours] = useState<QuietHoursSettings | null>(null);
+  const [quietHoursLoading, setQuietHoursLoading] = useState(true);
+  const [quietHoursSaving, setQuietHoursSaving] = useState(false);
+  const [quietHoursOffline, setQuietHoursOffline] = useState(false);
+  const [timeZone, setTimeZone] = useState(currentTimeZone);
+  const [reduceMotion, setReduceMotion] = useState(false);
+
   const load = useCallback(async () => {
     const next = await getHealthAlerts('active');
     setAlerts(next);
   }, []);
+
+  const loadQuietHours = useCallback(async () => {
+    try {
+      const settings = await getCareReminderQuietHours();
+      setQuietHours(settings);
+      setQuietHoursOffline(false);
+    } catch {
+      // Preserve whatever cached settings we already have and flag the offline state.
+      setQuietHoursOffline(true);
+    } finally {
+      setQuietHoursLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadQuietHours();
+  }, [loadQuietHours]);
+
+  useEffect(() => {
+    let mounted = true;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then((enabled) => {
+        if (mounted) {
+          setReduceMotion(enabled);
+        }
+      })
+      .catch(() => undefined);
+    const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', (enabled) => {
+      setReduceMotion(enabled);
+    });
+    return () => {
+      mounted = false;
+      subscription?.remove?.();
+    };
+  }, []);
+
+  // Recompute the next eligible delivery time whenever the device timezone changes.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const next = currentTimeZone();
+      setTimeZone((previous) => (previous === next ? previous : next));
+    }, 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const nextEligibleDelivery = useMemo(() => {
+    if (!quietHours) {
+      return null;
+    }
+    try {
+      return getNextEligibleDeliveryTime(quietHours, new Date(), timeZone);
+    } catch {
+      return null;
+    }
+  }, [quietHours, timeZone]);
+
+  const saveQuietHours = async (next: QuietHoursSettings) => {
+    const previous = quietHours;
+    setQuietHours(next);
+    setQuietHoursSaving(true);
+    try {
+      const confirmed = await updateCareReminderQuietHours(next);
+      setQuietHours(confirmed);
+      setQuietHoursOffline(false);
+    } catch (error) {
+      setQuietHours(previous);
+      Alert.alert(
+        'Could not save quiet hours',
+        error instanceof Error ? error.message : 'Unable to update care reminder quiet hours.',
+      );
+    } finally {
+      setQuietHoursSaving(false);
+    }
+  };
 
   useEffect(() => {
     void (async () => {
@@ -123,6 +238,115 @@ const HealthAlertsScreen: React.FC = () => {
         >
           <Text style={styles.runButtonText}>{running ? 'Running' : 'Run'}</Text>
         </TouchableOpacity>
+      </View>
+
+      <View style={styles.quietCard}>
+        <View style={styles.quietHeaderRow}>
+          <Text style={styles.sectionLabel}>Care reminder quiet hours</Text>
+          {quietHoursLoading ? <ActivityIndicator color="#4CAF50" /> : null}
+        </View>
+
+        {quietHoursOffline ? (
+          <Text style={styles.offlineText} accessibilityLiveRegion="polite">
+            Offline — showing your last saved quiet hours. Changes will sync when you reconnect.
+          </Text>
+        ) : null}
+
+        {quietHours ? (
+          <>
+            <View style={styles.toggleRow}>
+              <Text style={styles.toggleLabel}>Enable quiet hours</Text>
+              <Switch
+                value={quietHours.enabled}
+                disabled={quietHoursSaving}
+                onValueChange={(enabled) => void saveQuietHours({ ...quietHours, enabled })}
+                accessibilityRole="switch"
+                accessibilityLabel="Enable care reminder quiet hours"
+                accessibilityHint="When enabled, care reminders are deferred during the quiet period."
+                accessibilityState={{ checked: quietHours.enabled, disabled: quietHoursSaving }}
+              />
+            </View>
+
+            <Text style={styles.quietHelp}>
+              Reminders that fall inside your quiet period are held and delivered at the next
+              eligible time instead of being lost.
+            </Text>
+
+            <Text style={styles.pickerLabel} accessibilityRole="header">
+              Quiet period starts
+            </Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.hourRow}
+            >
+              {QUIET_HOUR_OPTIONS.map((hour) => {
+                const selected = quietHours.startHour === hour;
+                return (
+                  <TouchableOpacity
+                    key={`start-${hour}`}
+                    style={[styles.hourChip, selected && styles.hourChipSelected]}
+                    disabled={quietHoursSaving || !quietHours.enabled}
+                    onPress={() => void saveQuietHours({ ...quietHours, startHour: hour })}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Start quiet hours at ${formatHour(hour)}`}
+                    accessibilityState={{ selected, disabled: quietHoursSaving || !quietHours.enabled }}
+                  >
+                    <Text style={[styles.hourChipText, selected && styles.hourChipTextSelected]}>
+                      {formatHour(hour)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            <Text style={styles.pickerLabel} accessibilityRole="header">
+              Quiet period ends
+            </Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.hourRow}
+            >
+              {QUIET_HOUR_OPTIONS.map((hour) => {
+                const selected = quietHours.endHour === hour;
+                return (
+                  <TouchableOpacity
+                    key={`end-${hour}`}
+                    style={[styles.hourChip, selected && styles.hourChipSelected]}
+                    disabled={quietHoursSaving || !quietHours.enabled}
+                    onPress={() => void saveQuietHours({ ...quietHours, endHour: hour })}
+                    accessibilityRole="button"
+                    accessibilityLabel={`End quiet hours at ${formatHour(hour)}`}
+                    accessibilityState={{ selected, disabled: quietHoursSaving || !quietHours.enabled }}
+                  >
+                    <Text style={[styles.hourChipText, selected && styles.hourChipTextSelected]}>
+                      {formatHour(hour)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            <Text style={styles.nextDeliveryText} accessibilityLiveRegion="polite">
+              {quietHours.enabled && nextEligibleDelivery
+                ? `Next eligible delivery: ${formatDeliveryTime(nextEligibleDelivery)} (${timeZone})`
+                : 'Reminders are delivered immediately.'}
+            </Text>
+          </>
+        ) : !quietHoursLoading ? (
+          <TouchableOpacity
+            style={styles.retryButton}
+            onPress={() => {
+              setQuietHoursLoading(true);
+              void loadQuietHours();
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Retry loading quiet hours"
+          >
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {alerts.length ? (
@@ -249,6 +473,50 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { color: '#111', fontSize: 16, fontWeight: '700', marginBottom: 6 },
   emptyText: { color: '#666', fontSize: 14, lineHeight: 20 },
+  quietCard: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#ececec',
+  },
+  quietHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  offlineText: { color: '#b45309', fontSize: 12, marginBottom: 10 },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  toggleLabel: { color: '#111', fontSize: 14, fontWeight: '600' },
+  quietHelp: { color: '#666', fontSize: 13, lineHeight: 19, marginBottom: 12 },
+  pickerLabel: { color: '#555', fontSize: 13, fontWeight: '700', marginBottom: 8 },
+  hourRow: { paddingBottom: 12 },
+  hourChip: {
+    backgroundColor: '#f1f5f9',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginRight: 8,
+  },
+  hourChipSelected: { backgroundColor: '#4CAF50' },
+  hourChipText: { color: '#334155', fontSize: 12, fontWeight: '600' },
+  hourChipTextSelected: { color: '#fff' },
+  nextDeliveryText: { color: '#111', fontSize: 13, fontWeight: '600', marginTop: 4 },
+  retryButton: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#1f2937',
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  retryButtonText: { color: '#fff', fontSize: 12, fontWeight: '700' },
 });
 
 export default HealthAlertsScreen;

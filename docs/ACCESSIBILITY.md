@@ -61,6 +61,54 @@ The streak calendar shows one cell per day, each in one of three states:
 - **Privacy.** Do not speak pet names, notes, or other sensitive details in cell
   labels; keep labels to date + state only.
 
+## Pet travel packing checklist (`src/screens/PackingChecklistScreen.tsx`)
+
+The per-trip packing checklist is fully operable with a screen reader and never
+relies on colour or motion to convey progress.
+
+- **Category headings** (Food, Records, Medication, Equipment) use
+  `accessibilityRole="header"` so users can jump between sections.
+- **Each item** is a checkbox: set `accessibilityRole="checkbox"` with
+  `accessibilityState={{ checked }}` and a label that includes both the category
+  and the item text (e.g. "Food: kibble"). Never signal checked state with a
+  strike-through or colour alone.
+- **Progress** ("3 of 8 packed") is announced through a container with
+  `accessibilityLiveRegion="polite"`; update the text rather than firing a
+  separate announcement on every toggle.
+- **Denied and offline states** render through `StateView` — a permission
+  denial, a stale/unsynced trip, or an offline load must show an explanatory
+  state with a retry action, never an empty list.
+- **Reduced motion**: gate any check/expand transitions on
+  `allowDecorativeAnimation(reduceMotion)` and shorten them with
+  `motionDuration(ms, reduceMotion)`; the checked state itself must still change.
+
+## Adoption application progress (`src/screens/adoption/ApplicationProgressScreen.tsx`)
+
+The progress view lists each required step, requested document, review status,
+and due date for the signed-in applicant only. Keep it compliant:
+
+- **Headings:** render the screen title and each section ("Steps", "Documents",
+  "Review status") with `accessibilityRole="header"`; use `sectionHeading` for
+  the spoken text so VoiceOver / TalkBack can jump between sections.
+- **Steps:** each row is one focusable element whose `accessibilityLabel`
+  combines the step name, its status (`describeHealthStatus()`), and the due
+  date. Never split a row into several unlabelled fragments.
+- **Documents:** label each requested document with its name and state
+  ("requested", "uploaded", "approved", "rejected"). Do not speak file paths,
+  storage URLs, or reviewer notes.
+- **Status:** always pair the colour with the token's `label` / `icon` /
+  `shape` (see health status below); never rely on hue alone.
+- **Due dates:** speak a full, unambiguous date (e.g. "Due 12 March 2025") and
+  include overdue / due-soon wording in the label, not only in the colour.
+- **Privacy:** only the current applicant's data is rendered; never include
+  another applicant's name, documents, or reviewer comments in any label.
+- **Reduced motion:** gate progress-bar fill and any status transitions on
+  `useReducedMotion()` / `motionDuration()`; the value still updates, only the
+  animation is removed.
+- **Stale / offline:** when data is cached or a refresh failed, announce it with
+  `AccessibilityInfo.announceForAccessibility` (e.g. "Showing saved progress,
+  last updated …") and expose a retry control with an accessible label.
+
 ## Colour-independent health status (`src/theme/healthStatus.ts`)
 
 Severity and trend must never rely on hue alone (WCAG 1.4.1). Every status token

@@ -30,6 +30,7 @@ import type { MainTabParamList } from '../navigation/types';
 import {
   AppointmentStatus,
   type Appointment,
+  bookAppointmentWithConflictHandling,
   cancelAppointmentReminder,
   cancelAllAppointmentReminders,
   cancelAppointmentById,
@@ -75,6 +76,12 @@ const BOOKING_STEPS = [
   { title: 'Notes & confirm' },
 ];
 
+/** Local calendar date as `YYYY-MM-DD` (the format the booking API expects). */
+function toLocalIsoDate(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const AppointmentScreen: React.FC = () => {
@@ -116,6 +123,18 @@ const AppointmentScreen: React.FC = () => {
   const [conflictModalVisible, setConflictModalVisible] = useState(false);
   const [isCheckingConflicts, setIsCheckingConflicts] = useState(false);
 
+  // ── Slot conflict state (server 409) ────────────────────────────────────────
+  const [slotConflict, setSlotConflict] = useState<{
+    message: string;
+    date: string;
+    alternatives: string[];
+  } | null>(null);
+  // Blocks double taps: a second confirm while one is in flight is ignored.
+  const submitLock = useRef(false);
+  // Idempotency key for the current booking intent. Reused while the request
+  // payload is unchanged so a retry after a timeout reconciles server-side.
+  const attemptRef = useRef<{ signature: string; key: string } | null>(null);
+
   const {
     currentStep: bookingStep,
     totalSteps: bookingTotalSteps,
@@ -125,6 +144,7 @@ const AppointmentScreen: React.FC = () => {
     registerFieldRef: registerBookingFieldRef,
     goNext: goBookingNext,
     goBack: goBookingBack,
+    goToStep: goBookingToStep,
     resetSteps: resetBookingSteps,
     focusFirstError: focusBookingError,
     isFirstStep: isBookingFirstStep,
@@ -239,12 +259,16 @@ const AppointmentScreen: React.FC = () => {
 
   const openBookingModal = () => {
     resetBookingSteps();
+    setSlotConflict(null);
+    attemptRef.current = null;
     setBookingVisible(true);
   };
 
   const closeBookingModal = () => {
     setBookingVisible(false);
     setConflictState(null);
+    setSlotConflict(null);
+    attemptRef.current = null;
     resetBookingSteps();
   };
 
@@ -305,29 +329,95 @@ const AppointmentScreen: React.FC = () => {
 
   // ─── Persist a confirmed appointment ─────────────────────────────────────────
 
+  /** Runs one submit at a time; repeat taps while in flight are dropped. */
+  const withSubmitLock = async (run: () => Promise<void>) => {
+    if (submitLock.current) return;
+    submitLock.current = true;
+    setIsCheckingConflicts(true);
+    try {
+      await run();
+    } finally {
+      submitLock.current = false;
+      setIsCheckingConflicts(false);
+    }
+  };
+
   const persistAppointment = async (appt: Appointment, resolutionNote?: string) => {
-    const saved = await saveAppointment(appt, resolutionNote);
-    // Schedule 24h and 1h reminders
-    await scheduleAppointmentReminders(saved).catch(() => {});
-    // Sync to device calendar
-    await syncAppointmentToCalendar(saved).catch(() => {});
-    setForm(EMPTY_FORM);
-    setConflictState(null);
-    closeBookingModal();
-    setConflictModalVisible(false);
-    setPendingAppointment(null);
-    setConflictResult(null);
-    await load();
+    const notes = resolutionNote
+      ? [appt.notes, `[Conflict resolution]: ${resolutionNote}`].filter(Boolean).join('\n\n')
+      : appt.notes;
+    const payload = {
+      petId: appt.petId,
+      vetId: appt.vetId,
+      date: toLocalIsoDate(new Date(appt.date)),
+      time: appt.time,
+      durationMinutes: appt.durationMinutes,
+      title: appt.title,
+      location: appt.location,
+      vetName: appt.vetName,
+      notes,
+    };
+
+    const signature = JSON.stringify(payload);
+    const attempt =
+      attemptRef.current?.signature === signature
+        ? attemptRef.current
+        : { signature, key: uuid() };
+    attemptRef.current = attempt;
+
+    try {
+      const result = await bookAppointmentWithConflictHandling({
+        ...payload,
+        idempotencyKey: attempt.key,
+      });
+
+      if (result.status === 'conflict') {
+        // The slot is gone: keep every typed field, clear only the date, and
+        // send the user back to pick a new slot.
+        attemptRef.current = null;
+        setConflictModalVisible(false);
+        setPendingAppointment(null);
+        setConflictResult(null);
+        setSlotConflict({
+          message: result.message,
+          date: payload.date,
+          alternatives: result.alternatives,
+        });
+        setForm((f) => ({ ...f, date: '' }));
+        goBookingToStep(1);
+        await load();
+        return;
+      }
+
+      const saved = result.appointment;
+      attemptRef.current = null;
+      // Schedule 24h and 1h reminders
+      await scheduleAppointmentReminders(saved).catch(() => {});
+      // Sync to device calendar
+      await syncAppointmentToCalendar(saved).catch(() => {});
+      setForm(EMPTY_FORM);
+      setConflictState(null);
+      closeBookingModal();
+      setConflictModalVisible(false);
+      setPendingAppointment(null);
+      setConflictResult(null);
+      await load();
+    } catch {
+      // Not confirmed: the form and idempotency key are kept, so Confirm can be retried safely.
+      Alert.alert(
+        'Booking not confirmed',
+        'We could not confirm this appointment. Your details are still here — tap Confirm Booking to try again.',
+      );
+    }
   };
 
   // ─── Book: validate → conflict check → persist ───────────────────────────────
 
-  const handleBook = async () => {
-    const appt = buildAppointment();
-    if (!appt) return;
+  const handleBook = () =>
+    withSubmitLock(async () => {
+      const appt = buildAppointment();
+      if (!appt) return;
 
-    setIsCheckingConflicts(true);
-    try {
       const petMeds = medications.filter((m) => m.petId === appt.petId);
       const result = await detectConflicts(appt.petId, new Date(appt.date), petMeds);
 
@@ -338,24 +428,20 @@ const AppointmentScreen: React.FC = () => {
       } else {
         await persistAppointment(appt);
       }
-    } finally {
-      setIsCheckingConflicts(false);
-    }
-  };
+    });
 
   // ─── Conflict modal actions ───────────────────────────────────────────────────
 
   /** User chooses to proceed despite conflicts */
-  const handleProceedAnyway = async () => {
+  const handleProceedAnyway = () => {
     if (!pendingAppointment) return;
-    await persistAppointment(
-      pendingAppointment,
-      'User chose to proceed despite scheduling conflicts.',
+    return withSubmitLock(() =>
+      persistAppointment(pendingAppointment, 'User chose to proceed despite scheduling conflicts.'),
     );
   };
 
   /** User accepts the suggested conflict-free slot */
-  const handleUseSuggestedTime = async () => {
+  const handleUseSuggestedTime = () => {
     if (!pendingAppointment || !conflictResult?.suggestedTime) return;
     const suggested = conflictResult.suggestedTime;
     const updated: Appointment = {
@@ -363,9 +449,11 @@ const AppointmentScreen: React.FC = () => {
       date: suggested.toISOString(),
       time: suggested.toTimeString().slice(0, 5),
     };
-    await persistAppointment(
-      updated,
-      `Rescheduled to conflict-free slot: ${suggested.toLocaleString()}.`,
+    return withSubmitLock(() =>
+      persistAppointment(
+        updated,
+        `Rescheduled to conflict-free slot: ${suggested.toLocaleString()}.`,
+      ),
     );
   };
 
@@ -676,6 +764,29 @@ const AppointmentScreen: React.FC = () => {
             )}
             {bookingStep === 1 && (
               <View style={styles.field}>
+                {slotConflict && (
+                  <View style={styles.slotConflictBox} accessibilityRole="alert">
+                    <Text style={styles.slotConflictText}>{slotConflict.message}</Text>
+                    {slotConflict.alternatives.length > 0 && (
+                      <View style={styles.slotChipRow}>
+                        {slotConflict.alternatives.map((slot) => (
+                          <TouchableOpacity
+                            key={slot}
+                            style={styles.slotChip}
+                            onPress={() => {
+                              setForm((f) => ({ ...f, date: `${slotConflict.date}T${slot}` }));
+                              setSlotConflict(null);
+                            }}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Use ${slot}`}
+                          >
+                            <Text style={styles.slotChipText}>{slot}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                )}
                 <Text style={styles.label}>Date & Time *</Text>
                 <TextInput
                   ref={(ref) => {
@@ -1134,6 +1245,22 @@ const styles = StyleSheet.create({
   },
   suggestionLabel: { fontSize: 12, color: '#065F46', fontWeight: '600', marginBottom: 4 },
   suggestionTime: { fontSize: 14, color: '#047857', fontWeight: '700' },
+  slotConflictBox: {
+    backgroundColor: '#FEF3C7',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+  },
+  slotConflictText: { fontSize: 13, color: '#92400E', fontWeight: '600' },
+  slotChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  slotChip: {
+    borderWidth: 1,
+    borderColor: '#10B981',
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  slotChipText: { fontSize: 13, color: '#047857', fontWeight: '600' },
   list: { padding: 16 },
   showArchivedRow: { paddingVertical: 8, paddingHorizontal: 4 },
   showArchivedText: { fontSize: 13, color: '#374151', fontWeight: '600' },

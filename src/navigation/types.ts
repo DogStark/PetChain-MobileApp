@@ -67,6 +67,7 @@ export type PetStackParamList = {
   MedicalRecordViewer: { petId: string; petName?: string };
   PetShare: { petId: string; petName: string };
   TravelCertificate: { petId: string; petName?: string };
+  TravelPackingChecklist: { petId: string; tripId?: string; tripName?: string };
   DosageCalculator: { petId?: string; species?: string; weightKg?: number };
   ReconciliationReport: { reportId?: string };
   TrustlineManager: undefined;
@@ -74,10 +75,12 @@ export type PetStackParamList = {
   VetMap: undefined;
   VetDirectory: undefined;
   PrivacyDashboard: undefined;
+  SecuritySessions: undefined;
   Insurance: undefined;
   Search: undefined;
   NotificationPreferences: undefined;
   DeleteAccount: undefined;
+  AccountDeletionProgress: undefined;
   ClinicalNotes: { petId: string; vetId?: string };
   RoutineStreak: { petId: string; petName?: string };
 };

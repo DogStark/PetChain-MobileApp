@@ -100,6 +100,51 @@ export async function requestAccountDeletion(
   return response.data;
 }
 
+export type AccountDeletionState =
+  | 'none'
+  | 'requested'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+  | 'unknown';
+
+export interface AccountDeletionStatus {
+  state: AccountDeletionState;
+  requestedAt: string | null;
+  deletionScheduledAt: string | null;
+  completionEstimate: string | null;
+  /** Server-authored explanation of what is retained and why. Shown verbatim. */
+  retentionNotice: string | null;
+}
+
+const KNOWN_DELETION_STATES: AccountDeletionState[] = [
+  'none',
+  'requested',
+  'processing',
+  'completed',
+  'failed',
+];
+
+/**
+ * Fetches the server-confirmed deletion request state. Unrecognised states are
+ * mapped to `unknown` so the UI never claims erasure the server has not confirmed.
+ */
+export async function getAccountDeletionStatus(userId: string): Promise<AccountDeletionStatus> {
+  const response = await apiClient.get<Partial<AccountDeletionStatus>>(
+    `/compliance/delete/${userId}/status`,
+  );
+  const body = response.data;
+  const state = KNOWN_DELETION_STATES.find((s) => s === body.state) ?? 'unknown';
+
+  return {
+    state,
+    requestedAt: body.requestedAt ?? null,
+    deletionScheduledAt: body.deletionScheduledAt ?? null,
+    completionEstimate: body.completionEstimate ?? null,
+    retentionNotice: body.retentionNotice ?? null,
+  };
+}
+
 async function clearLocalUserData(): Promise<void> {
   const keys = [
     '@auth_token',

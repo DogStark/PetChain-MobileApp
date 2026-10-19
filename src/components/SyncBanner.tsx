@@ -1,5 +1,5 @@
-import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { AccessibilityInfo, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import useOfflineSync from '../hooks/useOfflineSync';
 
@@ -20,6 +20,20 @@ import useOfflineSync from '../hooks/useOfflineSync';
  */
 const SyncBanner: React.FC = () => {
   const { isOnline, pendingCount, isSyncing, lastSync, error, triggerSync } = useOfflineSync();
+
+  // Announce each sync error once per failure. The live region on the banner is
+  // not reliably read by every screen reader, so push the message explicitly.
+  // Clearing the error resets the guard so a repeated failure is announced again.
+  const lastAnnouncedError = useRef<string | null>(null);
+  useEffect(() => {
+    if (error === null) {
+      lastAnnouncedError.current = null;
+      return;
+    }
+    if (error === lastAnnouncedError.current) return;
+    lastAnnouncedError.current = error;
+    AccessibilityInfo.announceForAccessibility(error);
+  }, [error]);
 
   const hasNothingToShow = isOnline && pendingCount === 0 && !isSyncing && error === null;
 
@@ -66,6 +80,7 @@ const SyncBanner: React.FC = () => {
         disabled={isSyncing}
         accessibilityRole="button"
         accessibilityLabel="Sync now"
+        accessibilityHint={error ?? undefined}
         accessibilityState={{ disabled: isSyncing }}
         testID="sync-banner-button"
       >
