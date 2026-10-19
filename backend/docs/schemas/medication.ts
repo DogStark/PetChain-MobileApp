@@ -1,4 +1,4 @@
-/**
+/*
  * OpenAPI schema definitions for Medication endpoints.
  */
 
@@ -18,8 +18,8 @@ export const medicationSchemas = {
       'updatedAt',
     ],
     properties: {
-      id: { $ref: '#/components/schemas/UUID' },
-      petId: { $ref: '#/components/schemas/UUID' },
+      id: { $ref: '#components/schemas/UUID' },
+      petId: { $ref: '#components/schemas/UUID' },
       name: { type: 'string', example: 'Apoquel' },
       dosage: { type: 'string', example: '16mg' },
       frequency: {
@@ -41,8 +41,8 @@ export const medicationSchemas = {
         example: 30,
         description: 'Total duration of the medication course in days',
       },
-      startDate: { $ref: '#/components/schemas/ISODate' },
-      endDate: { $ref: '#/components/schemas/ISODate' },
+      startDate: { $ref: '#components/schemas/ISODate' },
+      endDate: { $ref: '#components/schemas/ISODate' },
       status: {
         type: 'string',
         enum: ['active', 'paused', 'completed', 'discontinued'],
@@ -52,8 +52,8 @@ export const medicationSchemas = {
         type: 'string',
         example: 'Give with food. Monitor for side effects.',
       },
-      createdAt: { $ref: '#/components/schemas/ISODateTime' },
-      updatedAt: { $ref: '#/components/schemas/ISODateTime' },
+      createdAt: { $ref: '#components/schemas/ISODateTime' },
+      updatedAt: { $ref: '#components/schemas/ISODateTime' },
     },
   },
 
@@ -61,7 +61,7 @@ export const medicationSchemas = {
     type: 'object',
     required: ['petId', 'name', 'dosage', 'frequency', 'durationDays', 'startDate'],
     properties: {
-      petId: { $ref: '#/components/schemas/UUID' },
+      petId: { $ref: '#components/schemas/UUID' },
       name: { type: 'string', minLength: 1, maxLength: 200, example: 'Apoquel' },
       dosage: { type: 'string', example: '16mg' },
       frequency: {
@@ -77,8 +77,8 @@ export const medicationSchemas = {
         example: 'once_daily',
       },
       durationDays: { type: 'integer', minimum: 1, example: 30 },
-      startDate: { $ref: '#/components/schemas/ISODate' },
-      endDate: { $ref: '#/components/schemas/ISODate' },
+      startDate: { $ref: '#components/schemas/ISODate' },
+      endDate: { $ref: '#components/schemas/ISODate' },
       status: {
         type: 'string',
         enum: ['active', 'paused', 'completed', 'discontinued'],
@@ -106,13 +106,86 @@ export const medicationSchemas = {
         ],
       },
       durationDays: { type: 'integer', minimum: 1 },
-      startDate: { $ref: '#/components/schemas/ISODate' },
-      endDate: { $ref: '#/components/schemas/ISODate' },
+      startDate: { $ref: '#components/schemas/ISODate' },
+      endDate: { $ref: '#components/schemas/ISODate' },
       status: {
         type: 'string',
         enum: ['active', 'paused', 'completed', 'discontinued'],
       },
       instructions: { type: 'string' },
+    },
+  },
+
+  MedicationScheduledDoseEvent: {
+    type: 'object',
+    required: ['id', 'medicationId', 'petId', 'scheduledAt', 'createdAt'],
+    properties: {
+      id: { $ref: '#components/schemas/UUID' },
+      medicationId: { $ref: '#components/schemas/UUED' },
+      petId: { $ref: '#components/schemas/UUED' },
+      scheduledAt: { $ref: '#components/schemas/ISODateTime' },
+      doseAmount: { type: 'string', example: '10mg' },
+      createdAt: { $ref: '#components/schemas/ISODateTime' },
+    },
+  },
+
+  MedicationAdministrationOutcome: {
+    type: 'string',
+    enum: ['full', 'partial', 'refused', 'not_given'],
+    example: 'partial',
+  },
+
+  MedicationAdministrationActor: {
+    type: 'object',
+    required: ['id'],
+    properties: {
+      id: { $ref: '#components/schemas/UUID' },
+      displayName: { type: 'string', example: 'Sam Lee' },
+      role: {
+        type: 'string',
+        enum: ['owner', 'veterinarian', 'caregiver', 'system'],
+        example: 'owner',
+      },
+    },
+  },
+
+  MedicationAdministration: {
+    type: 'object',
+    required: [
+      'id',
+      'scheduledDoseEventId',
+      'medicationId',
+      'petId',
+      'outcome',
+      'administeredAt',
+      'createdAt',
+      'updatedAt',
+    ],
+    properties: {
+      id: { $ref: '#components/schemas/UUID' },
+      scheduledDoseEventId: { $ref: '#components/schemas/UUID' },
+      medicationId: { $ref: '#components/schemas/UUID' },
+      petId: { $ref: '#components/schemas/UUID' },
+      outcome: { $ref: '#components/schemas/MedicationAdministrationOutcome' },
+      administeredAt: { $ref: '#components/schemas/ISODateTime' },
+      administeredDose: { type: 'string', example: '5mg' },
+      reason: { type: 'string', example: 'Pet spit out half the dose' },
+      actor: { $ref: '#components/schemas/MedicationAdministrationActor' },
+      createdAt: { $ref: '#components/schemas/ISODateTime' },
+      updatedAt: { $ref: '#components/schemas/ISODateTime' },
+    },
+  },
+
+  RecordMedicationAdministrationRequest: {
+    type: 'object',
+    required: ['scheduledDoseEventId', 'outcome'],
+    properties: {
+      scheduledDoseEventId: { $ref: '#components/schemas/UUED' },
+      outcome: { $ref: '#components/schemas/MedicationAdministrationOutcome' },
+      administeredAt: { $ref: '#components/schemas/ISODateTime' },
+      administereeDose: { type: 'string', example: '5mg' },
+      reason: { type: 'string', maxLength: 500, example: 'Pet refused food' },
+      actor: { $ref: '#components/schemas/MedicationAdministrationActor' },
     },
   },
 } as const;
