@@ -1,5 +1,6 @@
 /**
- * Deterministic timezone fixtures for recurring appointment reminders (#1060).
+ * Deterministic timezone fixtures for recurring appointment reminders (#1060)
+ * and configurable medication reminder schedules (#1140).
  *
  * These fixtures pin the expected next-fire times for recurrences that cross
  * DST gaps (skipped local times) and DST overlaps (repeated local times), as
@@ -229,6 +230,205 @@ export const RECURRENCE_EDIT_FIXTURES: Array<{
 ];
 
 /**
+ * Configurable medication reminder schedules (#1140).
+ *
+ * A schedule supports multiple daily times, selected weekdays, start/end dates,
+ * and a persisted IANA timezone. Occurrences are computed in the schedule's own
+ * timezone so a device timezone change does not duplicate or drop a dose.
+ */
+export interface MedicationSchedule {
+  id: string;
+  /** IANA timezone the schedule was created in. Persisted with the schedule. */
+  timezone: string;
+  /** Local wall-clock reminder times, e.g. ['08:00', '20:00']. */
+  times: string[];
+  /** Selected weekdays, 0 = Sunday ... 6 = Saturday. Empty means every day. */
+  weekdays: number[];
+  /** Inclusive local start date, YYYY-MM-DD. */
+  startDate: string;
+  /** Inclusive local end date, YYYY-MM-DD. Null means no end. */
+  endDate: string | null;
+}
+
+/**
+ * Compute the next-fire UTC instants for a medication schedule on a given local
+ * date, honoring selected weekdays and the inclusive start/end date window.
+ * Returns an empty array when the date is outside the window or not selected.
+ */
+export function medicationOccurrencesForDate(
+  schedule: MedicationSchedule,
+  localDate: string,
+): OccurrenceExpectation[] {
+  if (localDate < schedule.startDate) return [];
+  if (schedule.endDate !== null && localDate > schedule.endDate) return [];
+
+  const weekday = weekdayOf(localDate);
+  if (schedule.weekdays.length > 0 && !schedule.weekdays.includes(weekday)) return [];
+
+  return schedule.times.map((time) => {
+    const { fireAtUtc, resolution } = resolveLocalToUtc(
+      `${localDate}T${time}`,
+      schedule.timezone,
+    );
+    return { fireAtUtc, localTime: `${localDate}T${time}`, resolution };
+  });
+}
+
+function weekdayOf(localDate: string): number {
+  const [year, month, day] = localDate.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+export const MEDICATION_SCHEDULE_FIXTURES: Array<{
+  name: string;
+  schedule: MedicationSchedule;
+  /** Device timezone at scheduling time; must not affect the result. */
+  deviceTimezone: string;
+  localDate: string;
+  expected: OccurrenceExpectation[];
+}> = [
+  {
+    name: 'multiple daily times fire in the schedule timezone',
+    schedule: {
+      id: 'med-multi',
+      timezone: 'America/New_York',
+      times: ['08:00', '20:00'],
+      weekdays: [],
+      startDate: '2024-06-01',
+      endDate: null,
+    },
+    deviceTimezone: 'Asia/Tokyo',
+    localDate: '2024-06-15',
+    expected: [
+      { fireAtUtc: '2024-06-15T12:00:00.000Z', localTime: '2024-06-15T08:00', resolution: 'exact' },
+      { fireAtUtc: '2024-06-16T00:00:00.000Z', localTime: '2024-06-15T20:00', resolution: 'exact' },
+    ],
+  },
+  {
+    name: 'unselected weekday produces no occurrences',
+    schedule: {
+      id: 'med-weekdays',
+      timezone: 'America/New_York',
+      times: ['09:00'],
+      weekdays: [1, 3, 5],
+      startDate: '2024-06-01',
+      endDate: null,
+    },
+    deviceTimezone: 'America/New_York',
+    localDate: '2024-06-16',
+    expected: [],
+  },
+  {
+    name: 'selected weekday produces occurrences',
+    schedule: {
+      id: 'med-weekdays',
+      timezone: 'America/New_York',
+      times: ['09:00'],
+      weekdays: [1, 3, 5],
+      startDate: '2024-06-01',
+      endDate: null,
+    },
+    deviceTimezone: 'America/New_York',
+    localDate: '2024-06-17',
+    expected: [
+      { fireAtUtc: '2024-06-17T13:00:00.000Z', localTime: '2024-06-17T09:00', resolution: 'exact' },
+    ],
+  },
+  {
+    name: 'date before start date produces no occurrences',
+    schedule: {
+      id: 'med-window',
+      timezone: 'America/New_York',
+      times: ['08:00'],
+      weekdays: [],
+      startDate: '2024-06-10',
+      endDate: '2024-06-20',
+    },
+    deviceTimezone: 'America/New_York',
+    localDate: '2024-06-09',
+    expected: [],
+  },
+  {
+    name: 'date after end date produces no occurrences',
+    schedule: {
+      id: 'med-window',
+      timezone: 'America/New_York',
+      times: ['08:00'],
+      weekdays: [],
+      startDate: '2024-06-10',
+      endDate: '2024-06-20',
+    },
+    deviceTimezone: 'America/New_York',
+    localDate: '2024-06-21',
+    expected: [],
+  },
+  {
+    name: 'end date is inclusive',
+    schedule: {
+      id: 'med-window',
+      timezone: 'America/New_York',
+      times: ['08:00'],
+      weekdays: [],
+      startDate: '2024-06-10',
+      endDate: '2024-06-20',
+    },
+    deviceTimezone: 'America/New_York',
+    localDate: '2024-06-20',
+    expected: [
+      { fireAtUtc: '2024-06-20T12:00:00.000Z', localTime: '2024-06-20T08:00', resolution: 'exact' },
+    ],
+  },
+  {
+    name: 'timezone change: device in London, schedule stays in New York',
+    schedule: {
+      id: 'med-tz',
+      timezone: 'America/New_York',
+      times: ['08:00'],
+      weekdays: [],
+      startDate: '2024-06-01',
+      endDate: null,
+    },
+    deviceTimezone: 'Europe/London',
+    localDate: '2024-06-15',
+    expected: [
+      { fireAtUtc: '2024-06-15T12:00:00.000Z', localTime: '2024-06-15T08:00', resolution: 'exact' },
+    ],
+  },
+  {
+    name: 'DST gap: 02:30 dose shifts forward on spring-forward day',
+    schedule: {
+      id: 'med-dst-gap',
+      timezone: 'America/New_York',
+      times: ['02:30'],
+      weekdays: [],
+      startDate: '2024-03-01',
+      endDate: null,
+    },
+    deviceTimezone: 'America/New_York',
+    localDate: '2024-03-10',
+    expected: [
+      { fireAtUtc: '2024-03-10T07:30:00.000Z', localTime: '2024-03-10T02:30', resolution: 'gap-shifted-forward' },
+    ],
+  },
+  {
+    name: 'DST overlap: 01:30 dose fires once on fall-back day',
+    schedule: {
+      id: 'med-dst-overlap',
+      timezone: 'America/New_York',
+      times: ['01:30'],
+      weekdays: [],
+      startDate: '2024-11-01',
+      endDate: null,
+    },
+    deviceTimezone: 'America/New_York',
+    localDate: '2024-11-03',
+    expected: [
+      { fireAtUtc: '2024-11-03T05:30:00.000Z', localTime: '2024-11-03T01:30', resolution: 'overlap-first' },
+    ],
+  },
+];
+
+/**
  * Booking confirmation conflict fixtures (#1062).
  *
  * A slot can become unavailable between selection and confirmation. These
@@ -298,5 +498,37 @@ export const BOOKING_CONFIRMATION_FIXTURES: BookingConfirmationFixture[] = [
     expectedState: 'network-error',
     expectedSuccess: false,
     expectedRetained: ['slotId', 'petId', 'notes'],
+  },
+];
+
+/**
+ * Appointment recurrence edit fixtures.
+ */
+export const APPOINTMENT_RECURRENCE_EDIT_FIXTURES: Array<{
+  name: string;
+  before: AppointmentRecurrenceFixture;
+  after: AppointmentRecurrenceFixture;
+  expectedTimezone: string;
+}> = [
+  {
+    name: 'edit recurrence keeps original timezone',
+    before: {
+      id: 'appt-edit',
+      timezone: 'America/Los_Angeles',
+      startLocal: '2024-03-10T02:30',
+      recurrence: { frequency: 'daily' },
+    },
+    after: {
+      id: 'appt-edit',
+      timezone: 'America/Los_Angeles',
+      startLocal: '2024-03-10T02:30',
+      recurrence: { frequency: 'weekly', byDay: [0] },
+    },
+    expectedTimezone: 'America/Los_Angeles',
+  },
+];
+
+/**
+
   },
 ];
