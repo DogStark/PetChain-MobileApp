@@ -360,6 +360,9 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 <!-- handsoff-issue-1074 -->
 - #1074: [Mobile] Add document-picker MIME and extension consistency checks
 
+<!-- handsoff-issue-1132 -->
+- #1132: [Mobile] Capture post-visit care plans as structured tasks
+
 <!-- handsoff-issue-1145 -->
 - #1145: [Mobile] Add caregiver assignment to recurring tasks
 
