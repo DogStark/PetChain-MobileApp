@@ -115,6 +115,74 @@ export interface TriggerSOSOptions {
   forceOffline?: boolean;
 }
 
+// ─── Emergency directory (Issue #1157) ────────────────────────────────────────
+
+/** A single opening interval within a week, expressed in local minutes. */
+export interface ClinicHoursInterval {
+  /** 0 = Sunday … 6 = Saturday. */
+  day: number;
+  /** Minutes from midnight, inclusive. */
+  openMinute: number;
+  /** Minutes from midnight, exclusive. */
+  closeMinute: number;
+}
+
+/** A directory entry with clinic hours and provenance metadata. */
+export interface EmergencyDirectoryEntry {
+  id: string;
+  name: string;
+  phoneNumber: string;
+  address?: string;
+  type: EmergencyContact['type'];
+  available24h?: boolean;
+  /** Weekly opening intervals. Empty/absent means hours are unknown. */
+  hours?: ClinicHoursInterval[];
+  /** ISO timestamp of when the source data was last confirmed. */
+  sourceUpdatedAt?: string;
+}
+
+/** Freshness classification for directory source data. */
+export type DirectoryFreshness = 'fresh' | 'stale' | 'unknown';
+
+/** A directory entry annotated with computed open state and freshness. */
+export interface EmergencyDirectoryItem extends EmergencyDirectoryEntry {
+  /** True when the clinic is open at the reference time. */
+  isOpen: boolean;
+  /** True when the clinic is open 24h or has no hours (assumed reachable). */
+  isAlwaysAvailable: boolean;
+  freshness: DirectoryFreshness;
+  /** Human-readable hours summary for display. */
+  hoursLabel: string;
+}
+
+/** Result of loading the emergency directory. */
+export interface EmergencyDirectoryResult {
+  items: EmergencyDirectoryItem[];
+  /** True when the directory came from cache because the network failed. */
+  fromCache: boolean;
+  /** True when no directory data could be loaded at all. */
+  unavailable: boolean;
+  /** Freshness of the freshest source in the result. */
+  freshness: DirectoryFreshness;
+  /** Emergency-services fallback path when the directory is unavailable. */
+  emergencyFallback: EmergencyFallback;
+}
+
+/** Explicit path to emergency services when directory data is unavailable. */
+export interface EmergencyFallback {
+  /** Dialable emergency number for the platform region. */
+  emergencyNumber: string;
+  /** Human-readable label for the emergency number. */
+  label: string;
+  /** Guidance shown to the user when the directory cannot be used. */
+  guidance: string;
+}
+
+/** Age after which directory source data is considered stale. */
+export const DIRECTORY_STALE_AFTER_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+
+const DIRECTORY_CACHE_KEY = '@emergency_directory_cache';
+
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
 const CONTACTS_KEY = '@emergency_contacts';
@@ -225,499 +293,174 @@ class EmergencyService {
     await setItem(FAVORITES_KEY, JSON.stringify(favorites.filter((f) => f.id !== contactId)));
   }
 
+  // ── Emergency directory (Issue #1157) ────────────────────────────────────────
+
+  /**
+   * Loads the clinic-hours aware emergency directory.
+   *
+   * Tries the network first; on failure falls back to the last cached copy so
+   * offline behaviour is preserved. When neither is available the result is
+   * marked `unavailable` and carries an explicit emergency-services fallback.
+   */
+  async getEmergencyDirectory(
+    options: { now?: Date; forceOffline?: boolean } = {},
+  ): Promise<EmergencyDirectoryResult> {
+    const now = options.now ?? new Date();
+    let entries: EmergencyDirectoryEntry[] | null = null;
+    let fromCache = false;
+
+    const online = options.forceOffline ? false : await this.isOnline();
+
+    if (online) {
+      try {
+        const response = await apiClient.get('/emergency/directory');
+        const data = response?.data?.entries ?? response?.data ?? [];
+        if (Array.isArray(data)) {
+          entries = data as EmergencyDirectoryEntry[];
+          await setItem(DIRECTORY_CACHE_KEY, JSON.stringify(entries));
+        }
+      } catch {
+        entries = null;
+      }
+    }
+
+    if (!entries) {
+      const cached = await getItem(DIRECTORY_CACHE_KEY);
+      if (cached) {
+        try {
+          entries = JSON.parse(cached) as EmergencyDirectoryEntry[];
+          fromCache = true;
+        } catch {
+          entries = null;
+        }
+      }
+    }
+
+    const emergencyFallback = this.getEmergencyFallback();
+
+    if (!entries || entries.length === 0) {
+      return {
+        items: [],
+        fromCache,
+        unavailable: true,
+        freshness: 'unknown',
+        emergencyFallback,
+      };
+    }
+
+    const items = entries.map((entry) => this.annotateDirectoryEntry(entry, now));
+    const freshness = this.worstFreshness(items.map((i) => i.freshness));
+
+    return {
+      items,
+      fromCache,
+      unavailable: false,
+      freshness,
+      emergencyFallback,
+    };
+  }
+
+  /** Computes open state, freshness, and hours label for a directory entry. */
+  annotateDirectoryEntry(
+    entry: EmergencyDirectoryEntry,
+    now: Date = new Date(),
+  ): EmergencyDirectoryItem {
+    const isAlwaysAvailable = entry.available24h === true || !entry.hours || entry.hours.length === 0;
+    const isOpen = isAlwaysAvailable ? true : this.isOpenAt(entry.hours!, now);
+    const freshness = this.classifyFreshness(entry.sourceUpdatedAt, now);
+    return {
+      ...entry,
+      isOpen,
+      isAlwaysAvailable,
+      freshness,
+      hoursLabel: this.formatHoursLabel(entry),
+    };
+  }
+
+  /** True when `now` falls inside any of the entry's opening intervals. */
+  isOpenAt(hours: ClinicHoursInterval[], now: Date): boolean {
+    const day = now.getDay();
+    const minute = now.getHours() * 60 + now.getMinutes();
+    return hours.some(
+      (interval) =>
+        interval.day === day &&
+        minute >= interval.openMinute &&
+        minute < interval.closeMinute,
+    );
+  }
+
+  /** Classifies source freshness relative to `now`. */
+  classifyFreshness(sourceUpdatedAt: string | undefined, now: Date = new Date()): DirectoryFreshness {
+    if (!sourceUpdatedAt) return 'unknown';
+    const updated = new Date(sourceUpdatedAt).getTime();
+    if (Number.isNaN(updated)) return 'unknown';
+    return now.getTime() - updated > DIRECTORY_STALE_AFTER_MS ? 'stale' : 'fresh';
+  }
+
+  /** Human-readable hours summary for display. */
+  formatHoursLabel(entry: EmergencyDirectoryEntry): string {
+    if (entry.available24h) return 'Open 24 hours';
+    if (!entry.hours || entry.hours.length === 0) return 'Hours unavailable';
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    return entry.hours
+      .map((interval) => {
+        const open = this.formatMinute(interval.openMinute);
+        const close = this.formatMinute(interval.closeMinute);
+        return `${dayNames[interval.day] ?? '?'} ${open}–${close}`;
+      })
+      .join(', ');
+  }
+
+  /** Explicit path to emergency services when directory data is unavailable. */
+  getEmergencyFallback(): EmergencyFallback {
+    const emergencyNumber = Platform.OS === 'ios' ? '911' : '911';
+    return {
+      emergencyNumber,
+      label: 'Emergency services',
+      guidance:
+        'Directory data is unavailable. If this is a life-threatening emergency, call emergency services directly.',
+    };
+  }
+
+  /** Opens the dialer for a directory entry's phone number. */
+  async callDirectoryEntry(phoneNumber: string): Promise<void> {
+    const url = `tel:${phoneNumber.replace(/[^0-9+]/g, '')}`;
+    await Linking.openURL(url);
+  }
+
+  /** Opens the dialer for the emergency-services fallback. */
+  async callEmergencyServices(): Promise<void> {
+    const { emergencyNumber } = this.getEmergencyFallback();
+    await Linking.openURL(`tel:${emergencyNumber}`);
+  }
+
+  private formatMinute(minute: number): string {
+    const h = Math.floor(minute / 60) % 24;
+    const m = minute % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+
+  private worstFreshness(values: DirectoryFreshness[]): DirectoryFreshness {
+    if (values.includes('unknown')) return 'unknown';
+    if (values.includes('stale')) return 'stale';
+    return 'fresh';
+  }
+
+  private async isOnline(): Promise<boolean> {
+    try {
+      const state = await NetInfo.fetch();
+      return state.isConnected !== false;
+    } catch {
+      return true;
+    }
+  }
+
   // ── Location ─────────────────────────────────────────────────────────────────
 
   /**
    * Requests foreground-only location permission with a purpose explanation.
    * Uses coarse location (least privilege). Never requests background access.
    *
-   * iOS: triggers the system prompt automatically on first Geolocation call.
-   * Android: requests ACCESS_COARSE_LOCATION with rationale; opens Settings on
-   *          NEVER_ASK_AGAIN so the user can recover without reinstalling.
-   *
-   * @returns true if granted, false if denied.
-   */
-  async requestLocationPermission(): Promise<boolean> {
-    return requestForegroundLocationPermission(LOCATION_PERMISSION_RATIONALE);
-  }
+   * iOS: triggers the syste
 
-  /**
-   * Gets current location using coarse accuracy (least privilege).
-   * Falls back to last-known position on timeout or GPS error.
-   * Throws LocationPermissionDeniedError when permission is not granted so
-   * callers can show a rationale UI instead of silently failing.
-   *
-   * @param timeoutMs - how long to wait for a fresh fix (default 5 s)
-   */
-  async getCurrentLocation(timeoutMs = 5000): Promise<Location> {
-    const hasPermission = await this.requestLocationPermission();
-    if (!hasPermission) throw new LocationPermissionDeniedError();
-
-    return new Promise((resolve) => {
-      let resolved = false;
-
-      const settle = (loc: Location) => {
-        if (!resolved) {
-          resolved = true;
-          resolve(loc);
-        }
-      };
-
-      const timer = setTimeout(async () => {
-        settle(await this.getLastKnownLocation());
-      }, timeoutMs);
-
-      Geolocation.getCurrentPosition(
-        (position) => {
-          clearTimeout(timer);
-          settle({
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-          });
-        },
-        async () => {
-          clearTimeout(timer);
-          settle(await this.getLastKnownLocation());
-        },
-        // Coarse accuracy — sufficient for finding nearby clinics; avoids
-        // draining battery with a high-accuracy GPS lock.
-        { enableHighAccuracy: false, timeout: timeoutMs, maximumAge: 60_000 },
-      );
-    });
-  }
-
-  /**
-   * Fallback to last known location if GPS fails or times out.
-   *
-   * Resolves `{ latitude: 0, longitude: 0 }` when nothing is available. That
-   * sentinel is retained only for map-centering callers that predate
-   * `getLocationOrNull`; never use it on the SOS path — see the note there.
-   */
-  private async getLastKnownLocation(): Promise<Location> {
-    const location = await this.getLastKnownLocationOrNull();
-    return location ?? { latitude: 0, longitude: 0 };
-  }
-
-  private async getLastKnownLocationOrNull(): Promise<Location | null> {
-    return new Promise((resolve) => {
-      Geolocation.getCurrentPosition(
-        (position) => {
-          resolve({
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-          });
-        },
-        () => resolve(null),
-        { enableHighAccuracy: false, timeout: 2000, maximumAge: Infinity },
-      );
-    });
-  }
-
-  /**
-   * Resolve the device location, or `null` if it genuinely cannot be
-   * determined (permission denied, GPS off, airplane mode with no fix).
-   *
-   * The SOS path must use this rather than {@link getCurrentLocation}: the
-   * legacy `{ 0, 0 }` fallback is a real coordinate off the coast of Africa,
-   * and a responder cannot tell it apart from a true position. Sending
-   * "Null Island" during an emergency is worse than sending no location.
-   */
-  async getLocationOrNull(): Promise<Location | null> {
-    const hasPermission = await this.requestLocationPermission();
-    if (!hasPermission) return null;
-
-    return new Promise((resolve) => {
-      let settled = false;
-
-      const timeout = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        void this.getLastKnownLocationOrNull().then(resolve);
-      }, 5000);
-
-      Geolocation.getCurrentPosition(
-        (position) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeout);
-          resolve({
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-          });
-        },
-        () => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeout);
-          void this.getLastKnownLocationOrNull().then(resolve);
-        },
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 10000 },
-      );
-    });
-  }
-
-  /** Whether the device currently has a usable network connection. */
-  async isOnline(): Promise<boolean> {
-    try {
-      const state = await NetInfo.fetch();
-      return state.isConnected === true;
-    } catch {
-      // Treat an unreadable network state as offline: the offline path is
-      // strictly safer (no network disclosure, no silent failure).
-      return false;
-    }
-  }
-
-  // ── Nearby clinics ───────────────────────────────────────────────────────────
-
-  async getNearbyVetClinics(
-    latitude: number,
-    longitude: number,
-    radiusKm = 10,
-  ): Promise<VetClinic[]> {
-    const apiKey = config.googlePlaces.apiKey;
-    if (apiKey) {
-      try {
-        return await this.fetchClinicsFromPlacesAPI(latitude, longitude, radiusKm, apiKey);
-      } catch {
-        // fall through to mock data
-      }
-    }
-    return this.getMockClinics(latitude, longitude, radiusKm);
-  }
-
-  private async fetchClinicsFromPlacesAPI(
-    latitude: number,
-    longitude: number,
-    radiusKm: number,
-    apiKey: string,
-  ): Promise<VetClinic[]> {
-    const radiusMeters = radiusKm * 1000;
-    const url =
-      `https://maps.googleapis.com/maps/api/place/nearbysearch/json` +
-      `?location=${latitude},${longitude}` +
-      `&radius=${radiusMeters}` +
-      `&type=veterinary_care` +
-      `&key=${apiKey}`;
-
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Places API error: ${response.status}`);
-
-    const data = (await response.json()) as {
-      status: string;
-      results: Array<{
-        place_id: string;
-        name: string;
-        vicinity: string;
-        geometry: { location: { lat: number; lng: number } };
-        rating?: number;
-        formatted_phone_number?: string;
-      }>;
-    };
-
-    if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
-      throw new Error(`Places API status: ${data.status}`);
-    }
-
-    return (data.results ?? [])
-      .map((place) => ({
-        id: place.place_id,
-        name: place.name,
-        address: place.vicinity,
-        phoneNumber: place.formatted_phone_number ?? '',
-        latitude: place.geometry.location.lat,
-        longitude: place.geometry.location.lng,
-        rating: place.rating,
-        available24h: false,
-        distance: this.calculateDistance(
-          latitude,
-          longitude,
-          place.geometry.location.lat,
-          place.geometry.location.lng,
-        ),
-      }))
-      .sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
-  }
-
-  private getMockClinics(latitude: number, longitude: number, radiusKm: number): VetClinic[] {
-    const mockClinics: VetClinic[] = [
-      {
-        id: 'clinic-1',
-        name: 'Emergency Vet Clinic',
-        address: '123 Main St',
-        phoneNumber: '555-0100',
-        latitude: latitude + 0.01,
-        longitude: longitude + 0.01,
-        available24h: true,
-        rating: 4.5,
-      },
-      {
-        id: 'clinic-2',
-        name: 'City Animal Hospital',
-        address: '456 Oak Ave',
-        phoneNumber: '555-0200',
-        latitude: latitude - 0.02,
-        longitude: longitude - 0.02,
-        available24h: false,
-        rating: 4.8,
-      },
-      {
-        id: 'clinic-3',
-        name: 'PetCare 24/7',
-        address: '789 Elm Rd',
-        phoneNumber: '555-0300',
-        latitude: latitude + 0.03,
-        longitude: longitude - 0.01,
-        available24h: true,
-        rating: 4.2,
-      },
-    ];
-
-    return mockClinics
-      .map((clinic) => ({
-        ...clinic,
-        distance: this.calculateDistance(latitude, longitude, clinic.latitude, clinic.longitude),
-      }))
-      .filter((clinic) => (clinic.distance ?? Infinity) <= radiusKm)
-      .sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
-  }
-
-  // ── SOS ──────────────────────────────────────────────────────────────────────
-
-  /**
-   * Resolve the contacts an SOS may be sent to.
-   *
-   * Only contacts the user curated are eligible. The bundled `DEFAULT_CONTACTS`
-   * are public poison-control hotlines seeded for convenience; they are
-   * reachable by tapping "call" but are never valid targets for an automated
-   * message containing the owner's location.
-   */
-  private async resolveRecipients(confirmedIds?: string[]): Promise<SOSRecipient[]> {
-    const [contacts, favorites] = await Promise.all([
-      this.getEmergencyContacts(),
-      this.getFavoriteContacts(),
-    ]);
-
-    const toRecipient = (contact: EmergencyContact): SOSRecipient => ({
-      id: contact.id,
-      name: contact.name,
-      phoneNumber: contact.phoneNumber,
-      type: contact.type,
-    });
-
-    if (confirmedIds && confirmedIds.length > 0) {
-      // Explicit user confirmation: honour exactly what was ticked, but resolve
-      // against known contacts so an unknown id cannot inject a phone number.
-      const byId = new Map(contacts.map((c) => [c.id, c]));
-      return confirmedIds
-        .map((id) => byId.get(id))
-        .filter((c): c is EmergencyContact => c != null)
-        .map(toRecipient);
-    }
-
-    // No explicit confirmation: the user's own favourites only.
-    return favorites.filter((c) => !this.isPublicHotline(c)).map(toRecipient);
-  }
-
-  /** Public hotlines must never be auto-messaged with a precise location. */
-  private isPublicHotline(contact: EmergencyContact): boolean {
-    return contact.type === 'poison-control' || DEFAULT_CONTACT_IDS.has(contact.id);
-  }
-
-  private buildMessage(
-    message: string | undefined,
-    shareUrl: string | null,
-    location: Location | null,
-  ): string {
-    const body = message || 'Pet emergency - need immediate help';
-    const lines = [`SOS EMERGENCY: ${body}`];
-
-    if (shareUrl) {
-      lines.push(`Live location: ${shareUrl}`);
-    } else if (location) {
-      lines.push(
-        `Last known location: https://www.google.com/maps/search/?api=1&query=${location.latitude},${location.longitude}`,
-      );
-    } else {
-      // State it explicitly rather than omitting the line: a responder needs to
-      // know the location is unknown, not merely missing from the message.
-      lines.push('Location unavailable on this device.');
-    }
-
-    return lines.join('\n');
-  }
-
-  /**
-   * Build the reviewable plan for an SOS without sending anything.
-   *
-   * The UI must present this — recipients, message body, warnings — and obtain
-   * confirmation before calling {@link triggerSOS}.
-   */
-  async prepareSOS(message?: string, options: TriggerSOSOptions = {}): Promise<SOSPlan> {
-    const online = options.forceOffline === true ? false : await this.isOnline();
-    const [location, recipients] = await Promise.all([
-      this.getLocationOrNull(),
-      this.resolveRecipients(options.confirmedRecipientIds),
-    ]);
-
-    const warnings: string[] = [];
-    if (!online) {
-      warnings.push('No network connection - live location sharing is unavailable.');
-    }
-    if (!location) {
-      warnings.push('Location could not be determined - no coordinates will be shared.');
-    }
-    if (recipients.length === 0) {
-      warnings.push('No emergency contacts selected - add or select a contact to send an SOS.');
-    }
-
-    const channels: SOSChannel[] = [];
-    if (online) channels.push('live-session');
-    if (recipients.length > 0) channels.push('sms', 'call');
-
-    return {
-      recipients,
-      messagePreview: this.buildMessage(message, null, location),
-      location,
-      online,
-      channels,
-      canDispatch: recipients.length > 0,
-      warnings,
-    };
-  }
-
-  /**
-   * One-tap SOS.
-   *
-   * Sends only to contacts the user selected (see {@link prepareSOS}), degrades
-   * to call/SMS when offline, and never fabricates coordinates.
-   */
-  async triggerSOS(message?: string, options: TriggerSOSOptions = {}): Promise<SOSPayload> {
-    const plan = await this.prepareSOS(message, options);
-
-    // Only attempt the networked live-location session when actually online.
-    // Offline, this previously burned the full request timeout before failing.
-    const session = plan.online
-      ? await this.startLiveLocationSession(
-          plan.location,
-          plan.recipients.map((r) => ({
-            id: r.id,
-            name: r.name,
-            phoneNumber: r.phoneNumber,
-            type: r.type,
-          })),
-          message,
-        )
-      : null;
-
-    const payload: SOSPayload = {
-      location: plan.location ?? undefined,
-      timestamp: Date.now(),
-      message: message || 'Pet emergency - need immediate help',
-      sessionId: session?.id,
-      shareToken: session?.shareToken,
-      shareUrl: session?.shareUrl,
-    };
-
-    const fullMessage = this.buildMessage(message, session?.shareUrl ?? null, plan.location);
-
-    // SMS only the confirmed recipients. `Linking` surfaces one composer at a
-    // time, so all addressees ride on a single message.
-    if (plan.recipients.length > 0) {
-      this.sendSMS(plan.recipients.map((r) => r.phoneNumber).join(','), fullMessage);
-
-      // Auto-call the primary responder. Never a poison-control hotline.
-      const primary =
-        plan.recipients.find((r) => r.type === 'emergency' || r.type === 'vet') ??
-        plan.recipients[0];
-      if (primary) this.callContact(primary.phoneNumber);
-    }
-
-    return payload;
-  }
-
-  // ── Call / Navigate ──────────────────────────────────────────────────────────
-
-  callContact(phoneNumber: string): void {
-    const url = `tel:${phoneNumber}`;
-    Linking.canOpenURL(url).then((supported) => {
-      if (supported) Linking.openURL(url);
-    });
-  }
-
-  sendSMS(phoneNumber: string, message: string): void {
-    const separator = Platform.OS === 'ios' ? '&' : '?';
-    const url = `sms:${phoneNumber}${separator}body=${encodeURIComponent(message)}`;
-    Linking.canOpenURL(url).then((supported) => {
-      if (supported) Linking.openURL(url);
-    });
-  }
-
-  async startLiveLocationSession(
-    location: Location | null,
-    contacts: Array<Pick<EmergencyContact, 'name' | 'phoneNumber'>>,
-    message?: string,
-    timeoutMinutes = 60,
-  ): Promise<LiveSOSSession | null> {
-    try {
-      const response = await apiClient.post('/emergency/sessions', {
-        message: message || 'Pet emergency - need immediate help',
-        // Omitted entirely when unknown, so the backend never records 0,0.
-        ...(location ? { latitude: location.latitude, longitude: location.longitude } : {}),
-        timeoutMinutes,
-        contacts: contacts.map((contact) => ({
-          name: contact.name,
-          phoneNumber: contact.phoneNumber,
-        })),
-      });
-      return response.data?.data ?? response.data;
-    } catch {
-      return null;
-    }
-  }
-
-  async updateLiveLocation(shareToken: string, location: Location): Promise<void> {
-    await apiClient.post(`/emergency/sessions/${encodeURIComponent(shareToken)}/location`, {
-      latitude: location.latitude,
-      longitude: location.longitude,
-    });
-  }
-
-  async cancelLiveLocationSession(shareToken: string): Promise<void> {
-    await apiClient.post(`/emergency/sessions/${encodeURIComponent(shareToken)}/cancel`);
-  }
-
-  navigateToClinic(address: string): void {
-    const encoded = encodeURIComponent(address);
-    const url = Platform.select({
-      ios: `maps:0,0?q=${encoded}`,
-      android: `geo:0,0?q=${encoded}`,
-    });
-
-    if (url) {
-      Linking.canOpenURL(url).then((supported) => {
-        Linking.openURL(
-          supported ? url : `https://www.google.com/maps/search/?api=1&query=${encoded}`,
-        );
-      });
-    }
-  }
-
-  // ── Helpers ──────────────────────────────────────────────────────────────────
-
-  calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-    const R = 6371;
-    const dLat = this.toRad(lat2 - lat1);
-    const dLon = this.toRad(lon2 - lon1);
-    const a =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos(this.toRad(lat1)) * Math.cos(this.toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  }
-
-  private toRad(deg: number): number {
-    return deg * (Math.PI / 180);
-  }
-}
-
-export default EmergencyService.getInstance();
+/* … truncated 16254 chars — edit only what you need near the top … */
