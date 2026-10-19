@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   ScrollView,
   StyleSheet,
   Switch,
@@ -24,6 +25,8 @@ import {
   type LocalDatabaseRecoveryInfo,
 } from '../services/localDB';
 import { exportLocalAuditCsv, recordLocalAuditEvent } from '../services/localAuditService';
+import { openSettingsSafely } from '../services/permissionService';
+import { checkPermission, PermissionType, type PermissionStatus } from '../utils/permissions';
 
 interface ConsentState {
   necessary: boolean;
@@ -37,12 +40,41 @@ interface DataCategory {
   count: number | null;
 }
 
+type OsPermissionState = PermissionStatus | 'unknown';
+
 const CATEGORIES: { key: keyof ConsentState; label: string; description: string }[] = [
   { key: 'necessary', label: 'Necessary', description: 'Required for the app to function.' },
   { key: 'functional', label: 'Functional', description: 'Remembers your preferences.' },
   { key: 'analytics', label: 'Analytics', description: 'Helps us improve the app.' },
   { key: 'marketing', label: 'Marketing', description: 'Personalised offers and updates.' },
 ];
+
+const OS_PERMISSIONS: { type: PermissionType; label: string; impact: string }[] = [
+  {
+    type: PermissionType.LOCATION,
+    label: 'Location',
+    impact: 'Used to find nearby vet clinics. Only while you use the app.',
+  },
+  {
+    type: PermissionType.CAMERA,
+    label: 'Camera',
+    impact: 'Used to scan pet QR codes and capture documents or photos.',
+  },
+  {
+    type: PermissionType.NOTIFICATIONS,
+    label: 'Notifications',
+    impact: 'Used for medication, appointment and vaccination reminders.',
+  },
+];
+
+const OS_STATUS_LABEL: Record<OsPermissionState, string> = {
+  granted: 'Allowed',
+  denied: 'Off',
+  undetermined: 'Not asked yet',
+  restricted: 'Restricted by this device',
+  limited: 'Limited',
+  unknown: 'Unavailable, check Settings',
+};
 
 interface Props {
   onDeleteAccount?: () => void;
@@ -55,6 +87,10 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
     analytics: false,
     marketing: false,
   });
+  const [consentsConfirmed, setConsentsConfirmed] = useState(false);
+  const [osPermissions, setOsPermissions] = useState<
+    Partial<Record<PermissionType, OsPermissionState>>
+  >({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -76,6 +112,7 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
       }>({ method: 'GET', url: '/privacy/consent' });
 
       setConsents((prev) => ({ ...prev, ...res.data.data.consents }));
+      setConsentsConfirmed(true);
 
       if (res.data.data.lastExportDate) {
         setLastExportDate(res.data.data.lastExportDate);
@@ -91,10 +128,24 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
         ]);
       }
     } catch {
-      // Use defaults on error
+      // Keep the last known choices visible, but never treat them as server-confirmed.
+      setConsentsConfirmed(false);
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  const loadOsPermissions = useCallback(async () => {
+    const entries = await Promise.all(
+      OS_PERMISSIONS.map(async ({ type }) => {
+        try {
+          return [type, await checkPermission(type)] as const;
+        } catch {
+          return [type, 'unknown'] as const;
+        }
+      }),
+    );
+    setOsPermissions(Object.fromEntries(entries));
   }, []);
 
   const handleRecoveryExport = useCallback(async (fileUri: string) => {
@@ -116,7 +167,17 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
     void loadConsents();
   }, [loadConsents]);
 
+  // Re-read OS permissions when returning from system Settings so the rows stay current.
+  useEffect(() => {
+    void loadOsPermissions();
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void loadOsPermissions();
+    });
+    return () => subscription.remove();
+  }, [loadOsPermissions]);
+
   const saveConsents = useCallback(async () => {
+    if (!consentsConfirmed) return;
     setSaving(true);
     try {
       await resilientRequest({ method: 'POST', url: '/privacy/consent', data: { consents } });
@@ -126,7 +187,7 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
     } finally {
       setSaving(false);
     }
-  }, [consents]);
+  }, [consents, consentsConfirmed]);
 
   const handleExport = useCallback(async () => {
     setExporting(true);
@@ -337,7 +398,47 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
         </>
       )}
 
+      <Text style={styles.sectionTitle}>Device Permissions</Text>
+      {OS_PERMISSIONS.map(({ type, label, impact }) => {
+        const status = osPermissions[type] ?? 'unknown';
+        return (
+          <View key={type} style={styles.row}>
+            <View style={styles.rowInfo}>
+              <Text style={styles.rowLabel}>
+                {label}: {OS_STATUS_LABEL[status]}
+              </Text>
+              <Text style={styles.rowDesc}>{impact}</Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => void openSettingsSafely()}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              accessibilityRole="button"
+              accessibilityLabel={`Change ${label} permission`}
+              accessibilityHint="Opens system Settings"
+            >
+              <Text style={styles.linkText}>Change</Text>
+            </TouchableOpacity>
+          </View>
+        );
+      })}
+
       <Text style={styles.sectionTitle}>Data Processing Consents</Text>
+      {!consentsConfirmed && (
+        <View style={styles.staleNotice} accessibilityRole="alert">
+          <Text style={styles.rowDesc}>
+            Couldn&apos;t confirm your saved choices with the server. Showing your last known
+            choices. Saving is paused until they load.
+          </Text>
+          <TouchableOpacity
+            onPress={() => void loadConsents()}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityRole="button"
+            accessibilityLabel="Retry loading privacy preferences"
+          >
+            <Text style={styles.linkText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
       {CATEGORIES.map(({ key, label, description }) => (
         <View key={key} style={styles.row}>
           <View style={styles.rowInfo}>
@@ -349,7 +450,7 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
             onValueChange={(v) =>
               key !== 'necessary' && setConsents((prev) => ({ ...prev, [key]: v }))
             }
-            disabled={key === 'necessary'}
+            disabled={key === 'necessary' || !consentsConfirmed}
             trackColor={{ true: '#4299e1', false: '#e2e8f0' }}
             accessibilityLabel={`Toggle ${label} consent`}
           />
@@ -357,9 +458,9 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
       ))}
 
       <TouchableOpacity
-        style={[styles.btn, styles.btnPrimary]}
+        style={[styles.btn, styles.btnPrimary, !consentsConfirmed && styles.btnDisabled]}
         onPress={() => void saveConsents()}
-        disabled={saving}
+        disabled={saving || !consentsConfirmed}
         accessibilityLabel="Save privacy preferences"
       >
         {saving ? (
@@ -486,6 +587,13 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   btnPrimary: { backgroundColor: '#4299e1' },
+  btnDisabled: { opacity: 0.5 },
+  linkText: { color: '#4299e1', fontWeight: '600', fontSize: 14 },
+  staleNotice: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#edf2f7',
+  },
   btnSecondary: { backgroundColor: '#edf2f7' },
   btnDanger: { backgroundColor: '#e53e3e' },
   btnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
