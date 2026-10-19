@@ -427,3 +427,108 @@ export const MEDICATION_SCHEDULE_FIXTURES: Array<{
     ],
   },
 ];
+
+/**
+ * Booking confirmation conflict fixtures (#1062).
+ *
+ * A slot can become unavailable between selection and confirmation. These
+ * fixtures pin the client contract for that race:
+ *  - confirmation requests carry a stable idempotency key so double taps and
+ *    retries reconcile to at most one booking attempt;
+ *  - a server conflict maps to a dedicated UI state, never a success state;
+ *  - entered notes and the selected pet survive the availability refresh.
+ */
+export type BookingConfirmationState =
+  | 'idle'
+  | 'submitting'
+  | 'success'
+  | 'conflict'
+  | 'network-error';
+
+export interface BookingDraft {
+  slotId: string;
+  petId: string;
+  notes: string;
+}
+
+export interface BookingConfirmationFixture {
+  name: string;
+  draft: BookingDraft;
+  /** Idempotency key generated once per booking attempt. */
+  idempotencyKey: string;
+  /** Simulated server outcome for the confirmation request. */
+  serverOutcome: 'ok' | 'conflict' | 'timeout';
+  /** Number of confirmation requests the client is expected to issue. */
+  expectedRequestCount: number;
+  /** UI state the client must land in. */
+  expectedState: BookingConfirmationState;
+  /** Whether the success state may be shown. */
+  expectedSuccess: boolean;
+  /** Draft fields that must remain available after the outcome. */
+  expectedRetained: Array<keyof BookingDraft>;
+}
+
+export const BOOKING_CONFIRMATION_FIXTURES: BookingConfirmationFixture[] = [
+  {
+    name: 'double tap issues a single booking attempt',
+    draft: { slotId: 'slot-1', petId: 'pet-1', notes: 'annual checkup' },
+    idempotencyKey: 'idem-double-tap',
+    serverOutcome: 'ok',
+    expectedRequestCount: 1,
+    expectedState: 'success',
+    expectedSuccess: true,
+    expectedRetained: ['slotId', 'petId', 'notes'],
+  },
+  {
+    name: 'server conflict maps to conflict state, never success',
+    draft: { slotId: 'slot-1', petId: 'pet-1', notes: 'annual checkup' },
+    idempotencyKey: 'idem-conflict',
+    serverOutcome: 'conflict',
+    expectedRequestCount: 1,
+    expectedState: 'conflict',
+    expectedSuccess: false,
+    expectedRetained: ['petId', 'notes'],
+  },
+  {
+    name: 'timeout retry reconciles by idempotency key',
+    draft: { slotId: 'slot-1', petId: 'pet-1', notes: 'annual checkup' },
+    idempotencyKey: 'idem-timeout',
+    serverOutcome: 'timeout',
+    expectedRequestCount: 2,
+    expectedState: 'network-error',
+    expectedSuccess: false,
+    expectedRetained: ['slotId', 'petId', 'notes'],
+  },
+];
+
+/**
+ * Appointment recurrence edit fixtures.
+ */
+export const APPOINTMENT_RECURRENCE_EDIT_FIXTURES: Array<{
+  name: string;
+  before: AppointmentRecurrenceFixture;
+  after: AppointmentRecurrenceFixture;
+  expectedTimezone: string;
+}> = [
+  {
+    name: 'edit recurrence keeps original timezone',
+    before: {
+      id: 'appt-edit',
+      timezone: 'America/Los_Angeles',
+      startLocal: '2024-03-10T02:30',
+      recurrence: { frequency: 'daily' },
+    },
+    after: {
+      id: 'appt-edit',
+      timezone: 'America/Los_Angeles',
+      startLocal: '2024-03-10T02:30',
+      recurrence: { frequency: 'weekly', byDay: [0] },
+    },
+    expectedTimezone: 'America/Los_Angeles',
+  },
+];
+
+/**
+
+  },
+];
