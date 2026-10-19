@@ -46,6 +46,9 @@ const NotificationCenterScreen = React.lazy(() => import('../screens/Notificatio
 const NotificationPreferencesScreen = React.lazy(
   () => import('../screens/NotificationPreferencesScreen'),
 );
+const NotificationTroubleshootingScreen = React.lazy(
+  () => import('../screens/NotificationTroubleshootingScreen'),
+);
 const PaymentScreen = React.lazy(() => import('../screens/PaymentScreen'));
 const PetDetailScreen = React.lazy(() => import('../screens/PetDetailScreen'));
 const PetFormScreen = React.lazy(() => import('../screens/PetFormScreen'));
@@ -305,7 +308,20 @@ function PetNavigator() {
       >
         {({ navigation }) => (
           <LazyScreen screenName="NotificationPreferences">
-            <NotificationPreferencesScreen onBack={() => navigation.goBack()} />
+            <NotificationPreferencesScreen
+              onBack={() => navigation.goBack()}
+              onOpenTroubleshooting={() => navigation.navigate('NotificationTroubleshooting')}
+            />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen
+        name="NotificationTroubleshooting"
+        options={{ title: 'Notification Delivery' }}
+      >
+        {({ navigation }) => (
+          <LazyScreen screenName="NotificationTroubleshooting">
+            <NotificationTroubleshootingScreen onBack={() => navigation.goBack()} />
           </LazyScreen>
         )}
       </PetStack.Screen>

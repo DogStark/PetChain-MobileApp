@@ -24,9 +24,13 @@ import petService, { type Pet } from '../services/petService';
 
 interface Props {
   onBack: () => void;
+  onOpenTroubleshooting?: () => void;
 }
 
-const NotificationPreferencesScreen: React.FC<Props> = ({ onBack }) => {
+const NotificationPreferencesScreen: React.FC<Props> = ({
+  onBack,
+  onOpenTroubleshooting,
+}) => {
   const [prefs, setPrefs] = useState<NotificationPreferences | null>(null);
   const [pets, setPets] = useState<Pet[]>([]);
   const [saving, setSaving] = useState(false);
@@ -185,6 +189,20 @@ const NotificationPreferencesScreen: React.FC<Props> = ({ onBack }) => {
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
+        {onOpenTroubleshooting && (
+          <View style={styles.card}>
+            <TouchableOpacity
+              style={styles.row}
+              onPress={onOpenTroubleshooting}
+              accessibilityRole="button"
+              accessibilityLabel="Why am I not getting reminders? Open delivery troubleshooting"
+            >
+              <Text style={styles.rowLabel}>Reminders not arriving?</Text>
+              <Text style={styles.backText}>›</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* ── By Type ── */}
         <SectionHeader title="By Type" />
         <View style={styles.card}>
