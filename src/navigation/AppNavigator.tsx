@@ -57,6 +57,7 @@ const ProfileScreen = React.lazy(() => import('../screens/ProfileScreen'));
 const QRScannerScreen = React.lazy(() => import('../screens/QRScannerScreen'));
 const ReconciliationScreen = React.lazy(() => import('../screens/ReconciliationScreen'));
 const ReferralScreen = React.lazy(() => import('../screens/ReferralScreen'));
+const RoutineStreakScreen = React.lazy(() => import('../screens/RoutineStreakScreen'));
 const SecuritySessionsScreen = React.lazy(() => import('../screens/SecuritySessionsScreen'));
 const TelemedicineScreen = React.lazy(() => import('../screens/TelemedicineScreen'));
 const TravelCertificateScreen = React.lazy(() => import('../screens/TravelCertificateScreen'));
@@ -153,6 +154,17 @@ function PetNavigator() {
               })
             }
           />
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen name="RoutineStreak" options={{ title: 'Routine Streak' }}>
+        {({ route, navigation }) => (
+          <LazyScreen screenName="RoutineStreak">
+            <RoutineStreakScreen
+              petId={route.params.petId}
+              petName={route.params.petName ?? 'Pet'}
+              onBack={() => navigation.goBack()}
+            />
+          </LazyScreen>
         )}
       </PetStack.Screen>
       <PetStack.Screen name="PetHealthMetrics" options={{ title: 'Health metrics' }}>
