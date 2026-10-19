@@ -31,6 +31,7 @@ export enum InvitationStatus {
   ACCEPTED = 'accepted',
   DECLINED = 'declined',
   EXPIRED = 'expired',
+  REVOKED = 'revoked',
 }
 
 /**

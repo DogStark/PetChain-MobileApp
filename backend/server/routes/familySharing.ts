@@ -237,7 +237,8 @@ router.delete('/:id/members/:userId', (req: AuthenticatedRequest, res) => {
 
 /**
  * POST /family-groups/invitations/:token/accept
- * Accept family invitation
+ * Accept family invitation. Failure states are server-confirmed so the
+ * mobile client can offer actionable recovery steps.
  */
 router.post('/invitations/:token/accept', (req: AuthenticatedRequest, res) => {
   const member = familySharingService.acceptFamilyInvitation(
@@ -247,7 +248,34 @@ router.post('/invitations/:token/accept', (req: AuthenticatedRequest, res) => {
   );
 
   if (!member) {
-    return sendError(res, 400, 'INVALID_INVITATION', 'Invalid or expired invitation');
+    const recovery = familySharingService.getInvitationRecoveryState(
+      req.params.token,
+      req.user!.email,
+    );
+    switch (recovery.state) {
+      case 'not_found':
+        return sendError(res, 404, 'INVITATION_NOT_FOUND', 'Invitation not found');
+      case 'expired':
+        return sendError(res, 410, 'INVITATION_EXPIRED', 'This invitation has expired');
+      case 'already_used':
+        return sendError(
+          res,
+          409,
+          'INVITATION_ALREADY_USED',
+          'This invitation has already been used',
+        );
+      case 'revoked':
+        return sendError(res, 410, 'INVITATION_REVOKED', 'This invitation has been revoked');
+      case 'wrong_account':
+        return sendError(
+          res,
+          403,
+          'INVITATION_WRONG_ACCOUNT',
+          'This invitation was sent to a different account',
+        );
+      default:
+        return sendError(res, 400, 'INVALID_INVITATION', 'Invalid or expired invitation');
+    }
   }
 
   (req as AuditableRequest).audit?.('family_member.accepted', 'family_member', member.id);
@@ -263,12 +291,63 @@ router.post('/invitations/:token/decline', (req: AuthenticatedRequest, res) => {
   const declined = familySharingService.declineFamilyInvitation(req.params.token);
 
   if (!declined) {
-    return sendError(res, 400, 'INVALID_INVITATION', 'Invalid or expired invitation');
+    const recovery = familySharingService.getInvitationRecoveryState(
+      req.params.token,
+      req.user!.email,
+    );
+    switch (recovery.state) {
+      case 'not_found':
+        return sendError(res, 404, 'INVITATION_NOT_FOUND', 'Invitation not found');
+      case 'expired':
+        return sendError(res, 410, 'INVITATION_EXPIRED', 'This invitation has expired');
+      case 'already_used':
+        return sendError(
+          res,
+          409,
+          'INVITATION_ALREADY_USED',
+          'This invitation has already been used',
+        );
+      case 'revoked':
+        return sendError(res, 410, 'INVITATION_REVOKED', 'This invitation has been revoked');
+      default:
+        return sendError(res, 400, 'INVALID_INVITATION', 'Invalid or expired invitation');
+    }
   }
 
   (req as AuditableRequest).audit?.('family_member.declined', 'family_member', req.params.token);
 
   return res.json(ok(null, 'Invitation declined'));
+});
+
+/**
+ * POST /family-groups/invitations/:token/revoke
+ * Revoke a pending family invitation (owner or admin of the household only)
+ */
+router.post('/invitations/:token/revoke', (req: AuthenticatedRequest, res) => {
+  const invitation = familySharingService.getFamilyInvitationByToken(req.params.token);
+
+  if (!invitation) {
+    return sendError(res, 404, 'INVITATION_NOT_FOUND', 'Invitation not found');
+  }
+
+  const revoked = familySharingService.revokeFamilyInvitation(req.params.token, req.user!.id);
+
+  if (!revoked) {
+    return sendError(
+      res,
+      403,
+      'FORBIDDEN',
+      'Only household owners or admins can revoke invitations',
+    );
+  }
+
+  (req as AuditableRequest).audit?.(
+    'family_member.invitation_revoked',
+    'family_invitation',
+    invitation.id,
+  );
+
+  return res.json(ok(null, 'Invitation revoked'));
 });
 
 // ─── Pet Access Routes ─────────────────────────────────────────────────────────

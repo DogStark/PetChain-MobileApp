@@ -1,9 +1,12 @@
+import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
+  Platform,
   ScrollView,
   StyleSheet,
   Switch,
@@ -15,8 +18,11 @@ import {
 import { resilientRequest } from '../services/apiClient';
 import { requireBiometric } from '../services/authService';
 import {
+  buildDiagnosticPreview,
+  buildSyncDiagnosticLog,
   exportDiagnosticsForSupport,
-  type DiagnosticLogEntry,
+  type DiagnosticSnapshot,
+  type DiagnosticSyncSummary,
 } from '../services/diagnosticExport';
 import errorTracking from '../services/errorTracking';
 import {
@@ -24,6 +30,9 @@ import {
   type LocalDatabaseRecoveryInfo,
 } from '../services/localDB';
 import { exportLocalAuditCsv, recordLocalAuditEvent } from '../services/localAuditService';
+import { openSettingsSafely } from '../services/permissionService';
+import { syncService } from '../services/syncService';
+import { checkPermission, PermissionType, type PermissionStatus } from '../utils/permissions';
 
 interface ConsentState {
   necessary: boolean;
@@ -37,6 +46,8 @@ interface DataCategory {
   count: number | null;
 }
 
+type OsPermissionState = PermissionStatus | 'unknown';
+
 const CATEGORIES: { key: keyof ConsentState; label: string; description: string }[] = [
   { key: 'necessary', label: 'Necessary', description: 'Required for the app to function.' },
   { key: 'functional', label: 'Functional', description: 'Remembers your preferences.' },
@@ -44,9 +55,85 @@ const CATEGORIES: { key: keyof ConsentState; label: string; description: string 
   { key: 'marketing', label: 'Marketing', description: 'Personalised offers and updates.' },
 ];
 
+const OS_PERMISSIONS: { type: PermissionType; label: string; impact: string }[] = [
+  {
+    type: PermissionType.LOCATION,
+    label: 'Location',
+    impact: 'Used to find nearby vet clinics. Only while you use the app.',
+  },
+  {
+    type: PermissionType.CAMERA,
+    label: 'Camera',
+    impact: 'Used to scan pet QR codes and capture documents or photos.',
+  },
+  {
+    type: PermissionType.NOTIFICATIONS,
+    label: 'Notifications',
+    impact: 'Used for medication, appointment and vaccination reminders.',
+  },
+];
+
+const OS_STATUS_LABEL: Record<OsPermissionState, string> = {
+  granted: 'Allowed',
+  denied: 'Off',
+  undetermined: 'Not asked yet',
+  restricted: 'Restricted by this device',
+  limited: 'Limited',
+  unknown: 'Unavailable, check Settings',
+};
+
 interface Props {
   onDeleteAccount?: () => void;
   onViewDeletionStatus?: () => void;
+}
+
+/**
+ * Builds the bundle contents shown in the consent preview. Sync state falls
+ * back to "unavailable" rather than failing the whole export.
+ */
+async function collectDiagnosticSnapshot(): Promise<DiagnosticSnapshot> {
+  let summary: DiagnosticSyncSummary | null = null;
+  try {
+    const status = await syncService.getStatus();
+    summary = {
+      isSyncing: status.isSyncing,
+      lastSync: status.lastSync,
+      pendingCount: status.pendingCount,
+      failedCount: status.failedCount,
+      conflictCount: status.conflicts.length,
+    };
+  } catch {
+    // Leave summary null — recorded as unavailable.
+  }
+
+  const timestamp = new Date().toISOString();
+  return {
+    app: {
+      version: Constants.expoConfig?.version ?? 'unknown',
+      platform: Platform.OS,
+    },
+    logs: [
+      {
+        kind: 'crash',
+        timestamp,
+        message: 'Recent crash / error context',
+        data: { source: 'errorTracking', level: 'error' },
+      },
+      buildSyncDiagnosticLog(summary, timestamp),
+      {
+        kind: 'wallet',
+        timestamp,
+        message: 'Recent wallet / payment events',
+        data: { source: 'wallet', level: 'info' },
+      },
+      {
+        kind: 'sos',
+        timestamp,
+        message: 'Recent SOS events',
+        data: { source: 'sos', level: 'warning' },
+      },
+    ],
+  };
 }
 
 const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeletionStatus }) => {
@@ -56,6 +143,10 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeleti
     analytics: false,
     marketing: false,
   });
+  const [consentsConfirmed, setConsentsConfirmed] = useState(false);
+  const [osPermissions, setOsPermissions] = useState<
+    Partial<Record<PermissionType, OsPermissionState>>
+  >({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -77,6 +168,7 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeleti
       }>({ method: 'GET', url: '/privacy/consent' });
 
       setConsents((prev) => ({ ...prev, ...res.data.data.consents }));
+      setConsentsConfirmed(true);
 
       if (res.data.data.lastExportDate) {
         setLastExportDate(res.data.data.lastExportDate);
@@ -92,10 +184,24 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeleti
         ]);
       }
     } catch {
-      // Use defaults on error
+      // Keep the last known choices visible, but never treat them as server-confirmed.
+      setConsentsConfirmed(false);
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  const loadOsPermissions = useCallback(async () => {
+    const entries = await Promise.all(
+      OS_PERMISSIONS.map(async ({ type }) => {
+        try {
+          return [type, await checkPermission(type)] as const;
+        } catch {
+          return [type, 'unknown'] as const;
+        }
+      }),
+    );
+    setOsPermissions(Object.fromEntries(entries));
   }, []);
 
   const handleRecoveryExport = useCallback(async (fileUri: string) => {
@@ -117,7 +223,17 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeleti
     void loadConsents();
   }, [loadConsents]);
 
+  // Re-read OS permissions when returning from system Settings so the rows stay current.
+  useEffect(() => {
+    void loadOsPermissions();
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void loadOsPermissions();
+    });
+    return () => subscription.remove();
+  }, [loadOsPermissions]);
+
   const saveConsents = useCallback(async () => {
+    if (!consentsConfirmed) return;
     setSaving(true);
     try {
       await resilientRequest({ method: 'POST', url: '/privacy/consent', data: { consents } });
@@ -127,7 +243,7 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeleti
     } finally {
       setSaving(false);
     }
-  }, [consents]);
+  }, [consents, consentsConfirmed]);
 
   const handleExport = useCallback(async () => {
     setExporting(true);
@@ -201,93 +317,64 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeleti
     }
   }, []);
 
-  const collectRecentDiagnosticLogs = useCallback((): DiagnosticLogEntry[] => {
-    // Representative device-side breadcrumbs for support — payloads are
-    // structurally redacted inside exportDiagnosticsForSupport.
-    return [
-      {
-        kind: 'crash',
-        timestamp: new Date().toISOString(),
-        message: 'Recent crash / error context',
-        data: { source: 'errorTracking', level: 'error' },
-      },
-      {
-        kind: 'sync',
-        timestamp: new Date().toISOString(),
-        message: 'Recent sync status',
-        data: { source: 'sync', level: 'info' },
-      },
-      {
-        kind: 'wallet',
-        timestamp: new Date().toISOString(),
-        message: 'Recent wallet / payment events',
-        data: { source: 'wallet', level: 'info' },
-      },
-      {
-        kind: 'sos',
-        timestamp: new Date().toISOString(),
-        message: 'Recent SOS events',
-        data: { source: 'sos', level: 'warning' },
-      },
-    ];
+  const runDiagnosticExport = useCallback(async (snapshot: DiagnosticSnapshot) => {
+    setExportingDiagnostics(true);
+    const confirmedAt = Date.now();
+    try {
+      const authResult = await requireBiometric();
+      if (authResult === 'failed') {
+        Alert.alert('Authentication required', 'Please authenticate to export diagnostics.');
+        return;
+      }
+      const authenticatedAt = Date.now();
+      await exportDiagnosticsForSupport({
+        logs: snapshot.logs,
+        app: snapshot.app,
+        confirmation: { confirmed: true, confirmedAt },
+        auth: {
+          method: authResult === 'pin_fallback' ? 'passcode' : 'biometric',
+          authenticatedAt,
+        },
+        share: async (uri) => {
+          const canShare = await Sharing.isAvailableAsync();
+          if (!canShare) {
+            Alert.alert(
+              'Export Ready',
+              'Diagnostics were prepared but sharing is not available on this device.',
+            );
+            return false;
+          }
+          await Sharing.shareAsync(uri, {
+            mimeType: 'application/json',
+            dialogTitle: 'Share redacted diagnostics with support',
+          });
+          return true;
+        },
+      });
+      errorTracking.captureMessage('diagnostic_export_completed', 'info', {
+        redacted: true,
+      });
+    } catch {
+      Alert.alert('Error', 'Failed to export diagnostics.');
+    } finally {
+      setExportingDiagnostics(false);
+    }
   }, []);
 
   const handleDiagnosticExport = useCallback(() => {
-    Alert.alert(
-      'Export Diagnostics for Support',
-      'This creates a short-lived, redacted diagnostic bundle for PetChain support. Tokens, pet IDs, health details, and locations are removed. Continue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Confirm',
-          onPress: () => {
-            void (async () => {
-              setExportingDiagnostics(true);
-              const confirmedAt = Date.now();
-              try {
-                const authResult = await requireBiometric();
-                if (authResult === 'failed') {
-                  Alert.alert('Authentication required', 'Please authenticate to export diagnostics.');
-                  return;
-                }
-                const authenticatedAt = Date.now();
-                await exportDiagnosticsForSupport({
-                  logs: collectRecentDiagnosticLogs(),
-                  confirmation: { confirmed: true, confirmedAt },
-                  auth: {
-                    method: authResult === 'pin_fallback' ? 'passcode' : 'biometric',
-                    authenticatedAt,
-                  },
-                  share: async (uri) => {
-                    const canShare = await Sharing.isAvailableAsync();
-                    if (!canShare) {
-                      Alert.alert(
-                        'Export Ready',
-                        'Diagnostics were prepared but sharing is not available on this device.',
-                      );
-                      return false;
-                    }
-                    await Sharing.shareAsync(uri, {
-                      mimeType: 'application/json',
-                      dialogTitle: 'Share redacted diagnostics with support',
-                    });
-                    return true;
-                  },
-                });
-                errorTracking.captureMessage('diagnostic_export_completed', 'info', {
-                  redacted: true,
-                });
-              } catch {
-                Alert.alert('Error', 'Failed to export diagnostics.');
-              } finally {
-                setExportingDiagnostics(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
-  }, [collectRecentDiagnosticLogs]);
+    void (async () => {
+      // Preview first: the same snapshot is previewed here and exported on confirm.
+      const snapshot = await collectDiagnosticSnapshot();
+      Alert.alert(
+        'Export Diagnostics for Support',
+        `This creates a short-lived, redacted diagnostic bundle for PetChain support. Tokens, pet IDs, health details, and precise locations are removed.\n\nIncluded:\n${buildDiagnosticPreview(snapshot)}\n\nContinue?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Confirm', onPress: () => void runDiagnosticExport(snapshot) },
+        ],
+      );
+    })();
+  }, [runDiagnosticExport]);
 
   const handleErase = useCallback(() => {
     if (onDeleteAccount) {
@@ -338,7 +425,47 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeleti
         </>
       )}
 
+      <Text style={styles.sectionTitle}>Device Permissions</Text>
+      {OS_PERMISSIONS.map(({ type, label, impact }) => {
+        const status = osPermissions[type] ?? 'unknown';
+        return (
+          <View key={type} style={styles.row}>
+            <View style={styles.rowInfo}>
+              <Text style={styles.rowLabel}>
+                {label}: {OS_STATUS_LABEL[status]}
+              </Text>
+              <Text style={styles.rowDesc}>{impact}</Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => void openSettingsSafely()}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              accessibilityRole="button"
+              accessibilityLabel={`Change ${label} permission`}
+              accessibilityHint="Opens system Settings"
+            >
+              <Text style={styles.linkText}>Change</Text>
+            </TouchableOpacity>
+          </View>
+        );
+      })}
+
       <Text style={styles.sectionTitle}>Data Processing Consents</Text>
+      {!consentsConfirmed && (
+        <View style={styles.staleNotice} accessibilityRole="alert">
+          <Text style={styles.rowDesc}>
+            Couldn&apos;t confirm your saved choices with the server. Showing your last known
+            choices. Saving is paused until they load.
+          </Text>
+          <TouchableOpacity
+            onPress={() => void loadConsents()}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityRole="button"
+            accessibilityLabel="Retry loading privacy preferences"
+          >
+            <Text style={styles.linkText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
       {CATEGORIES.map(({ key, label, description }) => (
         <View key={key} style={styles.row}>
           <View style={styles.rowInfo}>
@@ -350,7 +477,7 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeleti
             onValueChange={(v) =>
               key !== 'necessary' && setConsents((prev) => ({ ...prev, [key]: v }))
             }
-            disabled={key === 'necessary'}
+            disabled={key === 'necessary' || !consentsConfirmed}
             trackColor={{ true: '#4299e1', false: '#e2e8f0' }}
             accessibilityLabel={`Toggle ${label} consent`}
           />
@@ -358,9 +485,9 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onViewDeleti
       ))}
 
       <TouchableOpacity
-        style={[styles.btn, styles.btnPrimary]}
+        style={[styles.btn, styles.btnPrimary, !consentsConfirmed && styles.btnDisabled]}
         onPress={() => void saveConsents()}
-        disabled={saving}
+        disabled={saving || !consentsConfirmed}
         accessibilityLabel="Save privacy preferences"
       >
         {saving ? (
@@ -497,6 +624,13 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   btnPrimary: { backgroundColor: '#4299e1' },
+  btnDisabled: { opacity: 0.5 },
+  linkText: { color: '#4299e1', fontWeight: '600', fontSize: 14 },
+  staleNotice: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#edf2f7',
+  },
   btnSecondary: { backgroundColor: '#edf2f7' },
   btnDanger: { backgroundColor: '#e53e3e' },
   btnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
