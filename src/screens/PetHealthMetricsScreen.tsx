@@ -394,7 +394,7 @@ const PetHealthMetricsScreen: React.FC<Props> = ({
 
   const confirmDelete = useCallback(
     (id: string) => {
-      Alert.alert('Delete entry', 'Remove this health log?', [
+      Alert.alert('Delete entry', `Remove this health log for ${petName}?`, [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
@@ -406,7 +406,7 @@ const PetHealthMetricsScreen: React.FC<Props> = ({
         },
       ]);
     },
-    [loadHealthMetrics],
+    [loadHealthMetrics, petName],
   );
 
   // ---------------------------------------------------------------------------
@@ -615,7 +615,9 @@ const PetHealthMetricsScreen: React.FC<Props> = ({
       <Modal visible={modalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Log health metrics</Text>
+            <Text style={styles.modalTitle} accessibilityRole="header">
+              Log health metrics for {petName}
+            </Text>
             <Text style={styles.modalHint}>At least one field is required.</Text>
             <Text style={styles.inputLabel}>Weight (kg)</Text>
             <TextInput
