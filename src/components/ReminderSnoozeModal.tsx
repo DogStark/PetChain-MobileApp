@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Alert, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { reminderService, type SnoozeDuration } from '../services/reminderService';
+import { quietHoursService, type QuietHoursEvaluation } from '../services/quietHoursService';
 import { useAppTheme } from '../theme';
 
 interface Props {
@@ -29,6 +30,7 @@ export default function ReminderSnoozeModal({
   const [custom, setCustom] = useState('');
   const [suggested, setSuggested] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [quietEvaluation, setQuietEvaluation] = useState<QuietHoursEvaluation | null>(null);
 
   useEffect(() => {
     if (!visible) return;
@@ -36,11 +38,40 @@ export default function ReminderSnoozeModal({
     reminderService.getSuggestedTime(reminderId).then(setSuggested);
   }, [visible, reminderId]);
 
+  useEffect(() => {
+    if (!visible) {
+      setQuietEvaluation(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    quietHoursService.evaluateNow().then((evaluation) => {
+      if (!cancelled) setQuietEvaluation(evaluation);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
+
   const handleSnooze = async (minutes: SnoozeDuration) => {
     setLoading(true);
 
     try {
       const until = await reminderService.snooze(reminderId, minutes, nextDoseWindowMs);
+      const evaluation = await quietHoursService.evaluateDelivery(until);
+
+      if (evaluation.deferred && evaluation.nextEligibleAt) {
+        setQuietEvaluation(evaluation);
+        Alert.alert(
+          'Reminder deferred',
+          `This time falls within your quiet hours. Your reminder will be delivered at ${quietHoursService.formatDeliveryTime(
+            evaluation.nextEligibleAt,
+          )} instead.`,
+        );
+      }
+
       onSnoozed(until);
     } catch (error) {
       Alert.alert(
@@ -63,15 +94,39 @@ export default function ReminderSnoozeModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onDismiss}>
+    <Modal visible={visible} transparent animationType="none" onRequestClose={onDismiss}>
       <View style={[styles.overlay, { backgroundColor: colors.overlay }]}>
-        <View style={[styles.sheet, { backgroundColor: colors.surface }]}>
-          <Text style={[styles.title, { color: colors.text }]}>Snooze Reminder</Text>
+        <View
+          style={[styles.sheet, { backgroundColor: colors.surface }]}
+          accessible
+          accessibilityViewIsModal
+          accessibilityLabel="Snooze reminder"
+        >
+          <Text style={[styles.title, { color: colors.text }]} accessibilityRole="header">
+            Snooze Reminder
+          </Text>
 
           {suggested && (
             <Text style={[styles.suggestion, { color: colors.info }]}>
               Based on your history, {suggested} works best.
             </Text>
+          )}
+
+          {quietEvaluation?.deferred && quietEvaluation.nextEligibleAt && (
+            <View
+              style={[styles.quietNotice, { backgroundColor: colors.infoMuted }]}
+              accessible
+              accessibilityRole="text"
+              accessibilityLabel={`Quiet hours are active. This reminder will be deferred and delivered at ${quietHoursService.formatDeliveryTime(
+                quietEvaluation.nextEligibleAt,
+              )}.`}
+            >
+              <Text style={[styles.quietTitle, { color: colors.info }]}>Quiet hours active</Text>
+              <Text style={[styles.quietBody, { color: colors.text }]}>
+                Notifications are paused right now. Your reminder will be deferred and delivered at{' '}
+                {quietHoursService.formatDeliveryTime(quietEvaluation.nextEligibleAt)}.
+              </Text>
+            </View>
           )}
 
           <View style={styles.options}>
@@ -81,6 +136,9 @@ export default function ReminderSnoozeModal({
                 style={[styles.option, { backgroundColor: colors.infoMuted }]}
                 onPress={() => handleSnooze(opt.minutes)}
                 disabled={loading}
+                accessibilityRole="button"
+                accessibilityLabel={`Snooze for ${opt.label}`}
+                accessibilityState={{ disabled: loading }}
               >
                 <Text style={[styles.optionText, { color: colors.info }]}>{opt.label}</Text>
               </TouchableOpacity>
@@ -102,17 +160,26 @@ export default function ReminderSnoozeModal({
               keyboardType="numeric"
               value={custom}
               onChangeText={setCustom}
+              accessibilityLabel="Custom snooze duration in minutes"
             />
             <TouchableOpacity
               style={[styles.customBtn, { backgroundColor: colors.info }]}
               onPress={handleCustom}
               disabled={loading}
+              accessibilityRole="button"
+              accessibilityLabel="Snooze for custom duration"
+              accessibilityState={{ disabled: loading }}
             >
               <Text style={styles.customBtnText}>Snooze</Text>
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity style={styles.dismiss} onPress={onDismiss}>
+          <TouchableOpacity
+            style={styles.dismiss}
+            onPress={onDismiss}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss snooze dialog"
+          >
             <Text style={[styles.dismissText, { color: colors.secondaryText }]}>Dismiss</Text>
           </TouchableOpacity>
         </View>
@@ -126,6 +193,9 @@ const styles = StyleSheet.create({
   sheet: { borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 24 },
   title: { fontSize: 18, fontWeight: '700', marginBottom: 12 },
   suggestion: { fontSize: 13, marginBottom: 16 },
+  quietNotice: { borderRadius: 8, padding: 12, marginBottom: 16 },
+  quietTitle: { fontSize: 14, fontWeight: '700', marginBottom: 4 },
+  quietBody: { fontSize: 13, lineHeight: 18 },
   options: { flexDirection: 'row', marginBottom: 16 },
   option: { flex: 1, borderRadius: 8, padding: 12, alignItems: 'center', marginRight: 10 },
   optionText: { fontWeight: '600' },

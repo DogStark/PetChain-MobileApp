@@ -158,3 +158,127 @@ export async function requestPermission(type: PermissionType): Promise<Permissio
 export async function hasPermission(type: PermissionType): Promise<boolean> {
   return (await checkPermission(type)) === 'granted';
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Server-confirmed notification permission (Issue #1146 — quiet hours)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Server-confirmed notification settings for the signed-in account.
+ *
+ * `confirmed` is only `true` once the server has acknowledged the account's
+ * notification preferences (e.g. after a successful settings sync). Until
+ * then the quiet-hours UI must not assume reminders will be delivered.
+ */
+export interface ServerNotificationSettings {
+  /** Whether the server has confirmed the account's notification settings. */
+  confirmed: boolean;
+  /** Server-side master switch for care reminders. */
+  remindersEnabled?: boolean;
+  /** Server-side quiet-hours configuration, if any. */
+  quietHours?: {
+    enabled: boolean;
+    /** Minutes since local midnight (0–1439). */
+    startMinutes: number;
+    /** Minutes since local midnight (0–1439). */
+    endMinutes: number;
+    /** IANA timezone the quiet hours were configured in. */
+    timezone?: string;
+  } | null;
+}
+
+/**
+ * Combined notification permission state used by the quiet-hours UI.
+ *
+ * - `osStatus`      — raw OS permission status (never throws)
+ * - `serverConfirmed` — whether the server confirmed the account settings
+ * - `canDeliver`    — `true` only when the OS grants notifications AND the
+ *                     server has confirmed reminders are enabled
+ * - `reason`        — machine-readable explanation for the UI when delivery
+ *                     is not possible (denied / restricted / undetermined /
+ *                     server-unconfirmed / reminders-disabled)
+ */
+export type NotificationDeliveryState =
+  | 'deliverable'
+  | 'os-denied'
+  | 'os-restricted'
+  | 'os-undetermined'
+  | 'server-unconfirmed'
+  | 'reminders-disabled';
+
+export interface NotificationPermissionResult {
+  osStatus: PermissionStatus;
+  serverConfirmed: boolean;
+  canDeliver: boolean;
+  reason: NotificationDeliveryState;
+}
+
+/**
+ * Checks the OS notification permission and combines it with the
+ * server-confirmed account notification settings.
+ *
+ * Never throws: if the OS check fails (e.g. module unavailable) the status is
+ * treated as `undetermined` so the UI can still render an explanation.
+ *
+ * @param serverSettings - Server-confirmed settings, or `null`/`undefined`
+ *                         when they have not been fetched yet.
+ */
+export async function getNotificationPermissionState(
+  serverSettings?: ServerNotificationSettings | null,
+): Promise<NotificationPermissionResult> {
+  let osStatus: PermissionStatus = 'undetermined';
+  try {
+    osStatus = await checkPermission(PermissionType.NOTIFICATIONS);
+  } catch {
+    osStatus = 'undetermined';
+  }
+
+  const serverConfirmed = serverSettings?.confirmed === true;
+
+  let reason: NotificationDeliveryState;
+  if (osStatus === 'denied') {
+    reason = 'os-denied';
+  } else if (osStatus === 'restricted') {
+    reason = 'os-restricted';
+  } else if (osStatus !== 'granted') {
+    reason = 'os-undetermined';
+  } else if (!serverConfirmed) {
+    reason = 'server-unconfirmed';
+  } else if (serverSettings?.remindersEnabled === false) {
+    reason = 'reminders-disabled';
+  } else {
+    reason = 'deliverable';
+  }
+
+  return {
+    osStatus,
+    serverConfirmed,
+    canDeliver: reason === 'deliverable',
+    reason,
+  };
+}
+
+/**
+ * Human-readable explanation for a non-deliverable notification state.
+ * Returns `null` when reminders can be delivered.
+ */
+export function describeNotificationDeliveryState(
+  reason: NotificationDeliveryState,
+): string | null {
+  switch (reason) {
+    case 'deliverable':
+      return null;
+    case 'os-denied':
+      return 'Notifications are turned off for PetChain. Care reminders will not be delivered until you enable notifications in Settings.';
+    case 'os-restricted':
+      return 'Notifications are restricted on this device. Care reminders will not be delivered until the restriction is lifted.';
+    case 'os-undetermined':
+      return 'Notifications have not been enabled yet. Care reminders will not be delivered until you allow notifications.';
+    case 'server-unconfirmed':
+      return 'Your notification settings have not been confirmed by the server yet. Care reminders may be delayed.';
+    case 'reminders-disabled':
+      return 'Care reminders are turned off in your account settings.';
+    default:
+      return null;
+  }
+}
