@@ -363,6 +363,12 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 <!-- handsoff-issue-1132 -->
 - #1132: [Mobile] Capture post-visit care plans as structured tasks
 
+<!-- handsoff-issue-1136 -->
+- #1136: [Mobile] Create a symptom observation journal
+
+<!-- handsoff-issue-1137 -->
+- #1137: [Mobile] Add a care-plan acknowledgement history
+
 <!-- handsoff-issue-1145 -->
 - #1145: [Mobile] Add caregiver assignment to recurring tasks
 
