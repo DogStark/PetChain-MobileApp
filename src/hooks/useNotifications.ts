@@ -16,13 +16,17 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { AppState } from 'react-native';
+
 import {
   checkPermissions,
   requestPermissions,
   scheduleFutureNotification,
   cancelScheduledNotification,
+  getQuietHoursConfig,
+  evaluateQuietHours,
 } from '../services/notificationService';
-import type { ScheduledNotification } from '../services/notificationService';
+import type { ScheduledNotification, QuietHoursConfig } from '../services/notificationService';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,6 +53,29 @@ export interface UseNotificationsReturn {
   cancel: (notificationId: string) => Promise<void>;
   /** Last error encountered during any operation, or null. */
   error: Error | null;
+  /** Current quiet-hours configuration for the account, or null if not loaded. */
+  quietHours: QuietHoursConfig | null;
+  /** True while the quiet-hours configuration is being (re)loaded. */
+  isLoadingQuietHours: boolean;
+  /**
+   * Deferral state for the most recently scheduled notification.
+   * Null when nothing has been scheduled yet.
+   */
+  lastDeferral: NotificationDeferral | null;
+  /** Force a reload of the quiet-hours config (e.g. after editing settings). */
+  refreshQuietHours: () => Promise<void>;
+}
+
+/** Describes how a notification was deferred due to quiet hours. */
+export interface NotificationDeferral {
+  /** True when the notification was moved out of quiet hours. */
+  deferred: boolean;
+  /** The originally requested delivery time (ISO string). */
+  originalTime: string;
+  /** The actual delivery time used (ISO string). */
+  scheduledTime: string;
+  /** The quiet-hours config that caused the deferral, if any. */
+  quietHours: QuietHoursConfig | null;
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -61,6 +88,9 @@ export function useNotifications(): UseNotificationsReturn {
   const [hasPermission, setHasPermission] = useState(false);
   const [isCheckingPermission, setIsCheckingPermission] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const [quietHours, setQuietHours] = useState<QuietHoursConfig | null>(null);
+  const [isLoadingQuietHours, setIsLoadingQuietHours] = useState(false);
+  const [lastDeferral, setLastDeferral] = useState<NotificationDeferral | null>(null);
 
   // Guard against state updates after unmount
   const isMounted = useRef(true);
@@ -102,6 +132,66 @@ export function useNotifications(): UseNotificationsReturn {
     };
   }, []);
 
+  // ── Quiet hours: load + recompute on timezone change ───────────────────────
+
+  const loadQuietHours = useCallback(async (): Promise<void> => {
+    setIsLoadingQuietHours(true);
+    try {
+      const config = await getQuietHoursConfig();
+      if (isMounted.current) {
+        setQuietHours(config);
+      }
+    } catch (err) {
+      if (isMounted.current) {
+        setError(err instanceof Error ? err : new Error('Failed to load quiet hours'));
+      }
+    } finally {
+      if (isMounted.current) {
+        setIsLoadingQuietHours(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadQuietHours();
+  }, [loadQuietHours]);
+
+  // Recompute deferral state when the app returns to the foreground or the
+  // device timezone offset changes (e.g. travel, DST transitions).
+  const timezoneOffsetRef = useRef<number>(new Date().getTimezoneOffset());
+
+  useEffect(() => {
+    const handleAppStateChange = (nextState: string): void => {
+      if (nextState !== 'active') {
+        return;
+      }
+      const currentOffset = new Date().getTimezoneOffset();
+      if (currentOffset !== timezoneOffsetRef.current) {
+        timezoneOffsetRef.current = currentOffset;
+        // Timezone changed: reload config and re-evaluate last deferral.
+        void loadQuietHours();
+        setLastDeferral((prev) => {
+          if (!prev || !prev.deferred) {
+            return prev;
+          }
+          const original = new Date(prev.originalTime);
+          const evaluation = evaluateQuietHours(original, quietHours);
+          return {
+            deferred: evaluation.deferred,
+            originalTime: prev.originalTime,
+            scheduledTime: evaluation.scheduledTime.toISOString(),
+            quietHours,
+          };
+        });
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => {
+      subscription.remove();
+    };
+  }, [loadQuietHours, quietHours]);
+
   // ── requestPermission ──────────────────────────────────────────────────────
 
   const requestPermission = useCallback(async (): Promise<boolean> => {
@@ -132,7 +222,29 @@ export function useNotifications(): UseNotificationsReturn {
     async (notification: ScheduledNotification): Promise<string> => {
       setError(null);
       try {
-        const id = await scheduleFutureNotification(notification);
+        const originalTime = new Date(notification.triggerDate);
+        const evaluation = evaluateQuietHours(originalTime, quietHours);
+
+        const effectiveNotification: ScheduledNotification = evaluation.deferred
+          ? {
+              ...notification,
+              triggerDate: evaluation.scheduledTime,
+              deferred: true,
+              originalTime: originalTime.toISOString(),
+            }
+          : notification;
+
+        const id = await scheduleFutureNotification(effectiveNotification);
+
+        if (isMounted.current) {
+          setLastDeferral({
+            deferred: evaluation.deferred,
+            originalTime: originalTime.toISOString(),
+            scheduledTime: evaluation.scheduledTime.toISOString(),
+            quietHours,
+          });
+        }
+
         return id;
       } catch (err) {
         const wrapped = err instanceof Error ? err : new Error('Failed to schedule notification');
@@ -142,7 +254,7 @@ export function useNotifications(): UseNotificationsReturn {
         throw wrapped;
       }
     },
-    [],
+    [quietHours],
   );
 
   // ── cancel ─────────────────────────────────────────────────────────────────
@@ -167,6 +279,10 @@ export function useNotifications(): UseNotificationsReturn {
     schedule,
     cancel,
     error,
+    quietHours,
+    isLoadingQuietHours,
+    lastDeferral,
+    refreshQuietHours: loadQuietHours,
   };
 }
 

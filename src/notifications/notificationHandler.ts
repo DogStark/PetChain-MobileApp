@@ -9,10 +9,26 @@
 
 export const CURRENT_PAYLOAD_VERSION = 3;
 
+/**
+ * Quiet-hours deferral metadata attached to a reminder that was held back
+ * during the account's configured quiet period.
+ */
+export interface DeferralMetadata {
+  /** True when the reminder was deferred by quiet hours. */
+  deferred: true;
+  /** ISO timestamp of the originally scheduled delivery time. */
+  originalScheduledAt: string;
+}
+
 export type NotificationIntent =
-  | { type: 'openScreen'; screen: string; params?: Record<string, string> }
-  | { type: 'openUrl'; url: string }
-  | { type: 'none' };
+  | {
+      type: 'openScreen';
+      screen: string;
+      params?: Record<string, string>;
+      deferral?: DeferralMetadata;
+    }
+  | { type: 'openUrl'; url: string; deferral?: DeferralMetadata }
+  | { type: 'none'; deferral?: DeferralMetadata };
 
 export interface VersionedPayload {
   version: number;
@@ -31,6 +47,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function asIsoTimestamp(value: unknown): string | undefined {
+  const raw = asString(value);
+  if (!raw) {
+    return undefined;
+  }
+  const parsed = Date.parse(raw);
+  if (Number.isNaN(parsed)) {
+    return undefined;
+  }
+  return new Date(parsed).toISOString();
+}
+
+/**
+ * Extract quiet-hours deferral metadata from a payload. Returns undefined when
+ * the payload was not deferred or the metadata is incomplete/invalid.
+ */
+function parseDeferral(payload: Record<string, unknown>): DeferralMetadata | undefined {
+  if (payload.deferred !== true) {
+    return undefined;
+  }
+  const originalScheduledAt = asIsoTimestamp(payload.originalScheduledAt);
+  if (!originalScheduledAt) {
+    return undefined;
+  }
+  return { deferred: true, originalScheduledAt };
 }
 
 function asStringMap(value: unknown): Record<string, string> | undefined {
@@ -130,6 +173,11 @@ export function parseNotificationPayload(raw: unknown): ParseResult {
   const intent = parser ? parser(raw) : undefined;
   if (!intent) {
     return { status: 'ignored', reason: 'malformed' };
+  }
+
+  const deferral = parseDeferral(raw);
+  if (deferral) {
+    return { status: 'ok', intent: { ...intent, deferral } };
   }
 
   return { status: 'ok', intent };

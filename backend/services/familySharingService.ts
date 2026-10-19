@@ -296,6 +296,67 @@ export function declineFamilyInvitation(invitationToken: string): boolean {
   return true;
 }
 
+// ─── Invitation Recovery States ──────────────────────────────────────────────────
+
+/**
+ * A household invitation can be in a stale or denied state the invitee cannot
+ * act on directly. This type classifies *why* an invitation cannot be actioned
+ * so the mobile client can show server-confirmed recovery steps.
+ */
+export type InvitationRecoveryState =
+  | { state: 'pending' }
+  | { state: 'not_found' }
+  | { state: 'expired' }
+  | { state: 'already_used'; outcome: 'accepted' | 'declined' }
+  | { state: 'revoked' }
+  | { state: 'wrong_account' };
+
+export function getFamilyInvitationByToken(invitationToken: string): FamilyInvitation | undefined {
+  return [...familyInvitations.values()].find((i) => i.token === invitationToken);
+}
+
+export function getInvitationRecoveryState(
+  invitationToken: string,
+  userEmail: string,
+): InvitationRecoveryState {
+  const invitation = getFamilyInvitationByToken(invitationToken);
+  if (!invitation) return { state: 'not_found' };
+
+  if (invitation.status === InvStatus.PENDING && new Date(invitation.expiresAt) < new Date()) {
+    return { state: 'expired' };
+  }
+
+  if (invitation.status === InvStatus.REVOKED) return { state: 'revoked' };
+  if (invitation.status === InvStatus.ACCEPTED) return { state: 'already_used', outcome: 'accepted' };
+  if (invitation.status === InvStatus.DECLINED) return { state: 'already_used', outcome: 'declined' };
+  if (invitation.status === InvStatus.EXPIRED) return { state: 'expired' };
+
+  if (invitation.invitedEmail !== userEmail.toLowerCase()) return { state: 'wrong_account' };
+
+  return { state: 'pending' };
+}
+
+/**
+ * Revoke a pending household invitation. Only the household owner or an admin
+ * may revoke; already-used invitations cannot be revoked.
+ */
+export function revokeFamilyInvitation(invitationToken: string, revokedBy: string): boolean {
+  const invitation = getFamilyInvitationByToken(invitationToken);
+  if (!invitation || invitation.status !== InvStatus.PENDING) return false;
+
+  const revoker = getFamilyMember(invitation.familyGroupId, revokedBy);
+  if (
+    !revoker ||
+    (revoker.role !== FamilyMemberRole.OWNER && revoker.role !== FamilyMemberRole.ADMIN)
+  ) {
+    return false;
+  }
+
+  invitation.status = InvStatus.REVOKED;
+  invitation.updatedAt = now();
+  return true;
+}
+
 export function updateFamilyMemberRole(
   familyGroupId: string,
   userId: string,
@@ -660,6 +721,11 @@ export default {
   declineFamilyInvitation,
   updateFamilyMemberRole,
   removeFamilyMember,
+
+  // Invitation Recovery States
+  getFamilyInvitationByToken,
+  getInvitationRecoveryState,
+  revokeFamilyInvitation,
 
   // Pet Access
   grantPetAccess,

@@ -50,6 +50,10 @@ export const API_ENDPOINTS = {
       refresh: '/auth/oauth/refresh',
       revoke: '/auth/oauth/revoke',
     },
+    sessions: {
+      list: '/auth/sessions',
+      revoke: (sessionId: string) => `/auth/sessions/${seg(sessionId)}`,
+    },
   },
 
   users: {
@@ -266,6 +270,17 @@ export const API_ENDPOINTS = {
     policies: '/insurance/policies',
     claims: '/insurance/claims',
     connect: '/insurance/connect',
+  },
+
+  // -------------------------------------------------------------------------
+  // Adoption
+  // -------------------------------------------------------------------------
+  adoption: {
+    /** Progress details for the signed-in applicant's own application. */
+    myApplicationProgress: '/adoption/applications/me/progress',
+    /** Progress details for a specific application (server-confirmed access only). */
+    applicationProgress: (applicationId: string) =>
+      `/adoption/applications/${seg(applicationId)}/progress`,
   },
 
   referrals: {

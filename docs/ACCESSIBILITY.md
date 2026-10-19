@@ -59,6 +59,33 @@ relies on colour or motion to convey progress.
   `allowDecorativeAnimation(reduceMotion)` and shorten them with
   `motionDuration(ms, reduceMotion)`; the checked state itself must still change.
 
+## Adoption application progress (`src/screens/adoption/ApplicationProgressScreen.tsx`)
+
+The progress view lists each required step, requested document, review status,
+and due date for the signed-in applicant only. Keep it compliant:
+
+- **Headings:** render the screen title and each section ("Steps", "Documents",
+  "Review status") with `accessibilityRole="header"`; use `sectionHeading` for
+  the spoken text so VoiceOver / TalkBack can jump between sections.
+- **Steps:** each row is one focusable element whose `accessibilityLabel`
+  combines the step name, its status (`describeHealthStatus()`), and the due
+  date. Never split a row into several unlabelled fragments.
+- **Documents:** label each requested document with its name and state
+  ("requested", "uploaded", "approved", "rejected"). Do not speak file paths,
+  storage URLs, or reviewer notes.
+- **Status:** always pair the colour with the token's `label` / `icon` /
+  `shape` (see health status below); never rely on hue alone.
+- **Due dates:** speak a full, unambiguous date (e.g. "Due 12 March 2025") and
+  include overdue / due-soon wording in the label, not only in the colour.
+- **Privacy:** only the current applicant's data is rendered; never include
+  another applicant's name, documents, or reviewer comments in any label.
+- **Reduced motion:** gate progress-bar fill and any status transitions on
+  `useReducedMotion()` / `motionDuration()`; the value still updates, only the
+  animation is removed.
+- **Stale / offline:** when data is cached or a refresh failed, announce it with
+  `AccessibilityInfo.announceForAccessibility` (e.g. "Showing saved progress,
+  last updated …") and expose a retry control with an accessible label.
+
 ## Colour-independent health status (`src/theme/healthStatus.ts`)
 
 Severity and trend must never rely on hue alone (WCAG 1.4.1). Every status token

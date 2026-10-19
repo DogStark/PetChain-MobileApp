@@ -81,6 +81,89 @@ export interface HealthNotificationPayload {
 }
 
 /**
+ * Per-account quiet hours configuration for care reminders.
+ *
+ * Quiet hours defer visible care-reminder notifications during a configured
+ * local-time window. The window is expressed in the account's local time and
+ * is evaluated against the account timezone so that it keeps working across
+ * timezone changes.
+ *
+ * - `enabled`:       Whether quiet hours are active for the account.
+ * - `startMinutes`:  Start of the quiet window, in minutes from local midnight
+ *                    (0-1439). The window is inclusive of the start.
+ * - `endMinutes`:    End of the quiet window, in minutes from local midnight
+ *                    (0-1439). The window is exclusive of the end.
+ * - `timezone`:      IANA timezone identifier used to resolve local time
+ *                    (e.g. `America/New_York`). Defaults to the device zone.
+ *
+ * Windows that wrap past midnight (e.g. 22:00 -> 07:00) are supported when
+ * `startMinutes > endMinutes`. A window where `startMinutes === endMinutes`
+ * is treated as disabled (no quiet period).
+ */
+export interface QuietHoursConfig {
+  /** Whether quiet hours are active for the account. */
+  enabled: boolean;
+  /** Start of the quiet window in minutes from local midnight (0-1439). */
+  startMinutes: number;
+  /** End of the quiet window in minutes from local midnight (0-1439). */
+  endMinutes: number;
+  /** IANA timezone identifier used to resolve local time. */
+  timezone: string;
+}
+
+/**
+ * Documented default quiet hours: disabled, with a conventional overnight
+ * window so the UI has sensible values to show when the user opts in.
+ */
+export const DEFAULT_QUIET_HOURS_CONFIG: QuietHoursConfig = {
+  enabled: false,
+  startMinutes: 22 * 60,
+  endMinutes: 7 * 60,
+  timezone: 'UTC',
+};
+
+/**
+ * Reason a care reminder was deferred by quiet hours.
+ *
+ * - `quiet-hours`: The reminder fell inside the account's quiet window.
+ * - `invalid-config`: The quiet hours config could not be evaluated (for
+ *   example an unknown timezone); the reminder is deferred conservatively.
+ */
+export type QuietHoursDeferralReason = 'quiet-hours' | 'invalid-config';
+
+/**
+ * Result of evaluating a care reminder against the account's quiet hours.
+ *
+ * - `deferred`:      True when delivery must be postponed.
+ * - `nextEligibleAt`: ISO-8601 timestamp of the next eligible delivery time.
+ *                    Always present so the UI can explain when the reminder
+ *                    will be delivered.
+ * - `reason`:        Why the reminder was deferred, when `deferred` is true.
+ */
+export interface QuietHoursEvaluation {
+  /** True when delivery must be postponed. */
+  deferred: boolean;
+  /** ISO-8601 timestamp of the next eligible delivery time. */
+  nextEligibleAt: string;
+  /** Why the reminder was deferred, when `deferred` is true. */
+  reason?: QuietHoursDeferralReason;
+}
+
+/**
+ * Timezone-aware evaluation result, including the resolved local time used
+ * for the decision. Shared by the service, hooks, and UI so that explanations
+ * stay consistent across timezone changes.
+ */
+export interface TimezoneAwareQuietHoursEvaluation extends QuietHoursEvaluation {
+  /** IANA timezone identifier used for this evaluation. */
+  timezone: string;
+  /** The evaluated instant, as an ISO-8601 timestamp. */
+  evaluatedAt: string;
+  /** Local time of day at `evaluatedAt`, in minutes from local midnight. */
+  localMinutes: number;
+}
+
+/**
  * Returns true when the given privacy level must redact sensitive content
  * from lock-screen payloads.
  */
