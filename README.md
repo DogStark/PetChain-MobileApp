@@ -362,3 +362,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1136 -->
 - #1136: [Mobile] Create a symptom observation journal
+
+<!-- handsoff-issue-1137 -->
+- #1137: [Mobile] Add a care-plan acknowledgement history
