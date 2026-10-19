@@ -1,3 +1,4 @@
+import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -5,6 +6,7 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
+  Platform,
   ScrollView,
   StyleSheet,
   Switch,
@@ -16,8 +18,11 @@ import {
 import { resilientRequest } from '../services/apiClient';
 import { requireBiometric } from '../services/authService';
 import {
+  buildDiagnosticPreview,
+  buildSyncDiagnosticLog,
   exportDiagnosticsForSupport,
-  type DiagnosticLogEntry,
+  type DiagnosticSnapshot,
+  type DiagnosticSyncSummary,
 } from '../services/diagnosticExport';
 import errorTracking from '../services/errorTracking';
 import {
@@ -26,6 +31,7 @@ import {
 } from '../services/localDB';
 import { exportLocalAuditCsv, recordLocalAuditEvent } from '../services/localAuditService';
 import { openSettingsSafely } from '../services/permissionService';
+import { syncService } from '../services/syncService';
 import { checkPermission, PermissionType, type PermissionStatus } from '../utils/permissions';
 
 interface ConsentState {
@@ -78,6 +84,55 @@ const OS_STATUS_LABEL: Record<OsPermissionState, string> = {
 
 interface Props {
   onDeleteAccount?: () => void;
+}
+
+/**
+ * Builds the bundle contents shown in the consent preview. Sync state falls
+ * back to "unavailable" rather than failing the whole export.
+ */
+async function collectDiagnosticSnapshot(): Promise<DiagnosticSnapshot> {
+  let summary: DiagnosticSyncSummary | null = null;
+  try {
+    const status = await syncService.getStatus();
+    summary = {
+      isSyncing: status.isSyncing,
+      lastSync: status.lastSync,
+      pendingCount: status.pendingCount,
+      failedCount: status.failedCount,
+      conflictCount: status.conflicts.length,
+    };
+  } catch {
+    // Leave summary null — recorded as unavailable.
+  }
+
+  const timestamp = new Date().toISOString();
+  return {
+    app: {
+      version: Constants.expoConfig?.version ?? 'unknown',
+      platform: Platform.OS,
+    },
+    logs: [
+      {
+        kind: 'crash',
+        timestamp,
+        message: 'Recent crash / error context',
+        data: { source: 'errorTracking', level: 'error' },
+      },
+      buildSyncDiagnosticLog(summary, timestamp),
+      {
+        kind: 'wallet',
+        timestamp,
+        message: 'Recent wallet / payment events',
+        data: { source: 'wallet', level: 'info' },
+      },
+      {
+        kind: 'sos',
+        timestamp,
+        message: 'Recent SOS events',
+        data: { source: 'sos', level: 'warning' },
+      },
+    ],
+  };
 }
 
 const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
@@ -261,93 +316,64 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount }) => {
     }
   }, []);
 
-  const collectRecentDiagnosticLogs = useCallback((): DiagnosticLogEntry[] => {
-    // Representative device-side breadcrumbs for support — payloads are
-    // structurally redacted inside exportDiagnosticsForSupport.
-    return [
-      {
-        kind: 'crash',
-        timestamp: new Date().toISOString(),
-        message: 'Recent crash / error context',
-        data: { source: 'errorTracking', level: 'error' },
-      },
-      {
-        kind: 'sync',
-        timestamp: new Date().toISOString(),
-        message: 'Recent sync status',
-        data: { source: 'sync', level: 'info' },
-      },
-      {
-        kind: 'wallet',
-        timestamp: new Date().toISOString(),
-        message: 'Recent wallet / payment events',
-        data: { source: 'wallet', level: 'info' },
-      },
-      {
-        kind: 'sos',
-        timestamp: new Date().toISOString(),
-        message: 'Recent SOS events',
-        data: { source: 'sos', level: 'warning' },
-      },
-    ];
+  const runDiagnosticExport = useCallback(async (snapshot: DiagnosticSnapshot) => {
+    setExportingDiagnostics(true);
+    const confirmedAt = Date.now();
+    try {
+      const authResult = await requireBiometric();
+      if (authResult === 'failed') {
+        Alert.alert('Authentication required', 'Please authenticate to export diagnostics.');
+        return;
+      }
+      const authenticatedAt = Date.now();
+      await exportDiagnosticsForSupport({
+        logs: snapshot.logs,
+        app: snapshot.app,
+        confirmation: { confirmed: true, confirmedAt },
+        auth: {
+          method: authResult === 'pin_fallback' ? 'passcode' : 'biometric',
+          authenticatedAt,
+        },
+        share: async (uri) => {
+          const canShare = await Sharing.isAvailableAsync();
+          if (!canShare) {
+            Alert.alert(
+              'Export Ready',
+              'Diagnostics were prepared but sharing is not available on this device.',
+            );
+            return false;
+          }
+          await Sharing.shareAsync(uri, {
+            mimeType: 'application/json',
+            dialogTitle: 'Share redacted diagnostics with support',
+          });
+          return true;
+        },
+      });
+      errorTracking.captureMessage('diagnostic_export_completed', 'info', {
+        redacted: true,
+      });
+    } catch {
+      Alert.alert('Error', 'Failed to export diagnostics.');
+    } finally {
+      setExportingDiagnostics(false);
+    }
   }, []);
 
   const handleDiagnosticExport = useCallback(() => {
-    Alert.alert(
-      'Export Diagnostics for Support',
-      'This creates a short-lived, redacted diagnostic bundle for PetChain support. Tokens, pet IDs, health details, and locations are removed. Continue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Confirm',
-          onPress: () => {
-            void (async () => {
-              setExportingDiagnostics(true);
-              const confirmedAt = Date.now();
-              try {
-                const authResult = await requireBiometric();
-                if (authResult === 'failed') {
-                  Alert.alert('Authentication required', 'Please authenticate to export diagnostics.');
-                  return;
-                }
-                const authenticatedAt = Date.now();
-                await exportDiagnosticsForSupport({
-                  logs: collectRecentDiagnosticLogs(),
-                  confirmation: { confirmed: true, confirmedAt },
-                  auth: {
-                    method: authResult === 'pin_fallback' ? 'passcode' : 'biometric',
-                    authenticatedAt,
-                  },
-                  share: async (uri) => {
-                    const canShare = await Sharing.isAvailableAsync();
-                    if (!canShare) {
-                      Alert.alert(
-                        'Export Ready',
-                        'Diagnostics were prepared but sharing is not available on this device.',
-                      );
-                      return false;
-                    }
-                    await Sharing.shareAsync(uri, {
-                      mimeType: 'application/json',
-                      dialogTitle: 'Share redacted diagnostics with support',
-                    });
-                    return true;
-                  },
-                });
-                errorTracking.captureMessage('diagnostic_export_completed', 'info', {
-                  redacted: true,
-                });
-              } catch {
-                Alert.alert('Error', 'Failed to export diagnostics.');
-              } finally {
-                setExportingDiagnostics(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
-  }, [collectRecentDiagnosticLogs]);
+    void (async () => {
+      // Preview first: the same snapshot is previewed here and exported on confirm.
+      const snapshot = await collectDiagnosticSnapshot();
+      Alert.alert(
+        'Export Diagnostics for Support',
+        `This creates a short-lived, redacted diagnostic bundle for PetChain support. Tokens, pet IDs, health details, and precise locations are removed.\n\nIncluded:\n${buildDiagnosticPreview(snapshot)}\n\nContinue?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Confirm', onPress: () => void runDiagnosticExport(snapshot) },
+        ],
+      );
+    })();
+  }, [runDiagnosticExport]);
 
   const handleErase = useCallback(() => {
     if (onDeleteAccount) {

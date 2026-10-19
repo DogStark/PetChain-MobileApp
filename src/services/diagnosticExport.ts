@@ -182,6 +182,63 @@ export interface DiagnosticBundle {
   logs: DiagnosticLogEntry[];
 }
 
+/** Counts-only sync state. Queue items and conflicts hold record data, so they are never copied. */
+export interface DiagnosticSyncSummary {
+  isSyncing: boolean;
+  lastSync: number | null;
+  pendingCount: number;
+  failedCount: number;
+  conflictCount: number;
+}
+
+export interface DiagnosticSnapshot {
+  app: DiagnosticBundle['app'];
+  logs: DiagnosticLogEntry[];
+}
+
+/** Sync breadcrumb for support. A null summary means sync state could not be read. */
+export function buildSyncDiagnosticLog(
+  summary: DiagnosticSyncSummary | null,
+  timestamp: string = new Date().toISOString(),
+): DiagnosticLogEntry {
+  if (!summary) {
+    return {
+      kind: 'sync',
+      timestamp,
+      message: 'Sync status unavailable',
+      data: { status: 'unavailable' },
+    };
+  }
+  return {
+    kind: 'sync',
+    timestamp,
+    message: 'Sync status',
+    data: {
+      status: summary.isSyncing ? 'syncing' : 'idle',
+      lastSyncAt: summary.lastSync ? new Date(summary.lastSync).toISOString() : null,
+      pendingCount: summary.pendingCount,
+      failedCount: summary.failedCount,
+      conflictCount: summary.conflictCount,
+    },
+  };
+}
+
+/**
+ * Plain-text preview of exactly what a bundle will contain, shown before the
+ * user consents. Runs the same redaction as the export so preview and bundle match.
+ */
+export function buildDiagnosticPreview(snapshot: DiagnosticSnapshot): string {
+  const lines = [
+    `App version: ${snapshot.app.version ?? 'unknown'}`,
+    `Platform: ${snapshot.app.platform ?? 'unknown'}`,
+    ...snapshot.logs.map((entry) => {
+      const data = entry.data ? JSON.stringify(redactDiagnosticPayload(entry.data)) : '{}';
+      return `${entry.message}: ${data}`;
+    }),
+  ];
+  return lines.join('\n');
+}
+
 export interface CreateDiagnosticBundleInput {
   logs: DiagnosticLogEntry[];
   confirmation: ExplicitConfirmation;
