@@ -1,4 +1,4 @@
-/**
+/*
  * OpenAPI schema definitions for Medical Record endpoints.
  */
 
@@ -9,7 +9,7 @@ export const medicalRecordSchemas = {
     properties: {
       id: { $ref: '#/components/schemas/UUID' },
       petId: { $ref: '#/components/schemas/UUID' },
-      vetId: { $ref: '#/components/schemas/UUID' },
+      vetId: { $ref: '#/components/schemas/UUED' },
       type: {
         type: 'string',
         enum: ['checkup', 'vaccination', 'surgery', 'treatment', 'other'],
@@ -52,8 +52,133 @@ export const medicalRecordSchemas = {
       isBlockchainVerified: { type: 'boolean', example: true },
       blockchainVerifiedAt: { $ref: '#/components/schemas/ISODateTime' },
 
+      // Allergy & reaction history
+      allergies: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/AllergyEntry' },
+      },
+      reactions: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ReactionEntry' },
+      },
+
       createdAt: { $ref: '#/components/schemas/ISODateTime' },
       updatedAt: { $ref: '#/components/schemas/ISODateTime' },
+    },
+  },
+
+  AllergyEntry: {
+    type: 'object',
+    required: ['id', 'allergen', 'recordedAt', 'source', 'verificationStatus'],
+    properties: {
+      id: { $ref: '#/components/schemas/UUID' },
+      allergen: { type: 'string', example: 'Beesting venom' },
+      category: {
+        type: 'string',
+        enum: ['food', 'environmental', 'medication', 'venom', 'contact', 'other'],
+        example: 'environmental',
+      },
+      severity: {
+        type: 'string',
+        enum: ['mild', 'moderate', 'severe', 'unknown'],
+        example: 'moderate',
+      },
+      recordedAt: { $ref: '#/components/schemas/ISODate' },
+      observedAt: { $ref: '#/components/schemas/ISODate' },
+      notes: { type: 'string', example: 'Reaction observed during outdoor walk in spring.' },
+      source: { $ref: '#/components/schemas/HistorySource' },
+      verificationStatus: { $ref: '#/components/schemas/VerificationStatus' },
+      recordedBy: { $ref: '#/components/schemas/Veterinarian' },
+      correctionRequestId: { $ref: '#/components/schemas/UUID' },
+    },
+  },
+
+  ReactionEntry: {
+    type: 'object',
+    required: ['id', 'reaction', 'occurredAt', 'source', 'verificationStatus'],
+    properties: {
+      id: { $ref: '#/components/schemas/UUID' },
+      reaction: { type: 'string', example: 'Facial swelling and hives' },
+      allergenId: { $ref: '#/components/schemas/UUID' },
+      severity: {
+        type: 'string',
+        enum: ['mild', 'moderate', 'severe', 'unknown'],
+        example: 'severe',
+      },
+      occurredAt: { $ref: '#/components/schemas/ISODate' },
+      resolvedAt: { $ref: '#/components/schemas/ISODate' },
+      treatmentAdministered: { type: 'string', example: 'Antihistamine administered in-clinic' },
+      notes: { type: 'string', example: 'Symptoms resolved within 2 hours.' },
+      source: { $ref: '#/components/schemas/HistorySource' },
+      verificationStatus: { $ref: '#/components/schemas/VerificationStatus' },
+      recordedBy: { $ref: '#/components/schemas/Veterinarian' },
+      correctionRequestId: { $ref: '#/components/schemas/UUID' },
+    },
+  },
+
+  HistorySource: {
+    type: 'object',
+    required: ['type'],
+    properties: {
+      type: {
+        type: 'string',
+        enum: ['veterinarian', 'owner', 'imported', 'laboratory'],
+        example: 'veterinarian',
+      },
+      sourceId: { $ref: '#/components/schemas/UUID' },
+      label: { type: 'string', example: 'Downtown Animal Hospital' },
+    },
+  },
+
+  VerificationStatus: {
+    type: 'string',
+    enum: ['unverified', 'pending', 'verified', 'disputed'],
+    example: 'verified',
+  },
+
+  CorrectionRequest: {
+    type: 'object',
+    required: ['id', 'recordId', 'recordType', 'reason', 'status', 'requestedAt'],
+    properties: {
+      id: { $ref: '#/components/schemas/UUID' },
+      recordId: { $ref: '#/components/schemas/UUID' },
+      recordType: {
+        type: 'string',
+        enum: ['allergy', 'reaction'],
+        example: 'allergy',
+      },
+      reason: { type: 'string', example: 'Allergen recorded incorrectly.' },
+      proposedChanges: {
+        type: 'object',
+        additionalProperties: true,
+        description: 'Partial replacement values for the conflicting record.',
+      },
+      status: {
+        type: 'string',
+        enum: ['pending', 'approved', 'rejected', 'withdrawn'],
+        example: 'pending',
+      },
+      requestedAt: { $ref: '#/components/schemas/ISODateTime' },
+      resolvedAt: { $ref: '#/components/schemas/ISODateTime' },
+    },
+  },
+
+  CreateCorrectionRequestRequest: {
+    type: 'object',
+    required: ['recordId', 'recordType', 'reason'],
+    properties: {
+      recordId: { $ref: '#/components/schemas/UUID' },
+      recordType: {
+        type: 'string',
+        enum: ['allergy', 'reaction'],
+        example: 'reaction',
+      },
+      reason: { type: 'string', example: 'Severity was mild, not severe.' },
+      proposedChanges: {
+        type: 'object',
+        additionalProperties: true,
+        description: 'Partial replacement values for the conflicting record.',
+      },
     },
   },
 
@@ -176,6 +301,8 @@ export const medicalRecordSchemas = {
       prescriptions: { type: 'array', items: { $ref: '#/components/schemas/Prescription' } },
       vaccinations: { type: 'array', items: { $ref: '#/components/schemas/VaccinationRecord' } },
       documents: { type: 'array', items: { $ref: '#/components/schemas/MedicalDocument' } },
+      allergies: { type: 'array', items: { $ref: '#/components/schemas/AllergyEntry' } },
+      reactions: { type: 'array', items: { $ref: '#/components/schemas/ReactionEntry' } },
     },
   },
 
@@ -193,6 +320,8 @@ export const medicalRecordSchemas = {
       prescriptions: { type: 'array', items: { $ref: '#/components/schemas/Prescription' } },
       vaccinations: { type: 'array', items: { $ref: '#/components/schemas/VaccinationRecord' } },
       documents: { type: 'array', items: { $ref: '#/components/schemas/MedicalDocument' } },
+      allergies: { type: 'array', items: { $ref: '#/components/schemas/AllergyEntry' } },
+      reactions: { type: 'array', items: { $ref: '#/components/schemas/ReactionEntry' } },
     },
   },
-} as const;
+};

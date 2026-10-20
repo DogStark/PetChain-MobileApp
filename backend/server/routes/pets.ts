@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import crypto from 'crypto';
+import { randomUUID } from 'crypto';
 
 import express from 'express';
 
@@ -21,6 +22,8 @@ import { type StoredMedicalRecord, type StoredPet, store } from '../store';
 
 const router = express.Router();
 const QR_SECRET = process.env.QR_SIGNING_SECRET ?? 'petchain-dev-qr-secret';
+const ALLERGY_CORRECTION_STATUSES = ['pending', 'approved', 'rejected'] as const;
+type AllergyCorrectionStatus = (typeof ALLERGY_CORRECTION_STATUSES)[number];
 
 function signPetIdentity(petId: string, issuedAt: string): string {
   return crypto.createHmac('sha256', QR_SECRET).update(`${petId}:${issuedAt}`).digest('hex');
@@ -80,7 +83,7 @@ async function toPetResponse(p: StoredPet | DBPet) {
   };
 }
 
-function mapMobileRecordType(t: string): 'vaccination' | 'treatment' | 'diagnosis' {
+function mapMobileRecordType(t: string): 'vaccination' |'treatment' | 'diagnosis' {
   if (t === 'vaccination') return 'vaccination';
   if (t === 'treatment') return 'treatment';
   return 'diagnosis';
@@ -98,7 +101,48 @@ function medicalToMobileRow(r: StoredMedicalRecord) {
   };
 }
 
-router.get('/identity/:token', async (req, res) => {
+type StoredAllergyEntry = {
+  id: string;
+  petId: string;
+  allergen: string;
+  reaction: string;
+  severity: 'mild' | 'moderate' | 'severe';
+  onsetDate: string;
+  source: 'owner' | 'vet' | 'import';
+  verificationStatus: 'unverified' | 'verified' | 'disputed';
+  verifiedBy?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type StoredAllergyCorrection = {
+  id: string;
+  petId: string;
+  allergyId: string;
+  requestedBy: string;
+  reason: string;
+  proposed?: Partial<Pick<StoredAllergyEntry, 'allergen' | 'reaction' | 'severity' | 'onsetDate'>>;
+  status: AllergyCorrectionStatus;
+  createdAt: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+};
+
+const allergyEntries = new Map<string, StoredAllergyEntry>();
+const allergyCorrections = new Map<string, StoredAllergyCorrection>();
+
+function canAccessPet(user: AuthenticatedRequest['user'], pet: StoredPet): boolean {
+  if (!user) return false;
+  if (user.role === UserRole.ADMIN || user.role === UserRole.VET) return true;
+  return user.id === pet.ownerId;
+}
+
+function canVerifyAllergy(user: AuthenticatedRequest['user']): boolean {
+  return !!user && (user.role === UserRole.ADMIN || user.role === UserRole.VET);
+}
+
+router.get('identity/:token', async (req, res) => {
   const identity = store.petQrIdentities.get(req.params.token);
   if (!identity || identity.revokedAt) {
     return sendError(res, 404, 'QR_NOT_FOUND', 'This pet identity code is invalid or expired');
@@ -108,7 +152,7 @@ router.get('/identity/:token', async (req, res) => {
   return res.json(ok({ pet: emergencyPetView(pet), issuedAt: identity.issuedAt }));
 });
 
-router.get('/identity/:token/view', async (req, res) => {
+router.get('identity/:token/view', async (req, res) => {
   const identity = store.petQrIdentities.get(req.params.token);
   if (!identity || identity.revokedAt) {
     return res.status(404).send('<h1>Pet identity code unavailable</h1>');
@@ -211,7 +255,7 @@ router.get('/:petId/medical-records', (req: AuthenticatedRequest, res) => {
     );
   }
 
-  const q = req.query as Record<string, string | undefined>;
+  const q = req.query as Record<string | undefined>;
   const type = q.type;
   const page = Math.max(1, Number(q.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(q.limit) || 20));
@@ -233,226 +277,39 @@ router.get('/:petId/medical-records', (req: AuthenticatedRequest, res) => {
   });
 });
 
-router.get('/', petsByOwnerCacheMiddleware(), (req: AuthenticatedRequest, res) => {
-  const ownerId = (req.query as Record<string, string | undefined>).ownerId;
-
-  // If ownerId is provided, filter. Otherwise, only admin/vet can see all pets.
-  if (!ownerId && req.user!.role === UserRole.OWNER) {
-    return sendError(res, 403, 'FORBIDDEN', 'OwnerId parameter is required for pet owners');
-  }
-
-  if (ownerId && req.user!.role === UserRole.OWNER && req.user!.id !== ownerId) {
-    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to view these pets');
-  }
-
-  let list = [...store.pets.values()];
-  if (ownerId) list = list.filter((p) => p.ownerId === ownerId);
-  return res.json(ok(list.map(toPetResponse)));
-});
-
-router.get(
-  '/:id',
-  (req: AuthenticatedRequest, res, next) => {
-    const pet = store.pets.get(req.params.id);
-    if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
-    if (req.user!.role === UserRole.OWNER && req.user!.id !== pet.ownerId) {
-      return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to view this pet');
-    }
-    next();
-  },
-  petProfileCacheMiddleware(),
-  (req: AuthenticatedRequest, res) => {
-  const pet = store.pets.get(req.params.id);
+router.get('/:petId/allergies', (req: AuthenticatedRequest, res) => {
+  const { petId } = req.params;
+  const pet = store.pets.get(petId);
   if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
-
-  // Only admin, vet, or owner can see pet details
-  if (req.user!.role === UserRole.OWNER && req.user!.id !== pet.ownerId) {
-    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to view this pet');
+  if (!canAccessPet(req.user, pet)) {
+    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to view these allergies');
   }
 
-  return res.json(ok(toPetResponse(pet)));
-  },
-);
-
-router.post('/', async (req: AuthenticatedRequest, res) => {
-  const {
-    name,
-    species,
-    breed,
-    dateOfBirth,
-    weightKg,
-    microchipId,
-    photoUrl,
-    thumbnailUrl,
-    ownerId,
-  } = req.body as Partial<StoredPet & { thumbnailUrl?: string }>;
-  if (!name?.trim() || !species?.trim() || !ownerId?.trim()) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'name, species, and ownerId are required');
+  const q = req.query as Record<string | undefined>;
+  const page = Math.max(1, Number(q.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(q.limit) || 20));
+  const since = q.since ? new Date(q.since) : undefined;
+  if (q.since && Number.isNaN(since!.getTime())) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'since must be a valid ISO date');
   }
 
-  // Only admin or the owner themselves can create a pet for that owner
-  if (req.user!.role !== UserRole.ADMIN && req.user!.id !== ownerId) {
-    return sendError(
-      res,
-      403,
-      'FORBIDDEN',
-      'You do not have permission to create a pet for this owner',
-    );
-  }
+  let rows = [...allergyEntries.values()].filter((row) => row.petId === petId);
+  if (since) rows = rows.filter((row) => new Date(row.onsetDate).getTime() >= since.getTime());
+  rows.sort((a, b) => new Date(b.onsetDate).getTime() - new Date(a.onsetDate).getTime());
 
-  // Enforce free-tier pet limit (1 pet)
-  const activeSub = paymentService.getSubscription(ownerId.trim());
-  const isPremium = activeSub?.status === 'active' && activeSub.plan !== 'free';
-  if (!isPremium && req.user!.role !== UserRole.ADMIN) {
-    const existingPets = [...store.pets.values()].filter((p) => p.ownerId === ownerId.trim());
-    if (existingPets.length >= 1) {
-      return sendError(
-        res,
-        403,
-        'SUBSCRIPTION_REQUIRED',
-        'Free tier allows 1 pet. Upgrade to Premium for unlimited pets.',
-      );
-    }
-  }
+  const total = rows.length;
+  const totalPages = Math.ceil(total / limit) || 1;
+  const start = (page - 1) * limit;
+  const slice = rows.slice(start, start + limit);
 
-  if (!store.users.get(ownerId.trim())) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'ownerId must reference an existing user');
-  }
-
-  const id = store.newId();
-  const pet = await petRepository.create({
-    id,
-    name: name.trim(),
-    species: species.trim(),
-    breed: breed?.trim(),
-    date_of_birth: dateOfBirth ? new Date(dateOfBirth) : undefined,
-    weight_kg: typeof weightKg === 'number' ? weightKg : undefined,
-    microchip_id: microchipId?.trim(),
-    photo_url: photoUrl?.trim(),
-    thumbnail_url: thumbnailUrl?.trim(),
-    owner_id: ownerId.trim(),
+  return res.json({
+    data: slice,
+    total,
+    page,
+    limit,
+    totalPages,
+    serverTime: new Date().toISOString(),
   });
-
-  void logAuditTrail({
-    req,
-    entityType: 'pet',
-    entityId: pet.id,
-    action: 'CREATE',
-    before: null,
-    after: await toPetResponse(pet),
-  });
-
-  await invalidatePet(pet.id, pet.owner_id);
-
-  // Issue Stellar pet identity NFT
-  try {
-    const sourceSeed = process.env.STELLAR_SOURCE_SEED;
-    const issuerSeed = process.env.STELLAR_ISSUER_SEED;
-    if (sourceSeed && issuerSeed) {
-      await issuePetAsset(pet.id, sourceSeed, issuerSeed);
-    }
-  } catch (err) {
-    console.error('[Stellar] Failed to issue pet asset:', err);
-  }
-  return res.status(201).json(ok(await toPetResponse(pet), 'Pet created'));
-});
-
-router.put('/:id', async (req: AuthenticatedRequest, res) => {
-  const pet = store.pets.get(req.params.id);
-  if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
-
-  // Only admin or the owner can update the pet
-  if (req.user!.role !== UserRole.ADMIN && req.user!.id !== pet.ownerId) {
-    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to update this pet');
-  }
-
-  const body = req.body as Partial<StoredPet>;
-  const t = new Date().toISOString();
-  const next: StoredPet = {
-    ...pet,
-    ...(body.name !== undefined ? { name: String(body.name) } : {}),
-    ...(body.species !== undefined ? { species: String(body.species) } : {}),
-    ...(body.breed !== undefined ? { breed: body.breed ? String(body.breed) : undefined } : {}),
-    ...(body.dateOfBirth !== undefined
-      ? { dateOfBirth: body.dateOfBirth ? String(body.dateOfBirth) : undefined }
-      : {}),
-    ...(body.weightKg !== undefined ? { weightKg: body.weightKg } : {}),
-    ...(body.microchipId !== undefined
-      ? { microchipId: body.microchipId ? String(body.microchipId) : undefined }
-      : {}),
-    ...(body.photoUrl !== undefined
-      ? { photoUrl: body.photoUrl ? String(body.photoUrl) : undefined }
-      : {}),
-    ...(body.thumbnailUrl !== undefined
-      ? { thumbnailUrl: body.thumbnailUrl ? String(body.thumbnailUrl) : undefined }
-      : {}),
-    // Only admin can change owner
-    ...(body.ownerId !== undefined && req.user!.role === UserRole.ADMIN
-      ? { ownerId: String(body.ownerId) }
-      : {}),
-    // Allow owners to update pet metadata (step goals, custom config)
-    ...(body.metadata !== undefined
-      ? { metadata: { ...(pet.metadata ?? {}), ...body.metadata } }
-      : {}),
-    updatedAt: t,
-  };
-  if (
-    body.ownerId !== undefined &&
-    req.user!.role === UserRole.ADMIN &&
-    String(body.ownerId) !== pet.ownerId
-  ) {
-    const previous = activeQrForPet(pet.id);
-    if (previous) store.petQrIdentities.set(previous.token, { ...previous, revokedAt: t });
-
-    // Transfer Stellar pet identity NFT to new owner
-    try {
-      const assetCode = `PET${pet.id.substring(0, 9).toUpperCase()}`;
-      const issuerPublicKey = process.env.STELLAR_ISSUER_PUBLIC_KEY;
-      const currentOwnerSeed = process.env.STELLAR_SOURCE_SEED;
-      const newOwnerUser = await userRepository.findById(body.ownerId);
-      const newOwnerPublicKey = newOwnerUser?.stellar_public_key;
-
-      if (issuerPublicKey && currentOwnerSeed && newOwnerPublicKey) {
-        await transferPetAsset(assetCode, issuerPublicKey, currentOwnerSeed, newOwnerPublicKey);
-      }
-    } catch (err) {
-      console.error('[Stellar] Failed to transfer pet asset:', err);
-    }
-  }
-  store.pets.set(pet.id, next);
-  void logAuditTrail({
-    req,
-    entityType: 'pet',
-    entityId: pet.id,
-    action: 'UPDATE',
-    before: pet,
-    after: next,
-  });
-  return res.json(ok(await toPetResponse(next), 'Pet updated'));
-});
-
-router.delete('/:id', (req: AuthenticatedRequest, res) => {
-  const pet = store.pets.get(req.params.id);
-  if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
-
-  // Only admin or the owner can delete the pet
-  if (req.user!.role !== UserRole.ADMIN && req.user!.id !== pet.ownerId) {
-    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to delete this pet');
-  }
-
-  store.pets.delete(req.params.id);
-  for (const u of store.users.values()) {
-    u.pets = u.pets.filter((p) => p.id !== req.params.id);
-  }
-  void logAuditTrail({
-    req,
-    entityType: 'pet',
-    entityId: pet.id,
-    action: 'DELETE',
-    before: pet,
-    after: null,
-  });
-  return res.json(ok(null, 'Pet deleted'));
 });
 
 export default router;
