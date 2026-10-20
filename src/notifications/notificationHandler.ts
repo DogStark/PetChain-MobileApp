@@ -194,3 +194,30 @@ export function handleNotificationPayload(raw: unknown): NotificationIntent | nu
   }
   return result.intent;
 }
+
+export {
+  CARE_REMINDER_CATEGORY_ID,
+  CARE_ACTION_COMPLETE,
+  CARE_ACTION_SNOOZE,
+  DEFAULT_CARE_PRIVACY_MODE,
+  DEFAULT_CARE_SNOOZE_MINUTES,
+  isCareReminderActionsSupported,
+  getCareReminderCategoryActions,
+  registerCareReminderCategory,
+  buildCareReminderActionPayload,
+  validateCareReminderActionPayload,
+  executeCareReminderAction,
+  clearProcessedCareActions,
+  clampSnoozeMinutes,
+} from './careReminderActions';
+export type {
+  CareReminderActionType,
+  CareNotificationPrivacyMode,
+  CareReminderActionDescriptor,
+  CareReminderPayloadInput,
+  CareReminderActionPayload,
+  CarePayloadValidationResult,
+  CareReminderActionResult,
+  ExecuteCareReminderActionParams,
+} from './careReminderActions';
+
