@@ -80,17 +80,36 @@ navigators.
 
 ## 4. RTL coverage (`rtl.ts`)
 
-Arabic layout can break directional icons, gestures, chart axes and field
-order. Route every direction-sensitive choice through `rtl.ts` rather than
-hard-coding `left`/`right`/`row`:
+Arabic layout can break directional icons, gestures, chart axes, field order,
+and mixed-direction medical dosages or record identifiers. Route every
+direction-sensitive choice through `rtl.ts` rather than hard-coding
+`left`/`right`/`row`:
 
-| Helper                   | LTR              | RTL              |
-| ------------------------ | ---------------- | ---------------- |
-| `rowDirection()`         | `row`            | `row-reverse`    |
-| `textAlign('start')`     | `left`           | `right`          |
-| `forwardChevron()`       | `chevron-right`  | `chevron-left`   |
-| `physicalEdge('start')`  | `left`           | `right`          |
-| `directionalSign()`      | `1`              | `-1`             |
+| Helper                                    | LTR                         | RTL                         |
+| ----------------------------------------- | --------------------------- | --------------------------- |
+| `rowDirection()`                          | `row`                       | `row-reverse`               |
+| `textAlign('start')`                      | `left`                      | `right`                     |
+| `forwardChevron()`                        | `chevron-right`             | `chevron-left`              |
+| `physicalEdge('start')`                   | `left`                      | `right`                     |
+| `directionalSign()`                       | `1`                         | `-1`                        |
+| `directionalIconTransform('chevron-left')`| `{ transform: [{scaleX:1}]}`| `{ transform: [{scaleX:-1}]}`|
+| `chartAxisOrder(points)`                  | chronological `0..n`        | reversed `n..0`             |
+| `formFieldAlignment('dosage')`            | `left`, `ltr`               | `right`, `ltr`              |
+
+### Mixed-direction medical & identifier strings
+
+- `isolateLtrToken(token)` wraps technical LTR tokens in Unicode Left-to-Right
+  Isolates (`\u2066\u200E...\u2069`) so punctuation (`/`, `-`, `.`) never
+  reorders inside Arabic sentences.
+- `formatMixedDirectionMedicalString(text)` automatically isolates embedded
+  drug names, concentrations (`250 mg/5 mL`), dosages (`5 mg/kg`), and schedule
+  codes (`BID`, `q12h`) inside RTL clinical notes.
+- `formatMixedDirectionIdentifier(id, { maskSensitive })` isolates pet IDs,
+  microchip numbers, and Stellar addresses in LTR order and supports
+  privacy-by-default masking (`••••`) until explicitly revealed.
+- `resolveRtlFlowState({ lang, hasServerPermission, isOffline, cachedDirection })`
+  resolves screen direction while enforcing server-confirmed permissions and
+  offline cached direction fallback.
 
 `directionForLanguage(lang)` resolves direction for an explicit locale without
 touching global `I18nManager` state — use it in screenshot/interaction tests

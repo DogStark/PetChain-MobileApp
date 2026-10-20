@@ -4,6 +4,7 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 
 import { SUPPORTED_LANGUAGES, type LanguageCode } from '../i18n';
 import { switchLanguage } from '../utils/locale';
+import { rowDirection, textAlign } from '../utils/rtl';
 
 const LanguageSelector: React.FC = () => {
   const { t, i18n } = useTranslation();
@@ -15,13 +16,17 @@ const LanguageSelector: React.FC = () => {
 
   return (
     <View>
-      <Text style={styles.label}>{t('language.selectLanguage')}</Text>
-      <View style={styles.row}>
+      <Text style={[styles.label, { textAlign: textAlign('start') }]}>
+        {t('language.selectLanguage')}
+      </Text>
+      <View style={[styles.row, { flexDirection: rowDirection() }]}>
         {SUPPORTED_LANGUAGES.map(({ code, label }) => (
           <TouchableOpacity
             key={code}
             style={[styles.btn, current === code && styles.btnActive]}
             onPress={() => handleSelect(code)}
+            accessibilityRole="button"
+            accessibilityState={{ selected: current === code }}
           >
             <Text style={[styles.btnText, current === code && styles.btnTextActive]}>{label}</Text>
           </TouchableOpacity>
