@@ -308,6 +308,133 @@ export const medicalRecordPaths = {
     },
   },
 
+  '/medical-records/pet/{petId}/allergies': {
+    get: {
+      tags: ['Medical Records'],
+      summary: 'Get longitudinal allergy and reaction history for a pet',
+      description:
+        'Returns dated allergy and reaction entries for a specific pet, ordered by onset date descending. Each entry includes its source and verification status. Sensitive pet data is returned only to callers with server-confirmed read permission.',
+      operationId: 'getPetAllergyHistory',
+      security: [{ BearerAuth: [] }],
+      parameters: [
+        { $ref: '#/components/parameters/PetIdParam' },
+        {
+          name: 'startDate',
+          in: 'query',
+          schema: { type: 'string', format: 'date' },
+          description: 'Filter entries with onset on or after this date (inclusive)',
+          example: '2024-01-01',
+        },
+        {
+          name: 'endDate',
+          in: 'query',
+          schema: { type: 'string', format: 'date' },
+          description: 'Filter entries with onset on or before this date (inclusive)',
+          example: '2024-12-31',
+        },
+        {
+          name: 'verificationStatus',
+          in: 'query',
+          description: 'Filter by verification status of the allergy or reaction entry',
+          schema: {
+            type: 'string',
+            enum: ['unverified', 'verified', 'conflicting', 'corrected'],
+          },
+          description: 'Filter by verification status',
+        },
+        { $ref: '#/components/parameters/PageParam' },
+        { $ref: '#/components/parameters/LimitParam' },
+      ],
+      responses: {
+        '200': {
+          description: 'Paginated longitudinal allergy and reaction history for the pet',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  { $ref: '#/components/schemas/PaginatedResponse' },
+                  {
+                    properties: {
+                      data: {
+                        type: 'array',
+                        items: { $ref: '#/components/schemas/AllergyHistoryEntry' },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        '401': { $ref: '#/components/responses/Unauthorized' },
+        '403': { $ref: '#/components/responses/Forbidden' },
+        '404': { $ref: '#/components/responses/NotFound' },
+        '500': { $ref: '#/components/responses/InternalServerError' },
+      },
+    },
+  },
+
+  '/medical-records/pet/{petId}/allergies/{entryId}/correction-requests': {
+    post: {
+      tags: ['Medical Records'],
+      summary: 'Request a correction for a conflicting allergy or reaction entry',
+      description:
+        'Submits a correction request for an allergy or reaction entry that is conflicting or otherwise inaccurate. Requires server-confirmed write permission for the pet. The original entry is preserved; the request is reviewed before any correction is applied.',
+      operationId: 'createAllergyCorrectionRequest',
+      security: [{ BearerAuth: [] }],
+      parameters: [
+        { $ref: '#/components/parameters/PetIdParam' },
+        {
+          name: 'entryId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+          description: 'Allergy or reaction history entry ID',
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CreateAllergyCorrectionRequest' },
+            example: {
+              reason: 'Reaction date recorded incorrectly',
+              proposedChanges: {
+                onsetDate: '2024-02-10',
+                reaction: 'Mild facial swelling',
+              },
+              notes: 'Confirmed with attending veterinarian.',
+            },
+          },
+        },
+      },
+      responses: {
+        '201': {
+          description: 'Correction request created successfully',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  { $ref: '#/components/schemas/ApiResponse' },
+                  { properties: { data: { $ref: '#/components/schemas/AllergyCorrectionRequest' } } },
+                ],
+              },
+            },
+          },
+        },
+        '400': { $ref: '#/components/responses/BadRequest' },
+        '401': { $ref: '#/components/responses/Unauthorized' },
+        '403': { $ref: '#/components/responses/Forbidden' },
+        '404': { $ref: '#/components/responses/NotFound' },
+        '409': {
+          description: 'Entry is not in a correctable state or a correction request already exists',
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } },
+        },
+        '500': { $ref: '#/components/responses/InternalServerError' },
+      },
+    },
+  },
+
   '/pets/{petId}/medical-records': {
     get: {
       tags: ['Medical Records'],
