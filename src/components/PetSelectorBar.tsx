@@ -17,6 +17,7 @@ import {
 
 import { usePetContext } from '../context/PetContext';
 import type { Pet } from '../services/petService';
+import { sanitizeShortcutLabel } from '../services/petShortcutsService';
 
 interface Props {
   onAddPet?: () => void;
@@ -43,6 +44,7 @@ const PetSelectorBar: React.FC<Props> = ({ onAddPet }) => {
       >
         {pets.map((pet: Pet) => {
           const isActive = activePet?.id === pet.id;
+          const safeName = sanitizeShortcutLabel(pet.name);
           return (
             <TouchableOpacity
               key={pet.id}
@@ -50,7 +52,7 @@ const PetSelectorBar: React.FC<Props> = ({ onAddPet }) => {
               onPress={() => setActivePet(pet)}
               accessibilityRole="tab"
               accessibilityState={{ selected: isActive }}
-              accessibilityLabel={`Select ${pet.name}`}
+              accessibilityLabel={`Select ${safeName}`}
             >
               <Text style={styles.chipEmoji}>
                 {pet.species === 'dog'
@@ -63,7 +65,7 @@ const PetSelectorBar: React.FC<Props> = ({ onAddPet }) => {
                         ? '🐰'
                         : '🐾'}
               </Text>
-              <Text style={[styles.chipText, isActive && styles.chipTextActive]}>{pet.name}</Text>
+              <Text style={[styles.chipText, isActive && styles.chipTextActive]}>{safeName}</Text>
             </TouchableOpacity>
           );
         })}

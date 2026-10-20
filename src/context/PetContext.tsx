@@ -12,6 +12,15 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 
 import { getItem, setItem } from '../services/localDB';
 import { getAllPets, type Pet } from '../services/petService';
+import {
+  buildPetAppShortcuts,
+  recordRecentPetSelection,
+  resolvePetShortcutLaunch,
+  type PetAccessConfirmation,
+  type PetAppShortcutItem,
+  type RecentPetEntry,
+  type ShortcutLaunchResult,
+} from '../services/petShortcutsService';
 
 // ─── Per-pet settings ─────────────────────────────────────────────────────────
 
@@ -44,6 +53,13 @@ interface PetContextValue {
   error: Error | null;
   /** Switch the active pet */
   setActivePet: (pet: Pet) => void;
+  /** Privacy-safe OS app shortcuts for recently used pets */
+  recentShortcuts: PetAppShortcutItem[];
+  /** Validate and switch active pet from a launcher shortcut invocation */
+  activatePetFromShortcut: (
+    shortcutPayload: { type?: string; userInfo?: { petId?: string } } | null,
+    accessConfirmation?: PetAccessConfirmation,
+  ) => ShortcutLaunchResult;
   /** Reload pets from the API / cache */
   refreshPets: () => Promise<void>;
   /** Per-pet settings */
@@ -62,6 +78,7 @@ export const PetContext = createContext<PetContextValue | null>(null);
 export const PetProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [pets, setPets] = useState<Pet[]>([]);
   const [activePet, setActivePetState] = useState<Pet | null>(null);
+  const [recentEntries, setRecentEntries] = useState<RecentPetEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
@@ -93,7 +110,34 @@ export const PetProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const setActivePet = useCallback((pet: Pet) => {
     setActivePetState(pet);
+    setRecentEntries((prev) => recordRecentPetSelection(prev, pet));
   }, []);
+
+  const activatePetFromShortcut = useCallback(
+    (
+      shortcutPayload: { type?: string; userInfo?: { petId?: string } } | null,
+      accessConfirmation?: PetAccessConfirmation,
+    ): ShortcutLaunchResult => {
+      const outcome = resolvePetShortcutLaunch({
+        shortcutPayload,
+        pets,
+        recentEntries,
+        fallbackActivePet: activePet,
+        accessConfirmation,
+      });
+      setRecentEntries(outcome.updatedRecentEntries);
+      if (outcome.allowed && outcome.activePet) {
+        setActivePetState(outcome.activePet);
+      }
+      return outcome;
+    },
+    [pets, recentEntries, activePet],
+  );
+
+  const recentShortcuts = useMemo(
+    () => buildPetAppShortcuts(recentEntries, pets),
+    [recentEntries, pets],
+  );
 
   const getPetSettings = useCallback(async (petId: string): Promise<PetSettings> => {
     const raw = await getItem(PET_SETTINGS_KEY(petId));
@@ -119,6 +163,8 @@ export const PetProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       loading,
       error,
       setActivePet,
+      recentShortcuts,
+      activatePetFromShortcut,
       refreshPets,
       getPetSettings,
       updatePetSettings,
@@ -130,6 +176,8 @@ export const PetProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       loading,
       error,
       setActivePet,
+      recentShortcuts,
+      activatePetFromShortcut,
       refreshPets,
       getPetSettings,
       updatePetSettings,
