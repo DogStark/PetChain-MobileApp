@@ -20,12 +20,29 @@ such view provide the non-visual equivalent:
 Keep the summary and the visible filter in sync — recompute it whenever the range
 or filter changes.
 
-## Modals (`src/components/AccessibleModal.tsx`, `src/hooks/useAccessibleModal.ts`)
+## Modals, pickers, and permission prompts (`src/components/AccessibleModal.tsx`, `src/hooks/useAccessibleModal.ts`, `src/utils/focusRecovery.ts`)
 
 Use `AccessibleModal` for every dialog. It moves screen-reader focus to the title
-on open, restores focus to `returnFocusRef` on close, handles the Android
-hardware back button, and — via the shared `modalStack` — makes sure only the
-top-most dialog reacts when modals are nested.
+on open, restores focus to `returnFocusRef` (or `fallbackFocusRef` if the primary
+trigger was unmounted or disabled) on close, handles the Android hardware back
+button, and — via the shared `modalStack` — makes sure only the top-most dialog
+reacts when modals are nested.
+
+For native pickers (`ProfilePhotoPicker`) and permission prompts
+(`PermissionRationaleModal`), use `restoreFocusToInitiator()` from
+`src/utils/focusRecovery.ts` so focus returns deterministically to the initiating
+control across iOS, Android, and keyboard/web platforms:
+
+- **Retry & fallback:** `restoreFocusToInitiator(triggerRef, fallbackRef, options)`
+  retries focus resolution across frames if the node handle is not yet attached,
+  and falls back to `fallbackRef` when the primary control is disabled or unmounted.
+- **Server-confirmed permissions & offline continuity:** `evaluateServerPermissionForFocus()`
+  verifies server-confirmed permissions while preserving cached grants when offline,
+  and announces actionable recovery guidance when a prompt closes due to denial or
+  stale data.
+- **Privacy by default:** `sanitizeFocusAnnouncement()` redacts Stellar wallet
+  addresses, 15-digit microchip numbers, emails, phone numbers, and secret tokens
+  before any dismissal announcement is spoken.
 
 Do not hand-roll `Modal` + `BackHandler` + `setAccessibilityFocus` per screen.
 

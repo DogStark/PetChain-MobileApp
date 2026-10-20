@@ -1,7 +1,9 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Linking, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import { useAccessibleModal } from '../hooks/useAccessibleModal';
 import { useAppTheme } from '../theme';
+import { restoreFocusToInitiator } from '../utils/focusRecovery';
 import { type PermissionType, PERMISSION_RATIONALES } from '../utils/permissionRationale';
 
 interface Props {
@@ -13,6 +15,10 @@ interface Props {
   onDeny: () => void;
   /** When true, shows a "Open Settings" button instead of "Allow" */
   showSettings?: boolean;
+  /** Initiating control to restore focus to after the permission prompt closes */
+  returnFocusRef?: React.RefObject<View | null>;
+  /** Secondary control to focus if returnFocusRef is unavailable on dismissal */
+  fallbackFocusRef?: React.RefObject<View | null>;
 }
 
 const PermissionRationaleModal: React.FC<Props> = ({
@@ -21,9 +27,31 @@ const PermissionRationaleModal: React.FC<Props> = ({
   onAllow,
   onDeny,
   showSettings = false,
+  returnFocusRef,
+  fallbackFocusRef,
 }) => {
   const colors = useAppTheme();
   const rationale = PERMISSION_RATIONALES[permissionType];
+  const titleRef = useRef<View>(null);
+
+  const handleDeny = () => {
+    onDeny();
+    if (returnFocusRef || fallbackFocusRef) {
+      restoreFocusToInitiator(returnFocusRef, fallbackFocusRef, {
+        surfaceType: 'permission_prompt',
+        reason: 'permission_denied',
+      });
+    }
+  };
+
+  const modalProps = useAccessibleModal({
+    visible,
+    onClose: handleDeny,
+    titleRef,
+    returnFocusRef,
+    fallbackFocusRef,
+    announcement: `${rationale.title} permission prompt`,
+  });
 
   const handlePrimaryAction = () => {
     if (showSettings) {
@@ -31,14 +59,26 @@ const PermissionRationaleModal: React.FC<Props> = ({
     } else {
       onAllow();
     }
+    if (returnFocusRef || fallbackFocusRef) {
+      restoreFocusToInitiator(returnFocusRef, fallbackFocusRef, {
+        surfaceType: 'permission_prompt',
+        reason: 'permission_granted',
+      });
+    }
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDeny}>
+    <Modal {...modalProps} animationType="fade">
       <View style={[styles.overlay, { backgroundColor: colors.overlay }]}>
         <View style={[styles.card, { backgroundColor: colors.surface }]}>
           <Text style={styles.icon}>{rationale.icon}</Text>
-          <Text style={[styles.title, { color: colors.text }]}>{rationale.title}</Text>
+          <Text
+            ref={titleRef as never}
+            accessibilityRole="header"
+            style={[styles.title, { color: colors.text }]}
+          >
+            {rationale.title}
+          </Text>
           <Text style={[styles.description, { color: colors.secondaryText }]}>
             {rationale.description}
           </Text>

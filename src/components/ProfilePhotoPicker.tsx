@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,8 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
+
+import { restoreFocusToInitiator } from '../utils/focusRecovery';
 
 // Deterministic profile-photo crop constraints shared by camera and gallery flows.
 // Bounds output dimensions, fixes the aspect ratio, and normalizes quality so
@@ -81,44 +83,68 @@ const sharedPickerOptions = {
 interface ProfilePhotoPickerProps {
   photoUri?: string | null;
   onPhotoSelected?: (uri: string) => void;
+  /** Optional external ref to restore focus to if the internal button ref is unavailable */
+  returnFocusRef?: React.RefObject<View | null>;
 }
 
 export default function ProfilePhotoPicker({
   photoUri,
   onPhotoSelected,
+  returnFocusRef,
 }: ProfilePhotoPickerProps) {
   const [currentUri, setCurrentUri] = useState<string | null>(photoUri ?? null);
   const [loading, setLoading] = useState(false);
+  const cameraButtonRef = useRef<View>(null);
+  const galleryButtonRef = useRef<View>(null);
+  const lastTriggerRef = useRef<React.RefObject<View | null>>(cameraButtonRef);
 
   const handleResult = useCallback(
     (result: any) => {
       setLoading(false);
       if (result?.didCancel) {
-        // Cancel leaves the prior photo unchanged.
+        // Cancel leaves the prior photo unchanged and restores focus to the initiating control.
+        restoreFocusToInitiator(lastTriggerRef.current, returnFocusRef, {
+          surfaceType: 'picker',
+          reason: 'cancel',
+        });
         return;
       }
       if (result?.errorCode) {
         Alert.alert('Error', result.errorMessage ?? 'Could not load photo.');
+        restoreFocusToInitiator(lastTriggerRef.current, returnFocusRef, {
+          surfaceType: 'picker',
+          reason: result.errorCode === 'permission' ? 'permission_denied' : 'error',
+        });
         return;
       }
       const asset = result?.assets?.[0];
       if (!asset?.uri) {
+        restoreFocusToInitiator(lastTriggerRef.current, returnFocusRef, {
+          surfaceType: 'picker',
+          reason: 'cancel',
+        });
         return;
       }
       // Normalize crop constraints for deterministic output.
       normalizeProfilePhotoCrop(asset.width, asset.height);
       setCurrentUri(asset.uri);
       onPhotoSelected?.(asset.uri);
+      restoreFocusToInitiator(lastTriggerRef.current, returnFocusRef, {
+        surfaceType: 'picker',
+        reason: 'confirm',
+      });
     },
-    [onPhotoSelected],
+    [onPhotoSelected, returnFocusRef],
   );
 
   const openCamera = useCallback(() => {
+    lastTriggerRef.current = cameraButtonRef;
     setLoading(true);
     launchCamera(sharedPickerOptions, handleResult);
   }, [handleResult]);
 
   const openGallery = useCallback(() => {
+    lastTriggerRef.current = galleryButtonRef;
     setLoading(true);
     launchImageLibrary(sharedPickerOptions, handleResult);
   }, [handleResult]);
@@ -142,16 +168,22 @@ export default function ProfilePhotoPicker({
 
       <View style={styles.actions}>
         <TouchableOpacity
+          ref={cameraButtonRef as never}
           style={styles.button}
           onPress={openCamera}
           disabled={loading}
+          accessibilityRole="button"
+          accessibilityLabel="Take profile photo with camera"
         >
           <Text style={styles.buttonText}>Camera</Text>
         </TouchableOpacity>
         <TouchableOpacity
+          ref={galleryButtonRef as never}
           style={styles.button}
           onPress={openGallery}
           disabled={loading}
+          accessibilityRole="button"
+          accessibilityLabel="Choose profile photo from gallery"
         >
           <Text style={styles.buttonText}>Gallery</Text>
         </TouchableOpacity>

@@ -50,8 +50,12 @@ export interface UseAccessibleModalOptions {
   titleRef?: React.RefObject<View | null>;
   /** Element focus returns to on close (usually the button that opened it) */
   returnFocusRef?: React.RefObject<View | null>;
+  /** Fallback element if returnFocusRef is unmounted or disabled when closing */
+  fallbackFocusRef?: React.RefObject<View | null>;
   /** Text spoken when the dialog opens; defaults to nothing extra */
   announcement?: string;
+  /** Optional text spoken when the dialog closes and restores focus */
+  closeAnnouncement?: string;
 }
 
 export interface AccessibleModalProps {
@@ -64,9 +68,45 @@ export interface AccessibleModalProps {
   onDismiss: () => void;
 }
 
-function focus(ref?: React.RefObject<View | null>): void {
-  const node = ref?.current ? findNodeHandle(ref.current) : null;
-  if (node) AccessibilityInfo.setAccessibilityFocus(node);
+function focus(
+  ref?: React.RefObject<View | null>,
+  fallbackRef?: React.RefObject<View | null>,
+): boolean {
+  const primaryTarget = ref?.current as
+    | (View & { disabled?: boolean; isDisabled?: boolean; focus?: () => void })
+    | null
+    | undefined;
+  const isPrimaryDisabled =
+    primaryTarget && (primaryTarget.disabled === true || primaryTarget.isDisabled === true);
+  const primaryNode =
+    primaryTarget && !isPrimaryDisabled ? findNodeHandle(primaryTarget) : null;
+  if (primaryNode) {
+    AccessibilityInfo.setAccessibilityFocus(primaryNode);
+    return true;
+  }
+  if (primaryTarget && !isPrimaryDisabled && typeof primaryTarget.focus === 'function') {
+    primaryTarget.focus();
+    return true;
+  }
+
+  const fallbackTarget = fallbackRef?.current as
+    | (View & { disabled?: boolean; isDisabled?: boolean; focus?: () => void })
+    | null
+    | undefined;
+  const isFallbackDisabled =
+    fallbackTarget && (fallbackTarget.disabled === true || fallbackTarget.isDisabled === true);
+  const fallbackNode =
+    fallbackTarget && !isFallbackDisabled ? findNodeHandle(fallbackTarget) : null;
+  if (fallbackNode) {
+    AccessibilityInfo.setAccessibilityFocus(fallbackNode);
+    return true;
+  }
+  if (fallbackTarget && !isFallbackDisabled && typeof fallbackTarget.focus === 'function') {
+    fallbackTarget.focus();
+    return true;
+  }
+
+  return false;
 }
 
 export function useAccessibleModal({
@@ -74,7 +114,9 @@ export function useAccessibleModal({
   onClose,
   titleRef,
   returnFocusRef,
+  fallbackFocusRef,
   announcement,
+  closeAnnouncement,
 }: UseAccessibleModalOptions): AccessibleModalProps {
   const id = useId();
   const wasVisible = useRef(false);
@@ -96,12 +138,25 @@ export function useAccessibleModal({
     if (!visible && wasVisible.current) {
       wasVisible.current = false;
       modalStack.remove(id);
-      const t = setTimeout(() => focus(returnFocusRef), 50);
+      const t = setTimeout(() => {
+        focus(returnFocusRef, fallbackFocusRef);
+        if (closeAnnouncement) {
+          AccessibilityInfo.announceForAccessibility(closeAnnouncement);
+        }
+      }, 50);
       return () => clearTimeout(t);
     }
 
     return undefined;
-  }, [visible, id, titleRef, returnFocusRef, announcement]);
+  }, [
+    visible,
+    id,
+    titleRef,
+    returnFocusRef,
+    fallbackFocusRef,
+    announcement,
+    closeAnnouncement,
+  ]);
 
   // Ensure we leave the stack if unmounted while open.
   useEffect(() => () => modalStack.remove(id), [id]);

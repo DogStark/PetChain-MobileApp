@@ -11,6 +11,19 @@ const host = (name: string) =>
   };
 
 const ReactNative = {
+  AccessibilityInfo: {
+    setAccessibilityFocus: jest.fn(),
+    announceForAccessibility: jest.fn(),
+    isReduceMotionEnabled: jest.fn().mockResolvedValue(false),
+    isScreenReaderEnabled: jest.fn().mockResolvedValue(false),
+    addEventListener: jest.fn(() => ({ remove: jest.fn() })),
+  },
+  BackHandler: {
+    addEventListener: jest.fn(() => ({ remove: jest.fn() })),
+    removeEventListener: jest.fn(),
+    exitApp: jest.fn(),
+  },
+  findNodeHandle: jest.fn((componentOrHandle: unknown) => (componentOrHandle ? 1 : null)),
   Alert: {
     alert: jest.fn(),
   },
@@ -38,6 +51,7 @@ const ReactNative = {
   Dimensions: {
     get: jest.fn(() => ({ width: 375, height: 812 })),
   },
+  Pressable: host('Pressable'),
   ActivityIndicator: host('ActivityIndicator'),
   KeyboardAvoidingView: host('KeyboardAvoidingView'),
   Modal: host('Modal'),
