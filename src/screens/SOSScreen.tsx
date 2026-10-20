@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
+  Linking,
   Pressable,
   StyleSheet,
   Text,
@@ -8,6 +9,8 @@ import {
 } from 'react-native';
 
 const COUNTDOWN_SECONDS = 5;
+
+type LocationPermissionStatus = 'granted' | 'denied' | 'revoked' | 'unknown';
 
 /**
  * SOS screen.
@@ -20,9 +23,16 @@ const COUNTDOWN_SECONDS = 5;
  * via a live region so assistive tech reports progress without gestures.
  * Accidental activation stays prevented by the existing countdown + cancel
  * confirmation path.
+ *
+ * Location: the permission status is treated as server-confirmed state
+ * (`locationPermission`). When it is denied or revoked the screen explains
+ * the degraded behavior (no coordinates are attached) and offers a shortcut
+ * to system settings, while the emergency contact flow still proceeds.
  */
 export default function SOSScreen(): React.ReactElement {
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [locationPermission, setLocationPermission] =
+    useState<LocationPermissionStatus>('unknown');
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const clearTimer = useCallback(() => {
@@ -37,6 +47,14 @@ export default function SOSScreen(): React.ReactElement {
     setCountdown(null);
     AccessibilityInfo.announceForAccessibility('SOS activation cancelled');
   }, [clearTimer]);
+
+  const openSettings = useCallback(() => {
+    Linking.openSettings().catch(() => {
+      AccessibilityInfo.announceForAccessibility(
+        'Unable to open system settings. Please enable location in your device settings.',
+      );
+    });
+  }, []);
 
   const trigger = useCallback(() => {
     // Confirmation countdown prevents accidental activation.
@@ -53,18 +71,24 @@ export default function SOSScreen(): React.ReactElement {
     if (countdown <= 0) {
       clearTimer();
       setCountdown(null);
-      AccessibilityInfo.announceForAccessibility('SOS activated');
+      AccessibilityInfo.announceForAccessibility(
+        locationPermission === 'granted'
+          ? 'SOS activated with your location'
+          : 'SOS activated without location. Emergency contacts are being notified.',
+      );
       return;
     }
     timerRef.current = setInterval(() => {
       setCountdown((current) => (current === null ? null : current - 1));
     }, 1000);
     return clearTimer;
-  }, [countdown, clearTimer]);
+  }, [countdown, clearTimer, locationPermission]);
 
   useEffect(() => clearTimer, [clearTimer]);
 
   const isCountingDown = countdown !== null;
+  const isLocationDegraded =
+    locationPermission === 'denied' || locationPermission === 'revoked';
 
   return (
     <View style={styles.container}>
@@ -79,6 +103,38 @@ export default function SOSScreen(): React.ReactElement {
           ? `SOS activating in ${countdown} seconds`
           : 'SOS is ready'}
       </Text>
+
+      {isLocationDegraded ? (
+        <View
+          style={styles.locationNotice}
+          accessible
+          accessibilityRole="text"
+          accessibilityLabel="Location unavailable. SOS will still notify your emergency contacts, but your coordinates will not be shared."
+        >
+          <Text style={styles.locationNoticeTitle}>Location unavailable</Text>
+          <Text style={styles.locationNoticeBody}>
+            {locationPermission === 'revoked'
+              ? 'Location access was revoked. SOS will still notify your emergency contacts, but your coordinates will not be shared.'
+              : 'Location access is denied. SOS will still notify your emergency contacts, but your coordinates will not be shared.'}
+          </Text>
+          <Pressable
+            style={styles.settingsButton}
+            onPress={openSettings}
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel="Open system settings to enable location"
+            accessibilityHint="Opens device settings where you can grant location access"
+            accessibilityActions={[{ name: 'activate', label: 'Open settings' }]}
+            onAccessibilityAction={(event) => {
+              if (event.nativeEvent.actionName === 'activate') {
+                openSettings();
+              }
+            }}
+          >
+            <Text style={styles.settingsText}>Open Settings</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       {isCountingDown ? (
         <Pressable
@@ -135,6 +191,34 @@ const styles = StyleSheet.create({
     fontSize: 16,
     marginBottom: 24,
     textAlign: 'center',
+  },
+  locationNotice: {
+    width: '100%',
+    padding: 16,
+    marginBottom: 24,
+    borderRadius: 8,
+    backgroundColor: '#fff3e0',
+  },
+  locationNoticeTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  locationNoticeBody: {
+    fontSize: 14,
+    marginBottom: 12,
+  },
+  settingsButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: '#424242',
+  },
+  settingsText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
   },
   sosButton: {
     width: 160,

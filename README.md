@@ -374,3 +374,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1148 -->
 - #1148: [Mobile] Provide a medication administration history filter
+
+<!-- handsoff-issue-1155 -->
+- #1155: [Mobile] Add geofence notification preferences per pet
