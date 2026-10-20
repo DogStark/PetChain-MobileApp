@@ -1,4 +1,5 @@
 import { ALL_SQLITE_MIGRATIONS, runSqliteMigrations } from '../migrations/index';
+import { reportMigrationOutcome } from '../migrations/migrationTelemetry';
 import { initializeLocalDatabase } from '../services/localDB';
 import { requestPermissions } from '../services/notificationService';
 import offlineQueue from '../services/offlineQueue';
@@ -15,6 +16,9 @@ export interface InitResult {
 async function runCriticalInit(): Promise<void> {
   const db = await initializeLocalDatabase();
   const result = await runSqliteMigrations(db, ALL_SQLITE_MIGRATIONS);
+  if (result.outcome) {
+    reportMigrationOutcome(result.outcome);
+  }
   if (!result.success) {
     console.warn('[migrations] SQLite migration failed:', result.error);
   }
