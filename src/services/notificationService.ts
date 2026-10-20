@@ -553,6 +553,34 @@ async function findMedicationId(notification: Notifications.Notification): Promi
   return medicationId ?? null;
 }
 
+/**
+ * Resolves the instant the reminder was scheduled for, so a dose action lands on
+ * the same scheduled-dose identity as the reminder and a manual tap. Falls back to
+ * the trigger date for payloads that predate `scheduledFor`.
+ */
+const getScheduledFor = (notification: Notifications.Notification): string => {
+  const data = notification.request.content.data ?? {};
+  if (isValidString(data.scheduledFor)) return data.scheduledFor;
+
+  const trigger = notification.request.trigger as { date?: unknown } | null | undefined;
+  if (typeof trigger?.date === 'number' || typeof trigger?.date === 'string') {
+    return new Date(trigger.date).toISOString();
+  }
+  return new Date().toISOString();
+};
+
+/**
+ * A dose action is stale when its medication was removed after the reminder was
+ * scheduled. Callers dismiss the notification instead of writing an orphaned log.
+ */
+async function isStaleDoseAction(
+  medService: typeof import('./medicationService'),
+  medicationId: string,
+): Promise<boolean> {
+  const medications = await medService.getMedications();
+  return !medications.some((medication) => medication.id === medicationId);
+}
+
 async function handleMarkAsTaken(notification: Notifications.Notification): Promise<void> {
   const notificationId = notification.request.identifier;
 
@@ -566,11 +594,13 @@ async function handleMarkAsTaken(notification: Notifications.Notification): Prom
 
   try {
     const medService = await getMedicationService();
-    await medService.logDose({
-      id: `action-${Date.now()}`,
-      medicationId,
-      takenAt: new Date().toISOString(),
-    });
+    if (await isStaleDoseAction(medService, medicationId)) {
+      await markAsRead(notificationId);
+      return;
+    }
+
+    // Idempotent: a duplicate for the same scheduled dose resolves as success
+    await medService.transitionDose(medicationId, getScheduledFor(notification), 'taken');
     await markAsRead(notificationId);
 
     // Mark action as processed after successful mutation
@@ -607,12 +637,12 @@ async function handleSkipDose(notification: Notifications.Notification): Promise
 
   try {
     const medService = await getMedicationService();
-    await medService.logDose({
-      id: `skip-${Date.now()}`,
-      medicationId,
-      takenAt: new Date().toISOString(),
-      skipped: true,
-    });
+    if (await isStaleDoseAction(medService, medicationId)) {
+      await markAsRead(notificationId);
+      return;
+    }
+
+    await medService.transitionDose(medicationId, getScheduledFor(notification), 'skipped');
     await cancelEntityNotification(medicationId);
     await markAsRead(notificationId);
 
