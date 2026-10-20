@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
+import { getPreferences } from '../../services/pushService';
 
 const router = Router();
 
@@ -28,11 +29,25 @@ router.post('/snooze', async (req: AuthenticatedRequest, res) => {
       .json({ error: 'reminderId, durationMinutes, and snoozeUntil are required' });
   }
 
+  if (!Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 1440) {
+    return res.status(400).json({ error: 'durationMinutes must be between 1 and 1440' });
+  }
+
+  const snoozeDate = new Date(snoozeUntil);
+  if (Number.isNaN(snoozeDate.getTime())) {
+    return res.status(400).json({ error: 'snoozeUntil must be a valid date' });
+  }
+
+  const preferences = await getPreferences(req.user!.id);
+  if (!preferences.enabled || preferences.topics.medication_reminders === false) {
+    return res.status(403).json({ error: 'Care reminders are disabled for this account' });
+  }
+
   snoozeRecords.push({
     reminderId,
     userId: req.user!.id,
     durationMinutes,
-    snoozeUntil: new Date(snoozeUntil),
+    snoozeUntil: snoozeDate,
   });
 
   return res.json({ ok: true });

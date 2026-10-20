@@ -60,6 +60,7 @@ import notesRouter from '../src/routes/notes';
 import notificationsRouter from '../src/routes/notifications';
 import notificationTemplatesRouter from '../src/routes/notificationTemplates';
 import oauthRouter from '../src/routes/oauth';
+import remindersRouter from '../src/routes/reminders';
 import shelterRouter from '../src/routes/shelter';
 
 // Readiness probe state — set to false while the process is draining
@@ -204,6 +205,7 @@ export function createApp(): Express {
   api.use('/documents', dataRateLimiter, documentsRouter);
   api.use('/notifications', dataRateLimiter, notificationsRouter);
   api.use('/notification-templates', dataRateLimiter, notificationTemplatesRouter);
+  api.use('/reminders', remindersRouter);
 
   app.use('/api', api);
 

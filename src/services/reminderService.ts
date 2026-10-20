@@ -1,6 +1,15 @@
 import * as Notifications from 'expo-notifications';
 
+import apiClient from './apiClient';
+import {
+  describeNotificationDeliveryState,
+  getNotificationPermissionState,
+  hasPermission,
+  PermissionType,
+} from '../utils/permissions';
+
 export type SnoozeDuration = 15 | 60 | 120 | number;
+export const MAX_SNOOZE_MINUTES = 24 * 60;
 
 export interface SnoozeRecord {
   reminderId: string;
@@ -30,6 +39,13 @@ export interface ClockReconciliation {
 }
 
 let cachedReconciliation: ClockReconciliation | null = null;
+
+function isNetworkFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : '';
+  return /^(network error|network request failed|failed to fetch|network unavailable)$/i.test(
+    message,
+  );
+}
 
 function clampOffset(offsetMs: number): number {
   if (offsetMs > MAX_TRUSTED_CLOCK_OFFSET_MS) return MAX_TRUSTED_CLOCK_OFFSET_MS;
@@ -88,6 +104,57 @@ export const reminderService = {
     durationMinutes: SnoozeDuration,
     nextDoseWindowMs?: number,
   ): Promise<Date> {
+    if (
+      !Number.isInteger(durationMinutes) ||
+      durationMinutes < 1 ||
+      durationMinutes > MAX_SNOOZE_MINUTES
+    ) {
+      throw new Error(`Snooze duration must be between 1 and ${MAX_SNOOZE_MINUTES} minutes`);
+    }
+
+    if (!reminderId.trim()) {
+      throw new Error('A reminder is required to snooze');
+    }
+
+    let offline = false;
+    let preferences: { enabled?: boolean; topics?: Record<string, boolean> };
+    let preferenceResponse;
+    try {
+      preferenceResponse = await apiClient.get('/api/notifications/preferences');
+    } catch (error) {
+      if (!isNetworkFailure(error)) throw error;
+      offline = true;
+      preferences = {};
+    }
+
+    if (!offline) {
+      preferences = preferenceResponse.data?.data;
+      if (
+        !preferences ||
+        typeof preferences.enabled !== 'boolean' ||
+        typeof preferences.topics?.medication_reminders !== 'boolean'
+      ) {
+        throw new Error('Notification settings could not be confirmed by the server');
+      }
+    }
+
+    if (offline) {
+      if (!(await hasPermission(PermissionType.NOTIFICATIONS))) {
+        throw new Error('Enable notifications on this device before snoozing reminders');
+      }
+    } else {
+      const permission = await getNotificationPermissionState({
+        confirmed: true,
+        remindersEnabled: preferences.enabled && preferences.topics?.medication_reminders,
+      });
+      if (!permission.canDeliver) {
+        throw new Error(
+          describeNotificationDeliveryState(permission.reason) ??
+            'Care reminders are not enabled for this account',
+        );
+      }
+    }
+
     const clock = cachedReconciliation ?? (await reconcileClock());
 
     // Safety: refuse to silently schedule when the clock is unverified or skewed.
@@ -103,6 +170,27 @@ export const reminderService = {
       throw new Error('Cannot snooze past next dose window');
     }
 
+    if (!offline) {
+      try {
+        await apiClient.post('/api/reminders/snooze', {
+          reminderId,
+          durationMinutes,
+          snoozeUntil: snoozeUntil.toISOString(),
+          clockVerified: clock.verified,
+        });
+      } catch (error) {
+        if (!isNetworkFailure(error)) throw error;
+        // Keep snoozes available when the device is offline.
+      }
+    }
+
+    const existing = await Notifications.getAllScheduledNotificationsAsync();
+    const previousSnoozes = existing.filter(
+      (notification) =>
+        notification.content.data?.reminderId === reminderId &&
+        notification.content.data?.snoozed === true,
+    );
+
     await Notifications.scheduleNotificationAsync({
       content: {
         title: 'Medication Reminder',
@@ -114,16 +202,11 @@ export const reminderService = {
       trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: snoozeUntil },
     });
 
-    await fetch('/api/reminders/snooze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        reminderId,
-        durationMinutes,
-        snoozeUntil: snoozeUntil.toISOString(),
-        clockVerified: clock.verified,
-      }),
-    });
+    await Promise.all(
+      previousSnoozes.map((notification) =>
+        Notifications.cancelScheduledNotificationAsync(notification.identifier),
+      ),
+    );
 
     return snoozeUntil;
   },

@@ -96,6 +96,10 @@ export interface Medication {
   estimatedRunOutDate?: string;
   /** IDs of the scheduled refill-reminder push notifications for this medication. */
   refillNotificationIds?: string[];
+  /** Recorded on-hand count at or below which a refill reminder should fire. */
+  refillThreshold?: number;
+  /** Threshold value for which the current low-supply reminder was already sent. */
+  refillThresholdNotifiedAt?: number;
 
   // ── Vet approval tracking ────────────────────────────────────────────────────
   /** Indicates if this dosage is pending vet approval. */

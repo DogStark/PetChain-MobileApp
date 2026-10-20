@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 
 import { EmptyState } from '../components/EmptyState';
+import SearchAreaEditor from '../components/SearchAreaEditor';
 import type { RootStackParamList } from '../navigation/types';
 import geofenceService from '../services/geofenceService';
 import lostFoundService, {
@@ -53,7 +54,10 @@ const LostFoundScreen: React.FC = () => {
   const [selectedReport, setSelectedReport] = useState<LostFoundReport | null>(null);
   const [qrModalVisible, setQrModalVisible] = useState(false);
   const [scannedPet, setScannedPet] = useState<Pet | null>(null);
-  const [form, setForm] = useState(createEmptyForm);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [searchRadiusKm, setSearchRadiusKm] = useState<number>(DEFAULT_RADIUS_KM);
+  const [searchCenter, setSearchCenter] = useState<Location | null>(null);
+  const [searchAreaModalVisible, setSearchAreaModalVisible] = useState(false);
   const [hasSavedDraft, setHasSavedDraft] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -67,12 +71,12 @@ const LostFoundScreen: React.FC = () => {
   const loadReports = useCallback(async () => {
     setLoading(true);
     try {
-      const coords = location;
+      const coords = searchCenter ?? location;
       const { reports: fetched } = await lostFoundService.getLostFoundReports({
         type: selectedTab,
         latitude: coords?.latitude,
         longitude: coords?.longitude,
-        radiusKm: DEFAULT_RADIUS_KM,
+        radiusKm: searchRadiusKm,
       });
       setReports(fetched);
     } catch (err) {
@@ -81,7 +85,7 @@ const LostFoundScreen: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [location, selectedTab]);
+  }, [searchCenter, location, selectedTab, searchRadiusKm]);
 
   useEffect(() => {
     let active = true;
@@ -91,6 +95,7 @@ const LostFoundScreen: React.FC = () => {
         const current = await mapService.getCurrentLocation();
         if (!active) return;
         setLocation(current);
+        if (!searchCenter) setSearchCenter(current);
         await lostFoundService.updateMyLocation(current);
       } catch {
         if (active) {
@@ -366,6 +371,14 @@ const LostFoundScreen: React.FC = () => {
               <Text style={styles.draftButtonText}>Resume draft</Text>
             </TouchableOpacity>
           ) : null}
+
+          <TouchableOpacity
+            style={styles.searchAreaButton}
+            onPress={() => setSearchAreaModalVisible(true)}
+            accessibilityLabel={`Search area: ${searchRadiusKm} km radius`}
+          >
+            <Text style={styles.searchAreaButtonText}>🎯 {searchRadiusKm} km</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             style={styles.newReportButton}
             onPress={() => setCreateModalVisible(true)}
@@ -611,6 +624,19 @@ const LostFoundScreen: React.FC = () => {
           </View>
         </View>
       </Modal>
+
+      <Modal visible={searchAreaModalVisible} animationType="slide" transparent={false}>
+        <SearchAreaEditor
+          initialRadiusKm={searchRadiusKm}
+          initialLocation={searchCenter ?? location ?? undefined}
+          onConfirm={(newRadius, newCenter) => {
+            setSearchRadiusKm(newRadius);
+            setSearchCenter(newCenter);
+            setSearchAreaModalVisible(false);
+          }}
+          onCancel={() => setSearchAreaModalVisible(false)}
+        />
+      </Modal>
     </View>
   );
 };
@@ -666,6 +692,20 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 8,
   },
+  summaryActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  searchAreaButton: {
+    backgroundColor: '#f3f4f6',
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  searchAreaButtonText: { color: '#374151', fontWeight: '600', fontSize: 13 },
   summaryText: { color: '#4b5563', fontSize: 14 },
   newReportButton: {
     backgroundColor: '#2563eb',

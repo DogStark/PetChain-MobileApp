@@ -7,6 +7,7 @@ import petService from '../services/petService';
 import { formatLocalDate, formatRelativeTime } from '../utils/dateLocale';
 import { formatWeight } from '../utils/localeValues';
 import { getPhoto } from '../utils/petPhotoStore';
+import { directionalValue, isolateLtr } from '../utils/rtl';
 import { useSecureScreen } from '../utils/secureScreen';
 
 interface Props {
@@ -98,7 +99,10 @@ const PetDetailScreen: React.FC<Props> = ({
       label: 'Date of Birth',
       value: pet.dateOfBirth ? formatLocalDate(pet.dateOfBirth) : undefined,
     },
-    { label: 'Microchip ID', value: pet.microchipId },
+    {
+      label: 'Microchip ID',
+      value: pet.microchipId ? isolateLtr(pet.microchipId) : undefined,
+    },
     { label: 'Added', value: formatRelativeTime(pet.createdAt) },
   ];
 
@@ -111,7 +115,7 @@ const PetDetailScreen: React.FC<Props> = ({
           accessibilityRole="button"
           accessibilityLabel="Back"
         >
-          <Text style={styles.backText}>‹ Back</Text>
+          <Text style={styles.backText}>{directionalValue('‹ Back', '› Back')}</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{pet.name}</Text>
         <TouchableOpacity

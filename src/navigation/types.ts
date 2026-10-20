@@ -4,6 +4,8 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import type { Pet } from '../models/Pet';
 import type { CoSignPayload } from '../screens/PendingCoSignScreen';
+import type { SubscriptionPlan } from '../models/Payment';
+import type { PathPaymentQuote } from '../services/stellarPathPaymentService';
 
 // ─── Root Stack ───────────────────────────────────────────────────────────────
 export type RootStackParamList = {
@@ -18,6 +20,7 @@ export type RootStackParamList = {
   ManualEntry: undefined;
   // Future: Payment / Subscription
   Payment: { planId?: string };
+  PaymentReview: { plan: SubscriptionPlan; quote?: PathPaymentQuote };
   PendingCoSign: {
     payload: CoSignPayload;
     expectedSequence: number;
@@ -62,6 +65,7 @@ export type PetStackParamList = {
   PetProfile: { petId: string };
   PetHealthDashboard: { petId: string; petName?: string };
   PetHealthMetrics: { petId: string; petName?: string };
+  ExpenseExport: { petId: string; petName?: string };
   PetForm: { pet?: Pet; ownerId?: string };
   MedicalRecordSearch: { petId: string };
   MedicalRecordViewer: { petId: string; petName?: string };
@@ -79,6 +83,7 @@ export type PetStackParamList = {
   Insurance: undefined;
   Search: undefined;
   NotificationPreferences: undefined;
+  NotificationTroubleshooting: undefined;
   DeleteAccount: undefined;
   AccountDeletionProgress: undefined;
   ClinicalNotes: { petId: string; vetId?: string };

@@ -21,6 +21,8 @@ export const storageKeys = {
     themeMode: '@cache/theme_mode',
     /** Cached geofence alerts. */
     geofenceAlerts: '@cache/geofence_alerts',
+    /** Last server-confirmed feature availability snapshot (feature → status only). */
+    featureAvailability: '@cache/feature_availability',
   },
   sync: {
     /** Pending sync queue state. */

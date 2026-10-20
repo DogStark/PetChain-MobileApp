@@ -354,6 +354,10 @@ export const API_ENDPOINTS = {
     consent: '/compliance/consent',
   },
 
+  features: {
+    availability: '/features/availability',
+  },
+
   app: {
     versionCheck: '/app/version-check',
   },

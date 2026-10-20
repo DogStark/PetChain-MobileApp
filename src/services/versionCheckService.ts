@@ -32,6 +32,8 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 interface CachedResult {
   result: VersionCheckResult;
   cachedAt: number;
+  /** Version the verdict was computed against; a verdict is stale once the app is updated. */
+  appVersion?: string;
 }
 
 function compareVersions(a: string, b: string): number {
@@ -46,13 +48,16 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-async function readCache(): Promise<VersionCheckResult | null> {
+async function readCache(currentVersion: string): Promise<VersionCheckResult | null> {
   try {
     const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
     const raw = await AsyncStorage.getItem(CACHE_KEY);
     if (!raw) return null;
     const cached: CachedResult = JSON.parse(raw);
-    if (Date.now() - cached.cachedAt < CACHE_TTL_MS) return cached.result;
+    const isFresh = Date.now() - cached.cachedAt < CACHE_TTL_MS;
+    // A verdict cached before an app update no longer describes this binary.
+    const isSameVersion = cached.appVersion === undefined || cached.appVersion === currentVersion;
+    if (isFresh && isSameVersion) return cached.result;
     await AsyncStorage.removeItem(CACHE_KEY);
     return null;
   } catch {
@@ -60,10 +65,10 @@ async function readCache(): Promise<VersionCheckResult | null> {
   }
 }
 
-async function writeCache(result: VersionCheckResult): Promise<void> {
+async function writeCache(result: VersionCheckResult, appVersion: string): Promise<void> {
   try {
     const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
-    const cached: CachedResult = { result, cachedAt: Date.now() };
+    const cached: CachedResult = { result, cachedAt: Date.now(), appVersion };
     await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(cached));
   } catch {
     // non-critical
@@ -75,13 +80,13 @@ async function writeCache(result: VersionCheckResult): Promise<void> {
  * Returns a cached result if available and fresh (< 1 hour old).
  */
 export async function checkAppVersion(): Promise<VersionCheckResult> {
-  const cached = await readCache();
+  const currentVersion = Application.nativeApplicationVersion ?? '1.0.0';
+  const cached = await readCache(currentVersion);
   if (cached) return cached;
 
   try {
     const { data } = await apiClient.get<VersionCheckResponse>('/app/version-check');
 
-    const currentVersion = Application.nativeApplicationVersion ?? '1.0.0';
     const storeUrl = Platform.OS === 'ios' ? data.iosStoreUrl : data.androidStoreUrl;
 
     let result: VersionCheckResult;
@@ -94,7 +99,7 @@ export async function checkAppVersion(): Promise<VersionCheckResult> {
       result = { type: 'up-to-date' };
     }
 
-    await writeCache(result);
+    await writeCache(result, currentVersion);
     return result;
   } catch (err) {
     logError(err as Error, { context: 'checkAppVersion' });

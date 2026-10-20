@@ -33,6 +33,7 @@ const ClinicalNotesScreen = React.lazy(() => import('../screens/ClinicalNotesScr
 const CommunityScreen = React.lazy(() => import('../screens/CommunityScreen'));
 const DeleteAccountScreen = React.lazy(() => import('../screens/DeleteAccountScreen'));
 const EmergencyContactsScreen = React.lazy(() => import('../screens/EmergencyContactsScreen'));
+const ExpenseExportScreen = React.lazy(() => import('../screens/ExpenseExportScreen'));
 const FiatOnRampScreen = React.lazy(() => import('../screens/FiatOnRampScreen'));
 const ForumScreen = React.lazy(() => import('../screens/ForumScreen'));
 const HealthAlertsScreen = React.lazy(() => import('../screens/HealthAlertsScreen'));
@@ -46,7 +47,11 @@ const NotificationCenterScreen = React.lazy(() => import('../screens/Notificatio
 const NotificationPreferencesScreen = React.lazy(
   () => import('../screens/NotificationPreferencesScreen'),
 );
+const NotificationTroubleshootingScreen = React.lazy(
+  () => import('../screens/NotificationTroubleshootingScreen'),
+);
 const PaymentScreen = React.lazy(() => import('../screens/PaymentScreen'));
+const PaymentReviewScreen = React.lazy(() => import('../screens/PaymentReviewScreen'));
 const PetDetailScreen = React.lazy(() => import('../screens/PetDetailScreen'));
 const PetFormScreen = React.lazy(() => import('../screens/PetFormScreen'));
 const PetHealthMetricsScreen = React.lazy(() => import('../screens/PetHealthMetricsScreen'));
@@ -67,6 +72,7 @@ const TravelPackingChecklistScreen = React.lazy(
 const TrustlineScreen = React.lazy(() => import('../screens/TrustlineScreen'));
 const VaccinationScreen = React.lazy(() => import('../screens/VaccinationScreen'));
 const VetMapScreen = React.lazy(() => import('../screens/VetMapScreen'));
+import { FeatureAvailabilityGate } from '../components/FeatureAvailabilityGate';
 import analyticsService from '../services/analyticsService';
 import {
   extractDeepLinkParams,
@@ -173,6 +179,17 @@ function PetNavigator() {
             <PetHealthMetricsScreen
               petId={route.params.petId}
               petName={route.params.petName ?? 'Pet'}
+              onBack={() => navigation.goBack()}
+            />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen name="ExpenseExport" options={{ title: 'Expense Export' }}>
+        {({ route, navigation }) => (
+          <LazyScreen screenName="ExpenseExport">
+            <ExpenseExportScreen
+              petId={route.params.petId}
+              petName={route.params.petName}
               onBack={() => navigation.goBack()}
             />
           </LazyScreen>
@@ -305,7 +322,20 @@ function PetNavigator() {
       >
         {({ navigation }) => (
           <LazyScreen screenName="NotificationPreferences">
-            <NotificationPreferencesScreen onBack={() => navigation.goBack()} />
+            <NotificationPreferencesScreen
+              onBack={() => navigation.goBack()}
+              onOpenTroubleshooting={() => navigation.navigate('NotificationTroubleshooting')}
+            />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen
+        name="NotificationTroubleshooting"
+        options={{ title: 'Notification Delivery' }}
+      >
+        {({ navigation }) => (
+          <LazyScreen screenName="NotificationTroubleshooting">
+            <NotificationTroubleshootingScreen onBack={() => navigation.goBack()} />
           </LazyScreen>
         )}
       </PetStack.Screen>
@@ -421,21 +451,27 @@ function MainTabs() {
       <Tab.Screen name="Telemedicine" options={{ title: 'Telemedicine' }}>
         {() => (
           <LazyScreen screenName="Telemedicine">
-            <TelemedicineScreen />
+            <FeatureAvailabilityGate feature="telemedicine">
+              <TelemedicineScreen />
+            </FeatureAvailabilityGate>
           </LazyScreen>
         )}
       </Tab.Screen>
       <Tab.Screen name="Community" options={{ title: 'Community' }}>
         {() => (
           <LazyScreen screenName="Community">
-            <CommunityScreen />
+            <FeatureAvailabilityGate feature="community">
+              <CommunityScreen />
+            </FeatureAvailabilityGate>
           </LazyScreen>
         )}
       </Tab.Screen>
       <Tab.Screen name="Referrals" options={{ title: 'Referrals' }}>
         {() => (
           <LazyScreen screenName="Referrals">
-            <ReferralScreen />
+            <FeatureAvailabilityGate feature="referrals">
+              <ReferralScreen />
+            </FeatureAvailabilityGate>
           </LazyScreen>
         )}
       </Tab.Screen>
@@ -749,6 +785,19 @@ export default function AppNavigator() {
                 {() => (
                   <LazyScreen screenName="Payment">
                     <PaymentScreen />
+                  </LazyScreen>
+                )}
+              </RootStack.Screen>
+              <RootStack.Screen
+                name="PaymentReview"
+                options={{ headerShown: true, title: 'Review Payment' }}
+              >
+                {({ route }) => (
+                  <LazyScreen screenName="PaymentReview">
+                    <PaymentReviewScreen
+                      plan={route.params.plan}
+                      quote={route.params.quote}
+                    />
                   </LazyScreen>
                 )}
               </RootStack.Screen>

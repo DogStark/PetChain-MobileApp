@@ -786,8 +786,10 @@ const styles = StyleSheet.create({
   },
   cardRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 6,
     marginBottom: 6,
   },
   typeBadge: { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },
@@ -866,7 +868,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#F3F4F6',
   },
-  detailLabel: { width: 90, fontSize: 13, color: '#6B7280', fontWeight: '600' },
+  detailLabel: { minWidth: 90, fontSize: 13, color: '#6B7280', fontWeight: '600' },
   detailValue: { flex: 1, fontSize: 14, color: '#111827' },
 });
 
