@@ -4,6 +4,8 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import type { Pet } from '../models/Pet';
 import type { CoSignPayload } from '../screens/PendingCoSignScreen';
+import type { SubscriptionPlan } from '../models/Payment';
+import type { PathPaymentQuote } from '../services/stellarPathPaymentService';
 
 // ─── Root Stack ───────────────────────────────────────────────────────────────
 export type RootStackParamList = {
@@ -18,6 +20,7 @@ export type RootStackParamList = {
   ManualEntry: undefined;
   // Future: Payment / Subscription
   Payment: { planId?: string };
+  PaymentReview: { plan: SubscriptionPlan; quote?: PathPaymentQuote };
   PendingCoSign: {
     payload: CoSignPayload;
     expectedSequence: number;
