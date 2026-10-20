@@ -68,12 +68,14 @@ interface ApiResponse<T> {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const PETS_CACHE_KEY = '@pets_list';
+const PETS_CACHED_AT_KEY = '@pets_list_cached_at';
 const PET_CACHE_PREFIX = '@pet_';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function cachePets(pets: Pet[]): Promise<void> {
   await setItem(PETS_CACHE_KEY, JSON.stringify(pets));
+  await setItem(PETS_CACHED_AT_KEY, String(Date.now()));
   // Also cache individual pets
   await Promise.all(
     pets.map((pet) => setItem(`${PET_CACHE_PREFIX}${pet.id}`, JSON.stringify(pet))),
@@ -83,6 +85,13 @@ async function cachePets(pets: Pet[]): Promise<void> {
 async function getCachedPets(): Promise<Pet[]> {
   const cached = await getItem(PETS_CACHE_KEY);
   return cached ? JSON.parse(cached) : [];
+}
+
+/** Epoch ms of the last server-confirmed pet list, or null if never cached. */
+export async function getPetsCachedAt(): Promise<number | null> {
+  const cached = await getItem(PETS_CACHED_AT_KEY);
+  const at = cached ? Number(cached) : NaN;
+  return Number.isFinite(at) ? at : null;
 }
 
 async function getCachedPet(petId: string): Promise<Pet | null> {
@@ -445,6 +454,7 @@ export async function uploadPetPhoto(
 const petService = {
   getPets,
   getAllPets,
+  getPetsCachedAt,
   getPetById,
   getPetByQRCode,
   createPet,
