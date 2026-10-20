@@ -18,6 +18,7 @@ import {
 
 import LanguageSelector from '../components/LanguageSelector';
 import type { NotificationPreferences, User } from '../models/User';
+import { loadLockTimeout, saveLockTimeout, type LockTimeout } from '../services/appLockService';
 import {
   disableBiometricAuthentication,
   isBiometricAuthenticationAvailable,
@@ -160,6 +161,7 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
   const [loggingOut, setLoggingOut] = useState(false);
   const [exportRequesting, setExportRequesting] = useState(false);
   const [hapticEnabled, setHapticEnabledState] = useState(true);
+  const [lockTimeout, setLockTimeoutState] = useState<LockTimeout>('5min');
   const [entitySyncStatuses, setEntitySyncStatuses] = useState<Record<
     SyncEntityType,
     EntitySyncRecord
@@ -205,6 +207,9 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
       // Load haptic preference
       const hapticOn = await isHapticEnabled();
       setHapticEnabledState(hapticOn);
+
+      // Load app lock timeout preference
+      setLockTimeoutState(await loadLockTimeout());
     })();
   }, []);
 
@@ -318,6 +323,15 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
   const handleHapticToggle = useCallback(async (value: boolean) => {
     setHapticEnabledState(value);
     await setHapticEnabled(value);
+  }, []);
+
+  const handleLockTimeoutChange = useCallback(async (value: LockTimeout) => {
+    setLockTimeoutState(value);
+    try {
+      await saveLockTimeout(value);
+    } catch {
+      // Keep the new selection on screen; App.tsx re-reads the stored value on next foreground
+    }
   }, []);
 
   // ── Data Export ────────────────────────────────────────────────────────────
@@ -674,6 +688,35 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
             thumbColor={Platform.OS === 'android' ? '#fff' : undefined}
           />
         </View>
+
+        {/* ── App Lock Timing ── */}
+        <RowSeparator />
+        <View style={styles.row}>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>
+            {t('settings.autoLock', 'Require unlock after')}
+          </Text>
+        </View>
+        {(
+          [
+            { value: '1min', label: t('settings.autoLock1min', '1 minute') },
+            { value: '5min', label: t('settings.autoLock5min', '5 minutes') },
+            { value: '15min', label: t('settings.autoLock15min', '15 minutes') },
+            { value: 'never', label: t('settings.autoLockNever', 'Never') },
+          ] as { value: LockTimeout; label: string }[]
+        ).map(({ value, label }, idx, arr) => (
+          <React.Fragment key={value}>
+            <TouchableOpacity
+              style={styles.row}
+              onPress={() => void handleLockTimeoutChange(value)}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: lockTimeout === value }}
+            >
+              <Text style={[styles.rowLabel, { color: colors.text }]}>{label}</Text>
+              {lockTimeout === value && <Text style={styles.checkmark}>✓</Text>}
+            </TouchableOpacity>
+            {idx < arr.length - 1 && <RowSeparator />}
+          </React.Fragment>
+        ))}
       </View>
 
       {/* ── Theme ── */}
