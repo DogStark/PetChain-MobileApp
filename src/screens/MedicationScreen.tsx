@@ -42,7 +42,10 @@ import {
   scheduleRefillReminder,
   syncRefillReminders,
 } from '../services/medicationService';
-import { scheduleMedicationReminder } from '../services/notificationService';
+import {
+  scheduleMedicationReminder,
+  syncRefillThresholdNotification,
+} from '../services/notificationService';
 import { formatLocalDate, formatLocalTime } from '../utils/dateLocale';
 import { useSecureScreen } from '../utils/secureScreen';
 
@@ -133,7 +136,16 @@ const MedicationScreen: React.FC = () => {
     setIsLoading(true);
     try {
       const [meds, logs] = await Promise.all([getMedications(), getDoseLogs()]);
-      setMedications(meds);
+      const reconciledMeds = await Promise.all(
+        meds.map(async (med) => {
+          const result = await syncRefillThresholdNotification(med);
+          if (result.status !== 'scheduled' || med.refillThreshold === undefined) return med;
+          const updatedMed = { ...med, refillThresholdNotifiedAt: med.refillThreshold };
+          await saveMedication(updatedMed);
+          return updatedMed;
+        }),
+      );
+      setMedications(reconciledMeds);
       setDoseLogs(logs);
     } catch (err) {
       // Only surface a toast if we already have cached data on screen — an
@@ -208,6 +220,13 @@ const MedicationScreen: React.FC = () => {
       focusFormError('dosage', 'Dosage is required.', 0);
       return;
     }
+    if (
+      form.refillThreshold !== undefined &&
+      (!Number.isFinite(form.refillThreshold) || form.refillThreshold < 0)
+    ) {
+      focusFormError('refillThreshold', 'Refill threshold must be zero or greater.', 3);
+      return;
+    }
 
     // Check drug interactions when adding a new medication
     if (!editingMed) {
@@ -261,12 +280,20 @@ const MedicationScreen: React.FC = () => {
       totalPills: form.totalPills ? Number(form.totalPills) : undefined,
       remainingPills,
       currentSupply,
+      refillThresholdNotifiedAt:
+        editingMed?.refillThreshold === form.refillThreshold
+          ? editingMed.refillThresholdNotifiedAt
+          : undefined,
     };
     await saveMedication(med);
     await scheduleRefillReminder(med);
     await scheduleMedicationReminder(med);
     // Sync refill reminder notifications whenever supply/frequency changes
     await syncRefillReminders(med);
+    const thresholdResult = await syncRefillThresholdNotification(med);
+    if (thresholdResult.status === 'scheduled') {
+      await saveMedication({ ...med, refillThresholdNotifiedAt: med.refillThreshold });
+    }
     setInteractionResult(null);
     setVetOverrideMode(false);
     setVetId('');
@@ -310,8 +337,20 @@ const MedicationScreen: React.FC = () => {
           ...med,
           currentSupply: newSupply,
           remainingPills: newSupply,
+          refillThresholdNotifiedAt:
+            med.refillThreshold !== undefined && newSupply > med.refillThreshold
+              ? undefined
+              : med.refillThresholdNotifiedAt,
         };
+        await saveMedication(updatedMed);
         await syncRefillReminders(updatedMed);
+        const thresholdResult = await syncRefillThresholdNotification(updatedMed);
+        if (thresholdResult.status === 'scheduled') {
+          await saveMedication({
+            ...updatedMed,
+            refillThresholdNotifiedAt: updatedMed.refillThreshold,
+          });
+        }
       }
       void loadData();
     },
@@ -342,6 +381,26 @@ const MedicationScreen: React.FC = () => {
       return;
     }
     await markRefillComplete(refillTargetMed, qty);
+    const refreshedMed = (await getMedications()).find((med) => med.id === refillTargetMed.id);
+    if (refreshedMed) {
+      const updatedMed = {
+        ...refreshedMed,
+        refillThresholdNotifiedAt:
+          refreshedMed.refillThreshold !== undefined &&
+          (refreshedMed.currentSupply ?? refreshedMed.remainingPills ?? 0) >
+            refreshedMed.refillThreshold
+            ? undefined
+            : refreshedMed.refillThresholdNotifiedAt,
+      };
+      await saveMedication(updatedMed);
+      const thresholdResult = await syncRefillThresholdNotification(updatedMed);
+      if (thresholdResult.status === 'scheduled') {
+        await saveMedication({
+          ...updatedMed,
+          refillThresholdNotifiedAt: updatedMed.refillThreshold,
+        });
+      }
+    }
     setRefillModalVisible(false);
     setRefillTargetMed(null);
     setNewSupplyInput('');
@@ -675,6 +734,15 @@ const MedicationScreen: React.FC = () => {
                   setForm((f) => ({
                     ...f,
                     currentSupply: v ? Number(v) : undefined,
+                  })),
+                keyboardType: 'numeric',
+              })}
+              {renderFormInput('refillThreshold', 'Refill reminder threshold (doses)', {
+                value: form.refillThreshold !== undefined ? String(form.refillThreshold) : '',
+                onChangeText: (v) =>
+                  setForm((f) => ({
+                    ...f,
+                    refillThreshold: v === '' ? undefined : Number(v),
                   })),
                 keyboardType: 'numeric',
               })}

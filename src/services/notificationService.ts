@@ -750,6 +750,107 @@ export const checkPermissions = async (): Promise<boolean> => {
   return state === 'granted' || state === 'provisional';
 };
 
+export interface RefillThresholdMedication {
+  id: string;
+  currentSupply?: number;
+  remainingPills?: number;
+  refillThreshold?: number;
+  refillThresholdNotifiedAt?: number;
+  status?: string;
+}
+
+export type RefillThresholdSyncResult =
+  | { status: 'scheduled' }
+  | { status: 'already-notified' }
+  | { status: 'not-applicable' }
+  | { status: 'permission-denied' }
+  | { status: 'unavailable' };
+
+const refillThresholdEntityId = (medicationId: string): string =>
+  `refill-threshold:${medicationId}`;
+
+const cancelRefillThresholdNotification = async (entityId: string): Promise<boolean> => {
+  try {
+    await cancelEntityNotification(entityId);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Reconcile one generic, private refill alert against recorded on-hand supply. */
+export const syncRefillThresholdNotification = async (
+  medication: RefillThresholdMedication,
+): Promise<RefillThresholdSyncResult> => {
+  const threshold = medication.refillThreshold;
+  const supply = medication.currentSupply ?? medication.remainingPills;
+  const entityId = refillThresholdEntityId(medication.id);
+
+  if (
+    medication.status === 'discontinued' ||
+    !Number.isFinite(threshold) ||
+    (threshold as number) < 0 ||
+    !Number.isFinite(supply) ||
+    (supply as number) > (threshold as number)
+  ) {
+    await cancelRefillThresholdNotification(entityId);
+    return { status: 'not-applicable' };
+  }
+
+  let serverPreferences: { enabled: boolean; topics: Record<PushTopic, boolean> };
+  try {
+    serverPreferences = await getServerPreferences();
+  } catch {
+    // Keep an already scheduled alert if the server cannot be reached offline.
+    return { status: 'unavailable' };
+  }
+
+  if (!serverPreferences.enabled || !serverPreferences.topics.medication_reminders) {
+    return (await cancelRefillThresholdNotification(entityId))
+      ? { status: 'permission-denied' }
+      : { status: 'unavailable' };
+  }
+
+  let devicePermission = false;
+  try {
+    devicePermission = await checkPermissions();
+  } catch {
+    // Permission state could not be confirmed, so do not schedule a new alert.
+  }
+  if (!devicePermission) {
+    return (await cancelRefillThresholdNotification(entityId))
+      ? { status: 'permission-denied' }
+      : { status: 'unavailable' };
+  }
+
+  if (medication.refillThresholdNotifiedAt === threshold) {
+    return { status: 'already-notified' };
+  }
+
+  if (!(await cancelRefillThresholdNotification(entityId))) {
+    return { status: 'unavailable' };
+  }
+  let notificationId: string | undefined;
+  try {
+    notificationId = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Refill reminder',
+        body: 'Recorded medication supply is at or below your set refill threshold.',
+        data: { type: 'medication' as NotificationGroup, category: 'medication' },
+        categoryIdentifier: 'medication',
+      },
+      trigger: null,
+    });
+    await saveNotificationIds(entityId, [notificationId]);
+    return { status: 'scheduled' };
+  } catch {
+    if (notificationId) {
+      await Notifications.cancelScheduledNotificationAsync(notificationId).catch(() => undefined);
+    }
+    return { status: 'unavailable' };
+  }
+};
+
 // ─── Preferences ─────────────────────────────────────────────────────────────
 
 export const getPreferences = async (): Promise<NotificationPreferences> => {
