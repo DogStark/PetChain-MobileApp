@@ -51,6 +51,7 @@ const PetDetailScreen = React.lazy(() => import('../screens/PetDetailScreen'));
 const PetFormScreen = React.lazy(() => import('../screens/PetFormScreen'));
 const PetHealthMetricsScreen = React.lazy(() => import('../screens/PetHealthMetricsScreen'));
 const PetProfileScreen = React.lazy(() => import('../screens/PetProfileScreen'));
+const PetCareCardScreen = React.lazy(() => import('../screens/PetCareCardScreen'));
 const PetShareScreen = React.lazy(() => import('../screens/PetShareScreen'));
 const PrivacyDashboardScreen = React.lazy(() => import('../screens/PrivacyDashboardScreen'));
 const ProfileScreen = React.lazy(() => import('../screens/ProfileScreen'));
@@ -215,6 +216,23 @@ function PetNavigator() {
         {({ route, navigation }) => (
           <LazyScreen screenName="PetShare">
             <PetShareScreen
+              petId={route.params.petId}
+              petName={route.params.petName}
+              onBack={() => navigation.goBack()}
+              onCareCard={() =>
+                navigation.navigate('PetCareCard', {
+                  petId: route.params.petId,
+                  petName: route.params.petName,
+                })
+              }
+            />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen name="PetCareCard" options={{ title: 'Care Card' }}>
+        {({ route, navigation }) => (
+          <LazyScreen screenName="PetCareCard">
+            <PetCareCardScreen
               petId={route.params.petId}
               petName={route.params.petName}
               onBack={() => navigation.goBack()}

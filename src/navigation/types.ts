@@ -66,6 +66,7 @@ export type PetStackParamList = {
   MedicalRecordSearch: { petId: string };
   MedicalRecordViewer: { petId: string; petName?: string };
   PetShare: { petId: string; petName: string };
+  PetCareCard: { petId: string; petName: string };
   TravelCertificate: { petId: string; petName?: string };
   TravelPackingChecklist: { petId: string; tripId?: string; tripName?: string };
   DosageCalculator: { petId?: string; species?: string; weightKg?: number };

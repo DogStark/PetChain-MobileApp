@@ -31,11 +31,12 @@ interface Props {
   petId: string;
   petName: string;
   onBack: () => void;
+  onCareCard?: () => void;
 }
 
 type LoadingAction = 'link' | 'social' | 'qr' | 'qr-share' | 'print' | null;
 
-const PetShareScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
+const PetShareScreen: React.FC<Props> = ({ petId, petName, onBack, onCareCard }) => {
   const [loading, setLoading] = useState<LoadingAction>(null);
   const [qrPayload, setQrPayload] = useState<string | null>(null);
   const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
@@ -243,6 +244,25 @@ const PetShareScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
             <Text style={styles.optionArrow}>›</Text>
           )}
         </TouchableOpacity>
+
+        {/* Care Card */}
+        {onCareCard && (
+          <TouchableOpacity
+            style={styles.optionCard}
+            onPress={onCareCard}
+            disabled={loading !== null}
+            accessibilityRole="button"
+            accessibilityLabel="Care card"
+            accessibilityHint="Share selected care details that expire and can be revoked"
+          >
+            <Text style={styles.optionIcon}>🩺</Text>
+            <View style={styles.optionText}>
+              <Text style={styles.optionTitle}>Care Card</Text>
+              <Text style={styles.optionDesc}>Share selected details with an expiry</Text>
+            </View>
+            <Text style={styles.optionArrow}>›</Text>
+          </TouchableOpacity>
+        )}
 
         {/* QR Code */}
         <TouchableOpacity
