@@ -153,6 +153,10 @@ const createMockContext = (
   loading,
   error,
   setActivePet: action('setActivePet'),
+  activateShortcutPet: async (petId: string) => {
+    action('activateShortcutPet')(petId);
+    return true;
+  },
   refreshPets: async () => action('refreshPets')(),
   getPetSettings: async (id: string) => {
     action('getPetSettings')(id);
