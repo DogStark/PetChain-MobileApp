@@ -55,10 +55,13 @@ export default function UpdatePrompt({ variant, onUpdate, storeUrl, onDismiss, v
         <View
           style={[styles.card, { backgroundColor: colors.surface, shadowColor: colors.shadow }]}
         >
-          <Text style={[styles.title, { color: colors.text }]}>
+          <Text style={[styles.title, { color: colors.text }]} accessibilityRole="header">
             {isForce ? 'Update Required' : 'Update Available'}
           </Text>
-          <Text style={[styles.body, { color: colors.secondaryText }]}>
+          <Text
+            style={[styles.body, { color: colors.secondaryText }]}
+            accessibilityLiveRegion="polite"
+          >
             {isForce
               ? 'A critical update is required to continue using PetChain. Please update the app from the store.'
               : 'A new version of PetChain is ready. Update now for the latest features and fixes.'}
