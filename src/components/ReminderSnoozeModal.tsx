@@ -1,7 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
-import { reminderService, type SnoozeDuration } from '../services/reminderService';
+import {
+  MAX_SNOOZE_MINUTES,
+  reminderService,
+  type SnoozeDuration,
+} from '../services/reminderService';
 import { quietHoursService, type QuietHoursEvaluation } from '../services/quietHoursService';
 import { useAppTheme } from '../theme';
 
@@ -61,17 +65,21 @@ export default function ReminderSnoozeModal({
     try {
       const until = await reminderService.snooze(reminderId, minutes, nextDoseWindowMs);
       const evaluation = await quietHoursService.evaluateDelivery(until);
+      let nextFireTime = until;
+      let quietHoursMessage = '';
 
       if (evaluation.deferred && evaluation.nextEligibleAt) {
         setQuietEvaluation(evaluation);
-        Alert.alert(
-          'Reminder deferred',
-          `This time falls within your quiet hours. Your reminder will be delivered at ${quietHoursService.formatDeliveryTime(
-            evaluation.nextEligibleAt,
-          )} instead.`,
-        );
+        nextFireTime = evaluation.nextEligibleAt;
+        quietHoursMessage = ` Quiet hours are active; delivery moves to ${quietHoursService.formatDeliveryTime(
+          evaluation.nextEligibleAt,
+        )}.`;
       }
 
+      Alert.alert(
+        'Reminder snoozed',
+        `Next reminder: ${nextFireTime.toLocaleString()}.${quietHoursMessage}`,
+      );
       onSnoozed(until);
     } catch (error) {
       Alert.alert(
@@ -84,9 +92,9 @@ export default function ReminderSnoozeModal({
   };
 
   const handleCustom = () => {
-    const mins = parseInt(custom, 10);
-    if (!Number.isFinite(mins) || mins < 1) {
-      Alert.alert('Enter a valid duration in minutes');
+    const mins = Number(custom);
+    if (!Number.isInteger(mins) || mins < 1 || mins > MAX_SNOOZE_MINUTES) {
+      Alert.alert(`Enter a duration from 1 to ${MAX_SNOOZE_MINUTES} minutes`);
       return;
     }
 
