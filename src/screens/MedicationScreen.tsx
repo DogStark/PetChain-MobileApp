@@ -947,12 +947,14 @@ const styles = StyleSheet.create({
   },
   cardHeader: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 6,
     marginBottom: 6,
   },
   medName: { fontSize: 16, fontWeight: '700', color: '#1a1a1a', flex: 1 },
-  cardActions: { flexDirection: 'row', gap: 6 },
+  cardActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 6 },
   actionBtn: {
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -1008,7 +1010,7 @@ const styles = StyleSheet.create({
     borderLeftColor: '#4CAF50',
   },
   slotTaken: { borderLeftColor: '#9e9e9e', opacity: 0.7 },
-  slotTime: { fontSize: 13, fontWeight: '600', color: '#333', width: 60 },
+  slotTime: { fontSize: 13, fontWeight: '600', color: '#333', minWidth: 60 },
   slotName: { flex: 1, fontSize: 13, color: '#555' },
   takenBadge: { fontSize: 16, color: '#4CAF50' },
   emptyText: {
@@ -1045,7 +1047,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     backgroundColor: '#fafafa',
   },
-  textArea: { height: 70, textAlignVertical: 'top' },
+  textArea: { minHeight: 70, textAlignVertical: 'top' },
   modalActions: { flexDirection: 'row', gap: 10, marginTop: 4 },
   cancelBtn: {
     flex: 1,
