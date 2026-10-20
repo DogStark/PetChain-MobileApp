@@ -1,6 +1,8 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { AxiosResponse } from 'axios';
 
 import apiClient from './apiClient';
+import { isDraftExpired, type FoundPetDraft } from '../utils/foundPetReport';
 
 export type LostFoundType = 'lost' | 'found';
 
@@ -75,6 +77,9 @@ export async function createLostFoundReport(data: {
   breed?: string;
   photoUrl?: string;
   location: LostFoundLocation;
+  foundAt?: string;
+  contactPreference?: FoundPetDraft['contactPreference'];
+  consentToPublish?: boolean;
 }): Promise<LostFoundReport> {
   const response: AxiosResponse<ApiResponse<{ data: LostFoundReport }>> = await apiClient.post(
     `${BASE_URL}/reports`,
@@ -87,11 +92,46 @@ export async function updateMyLocation(location: LostFoundLocation): Promise<voi
   await apiClient.post(`${BASE_URL}/location`, location);
 }
 
+// Local-only draft: nothing leaves the device until the finder publishes.
+const FOUND_DRAFT_KEY = '@lost_found_found_draft';
+
+interface SavedFoundDraft {
+  draft: FoundPetDraft;
+  savedAt: number;
+}
+
+export async function saveFoundPetDraft(draft: FoundPetDraft, now = Date.now()): Promise<void> {
+  const saved: SavedFoundDraft = { draft, savedAt: now };
+  await AsyncStorage.setItem(FOUND_DRAFT_KEY, JSON.stringify(saved));
+}
+
+export async function loadFoundPetDraft(now = Date.now()): Promise<FoundPetDraft | null> {
+  const raw = await AsyncStorage.getItem(FOUND_DRAFT_KEY);
+  if (!raw) return null;
+
+  try {
+    const saved = JSON.parse(raw) as SavedFoundDraft;
+    if (!isDraftExpired(saved.savedAt, now)) return saved.draft;
+  } catch {
+    // Corrupt entry: fall through and discard it.
+  }
+
+  await AsyncStorage.removeItem(FOUND_DRAFT_KEY);
+  return null;
+}
+
+export async function clearFoundPetDraft(): Promise<void> {
+  await AsyncStorage.removeItem(FOUND_DRAFT_KEY);
+}
+
 const lostFoundService = {
   getLostFoundReports,
   getReportMatches,
   createLostFoundReport,
   updateMyLocation,
+  saveFoundPetDraft,
+  loadFoundPetDraft,
+  clearFoundPetDraft,
 };
 
 export default lostFoundService;
