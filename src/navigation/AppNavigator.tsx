@@ -52,6 +52,7 @@ const NotificationTroubleshootingScreen = React.lazy(
 );
 const PaymentScreen = React.lazy(() => import('../screens/PaymentScreen'));
 const PaymentReviewScreen = React.lazy(() => import('../screens/PaymentReviewScreen'));
+const DoseConfirmationScreen = React.lazy(() => import('../screens/DoseConfirmationScreen'));
 const PetDetailScreen = React.lazy(() => import('../screens/PetDetailScreen'));
 const PetFormScreen = React.lazy(() => import('../screens/PetFormScreen'));
 const PetHealthMetricsScreen = React.lazy(() => import('../screens/PetHealthMetricsScreen'));
@@ -559,6 +560,7 @@ const linking: LinkingOptions<RootStackParamList> = {
         },
       },
       InvalidLink: 'invalid-link',
+      DoseConfirmation: 'doses/:petId/:medicationId',
     },
   },
   async getInitialURL() {
@@ -733,6 +735,8 @@ export default function AppNavigator() {
                             screen: 'PetList',
                             params: { screen: 'PetDetail', params: pending.params },
                           });
+                        } else if (pending.route === 'DoseConfirmation') {
+                          nav?.navigate?.('DoseConfirmation', pending.params);
                         } else {
                           nav?.navigate?.('Main', {
                             screen: pending.route,
@@ -823,6 +827,20 @@ export default function AppNavigator() {
                     <PaymentReviewScreen
                       plan={route.params.plan}
                       quote={route.params.quote}
+                    />
+                  </LazyScreen>
+                )}
+              </RootStack.Screen>
+              <RootStack.Screen
+                name="DoseConfirmation"
+                options={{ headerShown: true, title: 'Log a Dose' }}
+              >
+                {({ route, navigation }) => (
+                  <LazyScreen screenName="DoseConfirmation">
+                    <DoseConfirmationScreen
+                      petId={route.params.petId}
+                      medicationId={route.params.medicationId}
+                      onClose={() => navigation.goBack()}
                     />
                   </LazyScreen>
                 )}
