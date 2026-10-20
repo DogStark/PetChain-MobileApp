@@ -47,6 +47,7 @@ const NotificationPreferencesScreen = React.lazy(
   () => import('../screens/NotificationPreferencesScreen'),
 );
 const PaymentScreen = React.lazy(() => import('../screens/PaymentScreen'));
+const PaymentReviewScreen = React.lazy(() => import('../screens/PaymentReviewScreen'));
 const PetDetailScreen = React.lazy(() => import('../screens/PetDetailScreen'));
 const PetFormScreen = React.lazy(() => import('../screens/PetFormScreen'));
 const PetHealthMetricsScreen = React.lazy(() => import('../screens/PetHealthMetricsScreen'));
@@ -749,6 +750,19 @@ export default function AppNavigator() {
                 {() => (
                   <LazyScreen screenName="Payment">
                     <PaymentScreen />
+                  </LazyScreen>
+                )}
+              </RootStack.Screen>
+              <RootStack.Screen
+                name="PaymentReview"
+                options={{ headerShown: true, title: 'Review Payment' }}
+              >
+                {({ route }) => (
+                  <LazyScreen screenName="PaymentReview">
+                    <PaymentReviewScreen
+                      plan={route.params.plan}
+                      quote={route.params.quote}
+                    />
                   </LazyScreen>
                 )}
               </RootStack.Screen>

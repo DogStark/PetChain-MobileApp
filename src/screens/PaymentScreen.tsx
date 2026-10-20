@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 
 import { getStellarNetworkProfile } from '../config/stellarNetwork';
 import type { Subscription, SubscriptionPlan, SubscriptionPlanDetails } from '../models/Payment';
