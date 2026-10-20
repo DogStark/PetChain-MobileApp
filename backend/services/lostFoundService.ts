@@ -31,6 +31,8 @@ export interface LostFoundReport {
   breed?: string;
   photoUrl?: string;
   location: LostFoundLocation;
+  accuracyMeters?: number;
+  recordedAt?: string;
   ownerId: string;
   createdAt: string;
   updatedAt: string;
@@ -41,6 +43,8 @@ const POSTGIS_SRID = 4326;
 const METERS_PER_KM = 1000;
 const GEOFENCE_RADIUS_KM = 5;
 const GEOFENCE_TTL_DAYS = 30;
+const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+const LOW_ACCURACY_METERS = 100;
 
 // ─── Spatial helpers ──────────────────────────────────────────────────────────
 
@@ -69,6 +73,8 @@ export async function findFoundReportsNear(
       expires_at      AS "expiresAt",
       ST_Y(location::geometry) AS latitude,
       ST_X(location::geometry) AS longitude
+      ,accuracy_meters AS "accuracyMeters"
+      ,recorded_at     AS "recordedAt"
     FROM lost_found_reports
     WHERE type = 'found'
       ${excludeId ? 'AND id != $3' : ''}
@@ -151,7 +157,7 @@ export async function notifyNearbyLostPetOwners(
             foundReportId,
           },
         );
-        notified++;
+        notified += 1;
       }),
     );
   } catch (err) {
@@ -204,6 +210,8 @@ export async function getLostFoundReports(params?: {
       expires_at AS "expiresAt",
       ST_Y(location::geometry) AS latitude,
       ST_X(location::geometry) AS longitude
+      ,accuracy_meters AS "accuracyMeters"
+      ,recorded_at     AS "recordedAt"
     FROM lost_found_reports
     ${where}
     ORDER BY created_at DESC
@@ -224,17 +232,19 @@ export async function createLostFoundReport(data: {
   photoUrl?: string;
   location: LostFoundLocation;
   ownerId: string;
+  accuracyMeters?: number;
+  recordedAt?: string;
 }): Promise<LostFoundReport> {
   const expiresAt = new Date(Date.now() + GEOFENCE_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   const result = await query(
     `
     INSERT INTO lost_found_reports
-      (type, title, description, species, breed, photo_url, location, owner_id, expires_at)
+      (type, title, description, species, breed, photo_url, location, owner_id, expires_at, accuracy_meters, recorded_at)
     VALUES
       ($1, $2, $3, $4, $5, $6,
        ST_SetSRID(ST_Point($7, $8), ${POSTGIS_SRID}),
-       $9, $10)
+       $9, $10, $11, $12)
     RETURNING
       id, type, title, description, species, breed,
       photo_url  AS "photoUrl",
@@ -244,6 +254,8 @@ export async function createLostFoundReport(data: {
       expires_at AS "expiresAt",
       ST_Y(location::geometry) AS latitude,
       ST_X(location::geometry) AS longitude
+      ,accuracy_meters AS "accuracyMeters"
+      ,recorded_at     AS "recordedAt"
     `,
     [
       data.type,
@@ -256,6 +268,8 @@ export async function createLostFoundReport(data: {
       data.location.latitude,
       data.ownerId,
       expiresAt,
+      data.accuracyMeters ?? null,
+      data.recordedAt ?? new Date().toISOString(),
     ],
   );
 
@@ -277,9 +291,32 @@ function rowToReport(row: Record<string, unknown>): LostFoundReport {
       latitude: Number(row.latitude),
       longitude: Number(row.longitude),
     },
+    accuracyMeters: row.accuracyMeters != null ? Number(row.accuracyMeters) : undefined,
+    recordedAt: row.recordedAt ? String(row.recordedAt) : undefined,
     ownerId: String(row.ownerId),
     createdAt: String(row.createdAt),
     updatedAt: String(row.updatedAt),
     expiresAt: row.expiresAt ? String(row.expiresAt) : undefined,
   };
+}
+
+// ─── Confidence helpers ───────────────────────────────────────────────────────
+
+/**
+ * Classify a report's location confidence for map pin rendering.
+ * Stale = recorded more than STALE_THRESHOLD_MS ago (or missing).
+ * Low accuracy = reported accuracy exceeds LOW_ACCURACY_METERS (or missing).
+ */
+export function getLocationConfidence(report: LostFoundReport): {
+  isStale: boolean;
+  isLowAccuracy: boolean;
+} {
+  const recordedMs = report.recordedAt ? Date.parse(report.recordedAt) : NaN;
+  const isStale = !Number.isFinite(recordedMs) || Date.now() - recordedMs > STALE_THRESHOLD_MS;
+  const isLowAccuracy =
+    report.accuracyMeters == null ||
+    !Number.isFinite(report.accuracyMeters) ||
+    report.accuracyMeters < 0 ||
+    report.accuracyMeters > LOW_ACCURACY_METERS;
+  return { isStale, isLowAccuracy };
 }
