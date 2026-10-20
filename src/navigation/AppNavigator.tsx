@@ -67,6 +67,7 @@ const TravelPackingChecklistScreen = React.lazy(
 const TrustlineScreen = React.lazy(() => import('../screens/TrustlineScreen'));
 const VaccinationScreen = React.lazy(() => import('../screens/VaccinationScreen'));
 const VetMapScreen = React.lazy(() => import('../screens/VetMapScreen'));
+import { FeatureAvailabilityGate } from '../components/FeatureAvailabilityGate';
 import analyticsService from '../services/analyticsService';
 import {
   extractDeepLinkParams,
@@ -421,21 +422,27 @@ function MainTabs() {
       <Tab.Screen name="Telemedicine" options={{ title: 'Telemedicine' }}>
         {() => (
           <LazyScreen screenName="Telemedicine">
-            <TelemedicineScreen />
+            <FeatureAvailabilityGate feature="telemedicine">
+              <TelemedicineScreen />
+            </FeatureAvailabilityGate>
           </LazyScreen>
         )}
       </Tab.Screen>
       <Tab.Screen name="Community" options={{ title: 'Community' }}>
         {() => (
           <LazyScreen screenName="Community">
-            <CommunityScreen />
+            <FeatureAvailabilityGate feature="community">
+              <CommunityScreen />
+            </FeatureAvailabilityGate>
           </LazyScreen>
         )}
       </Tab.Screen>
       <Tab.Screen name="Referrals" options={{ title: 'Referrals' }}>
         {() => (
           <LazyScreen screenName="Referrals">
-            <ReferralScreen />
+            <FeatureAvailabilityGate feature="referrals">
+              <ReferralScreen />
+            </FeatureAvailabilityGate>
           </LazyScreen>
         )}
       </Tab.Screen>
