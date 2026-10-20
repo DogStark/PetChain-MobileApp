@@ -33,6 +33,7 @@ const ClinicalNotesScreen = React.lazy(() => import('../screens/ClinicalNotesScr
 const CommunityScreen = React.lazy(() => import('../screens/CommunityScreen'));
 const DeleteAccountScreen = React.lazy(() => import('../screens/DeleteAccountScreen'));
 const EmergencyContactsScreen = React.lazy(() => import('../screens/EmergencyContactsScreen'));
+const ExpenseExportScreen = React.lazy(() => import('../screens/ExpenseExportScreen'));
 const FiatOnRampScreen = React.lazy(() => import('../screens/FiatOnRampScreen'));
 const ForumScreen = React.lazy(() => import('../screens/ForumScreen'));
 const HealthAlertsScreen = React.lazy(() => import('../screens/HealthAlertsScreen'));
@@ -173,6 +174,17 @@ function PetNavigator() {
             <PetHealthMetricsScreen
               petId={route.params.petId}
               petName={route.params.petName ?? 'Pet'}
+              onBack={() => navigation.goBack()}
+            />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen name="ExpenseExport" options={{ title: 'Expense Export' }}>
+        {({ route, navigation }) => (
+          <LazyScreen screenName="ExpenseExport">
+            <ExpenseExportScreen
+              petId={route.params.petId}
+              petName={route.params.petName}
               onBack={() => navigation.goBack()}
             />
           </LazyScreen>
