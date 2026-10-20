@@ -15,6 +15,8 @@ import { validateFileLimits } from '../config/uploadLimits';
 
 export type DocumentCategory = 'vaccination' | 'insurance' | 'vet_report' | 'other';
 
+export type DocumentReviewStatus = 'pending_review' | 'accepted' | 'rejected' | 'expired';
+
 export interface DocumentMeta {
   id: string;
   petId: string;
@@ -29,6 +31,10 @@ export interface DocumentMeta {
   version: number;
   parentId?: string;
   deletedAt?: string;
+  reviewStatus?: DocumentReviewStatus;
+  reviewedAt?: string;
+  canReview?: boolean;
+  canRetry?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -78,6 +84,18 @@ export interface UploadDocumentParams {
   onProgress?: (event: UploadProgressEvent) => void;
   /** Stable idempotency key to prevent duplicate documents on retry */
   idempotencyKey?: string;
+  /** Original rejected/expired document when submitting a corrected version. */
+  retryOfId?: string;
+}
+
+export class DocumentReviewError extends Error {
+  constructor(
+    message: string,
+    public readonly status?: number,
+  ) {
+    super(message);
+    this.name = 'DocumentReviewError';
+  }
 }
 
 export interface QuotaInfo {
@@ -359,6 +377,7 @@ export async function uploadDocument(params: UploadDocumentParams): Promise<Docu
     keyVersion,
     ...(encryptedThumbnail ? { encryptedThumbnail } : {}),
     ...(params.parentId ? { parentId: params.parentId } : {}),
+    ...(params.retryOfId ? { retryOfId: params.retryOfId } : {}),
   };
 
   // ── 7. Upload with idempotency key & progress ───────────────────
@@ -382,6 +401,7 @@ export async function uploadDocument(params: UploadDocumentParams): Promise<Docu
       },
     );
     params.onProgress?.({ loaded: sizeBytes, total: sizeBytes, percentage: 100 });
+    await cleanupPickedFile(params.uri);
     return response.data.data;
   } catch (err: any) {
     if (axios.isCancel(err) || params.signal?.aborted) {
@@ -390,6 +410,17 @@ export async function uploadDocument(params: UploadDocumentParams): Promise<Docu
         i18n.t('documentUpload.uploadCancelled', { defaultValue: 'Upload was cancelled.' }),
         'UPLOAD_CANCELLED',
       );
+    }
+    if (params.retryOfId && axios.isAxiosError(err)) {
+      const statusCode = err.response?.status;
+      if (statusCode === 403 || statusCode === 409) {
+        throw new DocumentReviewError(
+          statusCode === 403
+            ? 'You no longer have permission to retry this attachment.'
+            : 'This attachment has changed. Refresh the list before retrying.',
+          statusCode,
+        );
+      }
     }
     throw err;
   }
@@ -437,11 +468,11 @@ function secureTempUri(originalName: string): string {
 }
 
 /**
- * Deletes a previously written temporary file.
- * Silently ignores errors (e.g. file already gone) so callers can call this
- * unconditionally in finally blocks.
+ * Deletes a file only when it is inside the app's private cache directory.
+ * Delete failures are logged without exposing the file path to the caller.
  */
 export async function cleanupTempFile(localUri: string): Promise<void> {
+  if (!isPrivateCacheFile(localUri)) return;
   try {
     await FileSystem.deleteAsync(localUri, { idempotent: true });
   } catch (err) {
@@ -449,6 +480,20 @@ export async function cleanupTempFile(localUri: string): Promise<void> {
       service: 'documentService',
       action: 'cleanupTempFile',
     });
+  }
+}
+
+function isPrivateCacheFile(uri: string): boolean {
+  const cacheDirectory = FileSystem.cacheDirectory;
+  if (!cacheDirectory) return false;
+  const cachePrefix = cacheDirectory.endsWith('/') ? cacheDirectory : `${cacheDirectory}/`;
+  return uri.startsWith(cachePrefix);
+}
+
+/** Clean up a picker/camera copy only when it is inside the app's private cache. */
+async function cleanupPickedFile(uri: string): Promise<void> {
+  if (isPrivateCacheFile(uri)) {
+    await cleanupTempFile(uri);
   }
 }
 
@@ -486,6 +531,32 @@ export async function listDocuments(
     `/api/documents?${params.toString()}`,
   );
   return response.data.data;
+}
+
+/** Submit the server-authorized clinician review decision for an attachment. */
+export async function reviewDocument(
+  documentId: string,
+  status: Exclude<DocumentReviewStatus, 'pending_review'>,
+): Promise<DocumentMeta> {
+  try {
+    const response = await apiClient.post<{ success: boolean; data: DocumentMeta }>(
+      `/api/documents/${documentId}/review`,
+      { status },
+    );
+    return response.data.data;
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const statusCode = error.response?.status;
+      const message =
+        statusCode === 403
+          ? 'You no longer have permission to review this attachment.'
+          : statusCode === 409
+            ? 'This attachment has already changed. Refresh the list before reviewing it again.'
+            : 'The attachment review could not be saved. Please retry when you are online.';
+      throw new DocumentReviewError(message, statusCode);
+    }
+    throw error;
+  }
 }
 
 /** Get version history for a document. */
