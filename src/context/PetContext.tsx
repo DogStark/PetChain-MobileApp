@@ -12,6 +12,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 
 import { getItem, setItem } from '../services/localDB';
 import { getAllPets, type Pet } from '../services/petService';
+import { recordRecentPet, resolveShortcutPet } from '../services/petShortcutService';
 
 // ─── Per-pet settings ─────────────────────────────────────────────────────────
 
@@ -44,6 +45,11 @@ interface PetContextValue {
   error: Error | null;
   /** Switch the active pet */
   setActivePet: (pet: Pet) => void;
+  /**
+   * Switch to a pet from an app shortcut. Access is confirmed with the server
+   * first. Resolves false, leaving the active pet unchanged, when access is denied.
+   */
+  activateShortcutPet: (petId: string) => Promise<boolean>;
   /** Reload pets from the API / cache */
   refreshPets: () => Promise<void>;
   /** Per-pet settings */
@@ -93,7 +99,24 @@ export const PetProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const setActivePet = useCallback((pet: Pet) => {
     setActivePetState(pet);
+    void recordRecentPet(pet.id);
   }, []);
+
+  const activateShortcutPet = useCallback(
+    async (petId: string): Promise<boolean> => {
+      const pet = await resolveShortcutPet(petId);
+      if (!pet) {
+        // Denied or stale: reload so the pet list reflects server state
+        void refreshPets();
+        return false;
+      }
+      setPets((prev) => prev.map((p) => (p.id === pet.id ? pet : p)));
+      setActivePetState(pet);
+      void recordRecentPet(pet.id);
+      return true;
+    },
+    [refreshPets],
+  );
 
   const getPetSettings = useCallback(async (petId: string): Promise<PetSettings> => {
     const raw = await getItem(PET_SETTINGS_KEY(petId));
@@ -119,6 +142,7 @@ export const PetProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       loading,
       error,
       setActivePet,
+      activateShortcutPet,
       refreshPets,
       getPetSettings,
       updatePetSettings,
@@ -130,6 +154,7 @@ export const PetProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       loading,
       error,
       setActivePet,
+      activateShortcutPet,
       refreshPets,
       getPetSettings,
       updatePetSettings,
