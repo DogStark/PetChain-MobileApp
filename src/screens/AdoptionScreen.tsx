@@ -26,11 +26,11 @@ import shelterIntegrationService, {
   type ShelterSpecies,
 } from '../services/shelterIntegrationService';
 import { useAdoptionApplicationProgress } from '../hooks/useAdoptionApplicationProgress';
-import type {
-  AdoptionApplicationStep,
-  AdoptionDocumentRequest,
-  AdoptionReviewStatus,
-} from '../services/adoptionApplicationProgressService';
+import type { AdoptionProgressStep } from '../services/adoptionApplicationProgressService';
+import {
+  buildAdoptionTimeline,
+  type AdoptionTimelineMilestone,
+} from '../utils/adoptionTimeline';
 import LoadingState from '../components/LoadingState';
 import SkeletonCard from '../components/SkeletonCard';
 import StateView from '../components/StateView';
@@ -51,20 +51,59 @@ function providerLabel(provider: ShelterProvider): string {
   return provider === 'petfinder' ? 'Petfinder' : 'Adopt-a-Pet';
 }
 
-function reviewStatusLabel(status: AdoptionReviewStatus): string {
+function stepStatusLabel(status: AdoptionProgressStep['status']): string {
   switch (status) {
-    case 'approved':
-      return 'Approved';
-    case 'rejected':
-      return 'Not approved';
-    case 'in_review':
-      return 'In review';
-    case 'action_required':
-      return 'Action required';
+    case 'completed':
+      return 'Complete';
+    case 'in-progress':
+      return 'In progress';
+    case 'blocked':
+      return 'Blocked';
     case 'pending':
     default:
       return 'Pending';
   }
+}
+
+function milestoneStateLabel(milestone: AdoptionTimelineMilestone): string {
+  switch (milestone.state) {
+    case 'complete':
+      return 'Complete';
+    case 'current':
+      return 'In progress';
+    case 'attention':
+      return 'Action required';
+    case 'upcoming':
+    default:
+      return 'Upcoming';
+  }
+}
+
+function milestoneMarker(milestone: AdoptionTimelineMilestone): string {
+  switch (milestone.state) {
+    case 'complete':
+      return '✓';
+    case 'current':
+      return '●';
+    case 'attention':
+      return '!';
+    case 'upcoming':
+    default:
+      return '○';
+  }
+}
+
+function formatTimestamp(timestamp: string | null | undefined): string | null {
+  if (!timestamp) return null;
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 function formatDueDate(dueDate: string | null | undefined): string {
@@ -106,13 +145,18 @@ const AdoptionScreen: React.FC = () => {
   const activeProvider = filters.provider ?? 'petfinder';
 
   const {
-    steps: applicationSteps,
+    data: applicationProgress,
     status: applicationStatus,
     error: applicationError,
     isStale: applicationIsStale,
     lastUpdatedAt: applicationLastUpdatedAt,
     refresh: refreshApplicationProgress,
   } = useAdoptionApplicationProgress();
+  const applicationSteps = applicationProgress?.steps ?? [];
+  const applicationTimeline = useMemo(
+    () => (applicationProgress ? buildAdoptionTimeline(applicationProgress) : []),
+    [applicationProgress],
+  );
 
   useEffect(() => {
     let active = true;
@@ -232,9 +276,8 @@ const AdoptionScreen: React.FC = () => {
     [pets, matchScores],
   );
 
-  const renderApplicationStep = (step: AdoptionApplicationStep) => {
-    const documents: AdoptionDocumentRequest[] = step.documents ?? [];
-    const statusLabel = reviewStatusLabel(step.reviewStatus);
+  const renderApplicationStep = (step: AdoptionProgressStep) => {
+    const statusLabel = stepStatusLabel(step.status);
     const dueLabel = formatDueDate(step.dueDate);
     return (
       <View
@@ -251,11 +294,11 @@ const AdoptionScreen: React.FC = () => {
           <Text
             style={[
               styles.applicationStatusBadge,
-              step.reviewStatus === 'approved' && styles.applicationStatusApproved,
-              step.reviewStatus === 'rejected' && styles.applicationStatusRejected,
-              step.reviewStatus === 'action_required' && styles.applicationStatusAction,
+              step.status === 'completed' && styles.applicationStatusApproved,
+              step.status === 'blocked' && styles.applicationStatusRejected,
+              step.status === 'in-progress' && styles.applicationStatusAction,
             ]}
-            accessibilityLabel={`Review status: ${statusLabel}`}
+            accessibilityLabel={`Step status: ${statusLabel}`}
           >
             {statusLabel}
           </Text>
@@ -266,22 +309,100 @@ const AdoptionScreen: React.FC = () => {
         <Text style={styles.applicationDueText} accessibilityLabel={`Due date: ${dueLabel}`}>
           Due: {dueLabel}
         </Text>
-        {documents.length > 0 ? (
-          <View style={styles.applicationDocuments}>
-            <Text style={styles.applicationDocumentsTitle} accessibilityRole="header">
-              Requested documents
-            </Text>
-            {documents.map((doc) => (
-              <Text
-                key={doc.id}
-                style={styles.applicationDocumentItem}
-                accessibilityLabel={`Document ${doc.name}. ${doc.provided ? 'Provided' : 'Not yet provided'}.`}
-              >
-                {doc.provided ? '✓' : '○'} {doc.name}
-              </Text>
-            ))}
+      </View>
+    );
+  };
+
+  const renderApplicationTimeline = () => (
+    <View accessibilityLabel="Application timeline">
+      <Text style={styles.applicationDocumentsTitle} accessibilityRole="header">
+        Timeline
+      </Text>
+      {applicationTimeline.map((milestone) => {
+        const timestamp = formatTimestamp(milestone.timestamp);
+        const stateLabel = milestoneStateLabel(milestone);
+        return (
+          <View
+            key={milestone.id}
+            style={styles.timelineItem}
+            accessible
+            accessibilityRole="text"
+            accessibilityLabel={`${milestone.label}: ${stateLabel}${timestamp ? `, ${timestamp}` : ''}`}
+          >
+            <Text style={styles.timelineMarker}>{milestoneMarker(milestone)}</Text>
+            <View style={styles.timelineBody}>
+              <Text style={styles.timelineLabel}>{milestone.label}</Text>
+              <Text style={styles.timelineState}>{stateLabel}</Text>
+              {timestamp ? <Text style={styles.timelineTimestamp}>{timestamp}</Text> : null}
+            </View>
           </View>
-        ) : null}
+        );
+      })}
+    </View>
+  );
+
+  const renderApplicationActions = () => {
+    const contact = applicationProgress?.contact;
+    const actions: Array<{ key: string; label: string; hint: string; url: string }> = [];
+    if (applicationProgress?.review.status === 'rejected' && contact?.appealUrl) {
+      actions.push({
+        key: 'appeal',
+        label: 'Appeal decision',
+        hint: 'Opens the appeal form in your browser',
+        url: contact.appealUrl,
+      });
+    }
+    if (contact?.email) {
+      actions.push({
+        key: 'contact',
+        label: 'Contact shelter',
+        hint: 'Opens your email app',
+        url: `mailto:${contact.email}`,
+      });
+    }
+    if (actions.length === 0) return null;
+    return (
+      <View style={styles.actionRow}>
+        {actions.map((action) => (
+          <TouchableOpacity
+            key={action.key}
+            style={styles.actionButton}
+            onPress={() => {
+              Linking.openURL(action.url).catch(() =>
+                Alert.alert('Unable to open link', 'Please try again in a moment.'),
+              );
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={action.label}
+            accessibilityHint={action.hint}
+          >
+            <Text style={styles.actionButtonText}>{action.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    );
+  };
+
+  const renderRequestedDocuments = () => {
+    const documents = applicationProgress?.documents ?? [];
+    if (documents.length === 0) return null;
+    return (
+      <View style={styles.applicationDocuments}>
+        <Text style={styles.applicationDocumentsTitle} accessibilityRole="header">
+          Requested documents
+        </Text>
+        {documents.map((doc) => {
+          const provided = doc.status !== 'requested';
+          return (
+            <Text
+              key={doc.id}
+              style={styles.applicationDocumentItem}
+              accessibilityLabel={`Document ${doc.name}. ${provided ? 'Provided' : 'Not yet provided'}.`}
+            >
+              {provided ? '✓' : '○'} {doc.name}
+            </Text>
+          );
+        })}
       </View>
     );
   };
@@ -326,7 +447,7 @@ const AdoptionScreen: React.FC = () => {
       );
     }
 
-    if (applicationSteps.length === 0) {
+    if (!applicationProgress || applicationSteps.length === 0) {
       return (
         <EmptyState
           title="No application steps yet"
@@ -362,7 +483,10 @@ const AdoptionScreen: React.FC = () => {
             </TouchableOpacity>
           </View>
         ) : null}
+        {renderApplicationTimeline()}
+        {renderApplicationActions()}
         {applicationSteps.map(renderApplicationStep)}
+        {renderRequestedDocuments()}
       </View>
     );
   };
@@ -1186,6 +1310,56 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     fontSize: 12,
+  },
+  // Application timeline
+  timelineItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingVertical: 8,
+  },
+  timelineMarker: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#12372a',
+    minWidth: 20,
+    textAlign: 'center',
+  },
+  timelineBody: {
+    flex: 1,
+    gap: 2,
+  },
+  timelineLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#12372a',
+  },
+  timelineState: {
+    fontSize: 13,
+    color: '#618074',
+  },
+  timelineTimestamp: {
+    fontSize: 12,
+    color: '#618074',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginVertical: 8,
+  },
+  actionButton: {
+    backgroundColor: '#12372a',
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  actionButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
   },
 });
 
