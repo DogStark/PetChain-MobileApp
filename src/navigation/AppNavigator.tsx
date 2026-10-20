@@ -69,6 +69,7 @@ const TravelCertificateScreen = React.lazy(() => import('../screens/TravelCertif
 const TravelPackingChecklistScreen = React.lazy(
   () => import('../screens/TravelPackingChecklistScreen'),
 );
+const FosterHandoverScreen = React.lazy(() => import('../screens/FosterHandoverScreen'));
 const TrustlineScreen = React.lazy(() => import('../screens/TrustlineScreen'));
 const VaccinationScreen = React.lazy(() => import('../screens/VaccinationScreen'));
 const VetMapScreen = React.lazy(() => import('../screens/VetMapScreen'));
@@ -262,6 +263,13 @@ function PetNavigator() {
               tripName={route.params.tripName}
               onBack={() => navigation.goBack()}
             />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen name="FosterHandover" options={{ title: 'Foster Handover' }}>
+        {({ route }) => (
+          <LazyScreen screenName="FosterHandover">
+            <FosterHandoverScreen petId={route.params.petId} petName={route.params.petName} />
           </LazyScreen>
         )}
       </PetStack.Screen>
