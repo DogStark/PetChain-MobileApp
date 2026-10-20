@@ -65,6 +65,7 @@ export type PetStackParamList = {
   PetProfile: { petId: string };
   PetHealthDashboard: { petId: string; petName?: string };
   PetHealthMetrics: { petId: string; petName?: string };
+  ExpenseExport: { petId: string; petName?: string };
   PetForm: { pet?: Pet; ownerId?: string };
   MedicalRecordSearch: { petId: string };
   MedicalRecordViewer: { petId: string; petName?: string };
