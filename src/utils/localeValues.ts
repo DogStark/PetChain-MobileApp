@@ -37,11 +37,13 @@ export function formatWeight(kg: number): string {
 }
 
 /**
- * Parse a user-entered weight string back to kg for storage.
- * Assumes the value is in the locale's native unit.
+ * Parse a user-entered weight value back to kg for storage.
+ * When `explicitUnit` is provided, uses that unit directly so editing never
+ * silently converts based on a changing locale.
  */
-export function parseWeightToKg(value: number): number {
-  return isImperial() ? value / 2.20462 : value;
+export function parseWeightToKg(value: number, explicitUnit?: 'kg' | 'lb'): number {
+  const unit = explicitUnit ?? (isImperial() ? 'lb' : 'kg');
+  return unit === 'lb' ? value / 2.20462 : value;
 }
 
 /** Label for the weight unit in the current locale ("kg" or "lb") */

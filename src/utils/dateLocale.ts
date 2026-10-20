@@ -56,3 +56,15 @@ export function formatRelativeTime(date: Date | string): string {
   if (abs < 31_536_000_000) return rtf.format(Math.round(diffMs / 2_592_000_000), 'month');
   return rtf.format(Math.round(diffMs / 31_536_000_000), 'year');
 }
+
+/** Returns the expected date input pattern for the active or specified locale. */
+export function getDateInputPlaceholder(localeOverride?: string): string {
+  const active = localeOverride ?? locale();
+  return active === 'en-US' ? 'MM/DD/YYYY' : 'DD/MM/YYYY';
+}
+
+export {
+  parseLocalizedDateInput,
+  parseLocalizedTimeInput,
+} from './localizedMeasurementEntry';
+
