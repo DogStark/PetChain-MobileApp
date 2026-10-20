@@ -1,5 +1,5 @@
 import * as Notifications from 'expo-notifications';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -37,6 +37,7 @@ const NotificationPreferencesScreen: React.FC<Props> = ({
   const [saved, setSaved] = useState(false);
   const [showRationale, setShowRationale] = useState(false);
   const [notifPermissionDenied, setNotifPermissionDenied] = useState(false);
+  const medicationSwitchRef = useRef<View>(null);
 
   useEffect(() => {
     void (async () => {
@@ -140,15 +141,18 @@ const NotificationPreferencesScreen: React.FC<Props> = ({
     value,
     onValueChange,
     disabled,
+    switchRef,
   }: {
     label: string;
     value: boolean;
     onValueChange: (v: boolean) => void;
     disabled?: boolean;
+    switchRef?: React.RefObject<View | null>;
   }) => (
     <View style={styles.row}>
       <Text style={styles.rowLabel}>{label}</Text>
       <Switch
+        ref={switchRef as never}
         value={value}
         onValueChange={onValueChange}
         trackColor={{ false: '#ddd', true: '#4CAF50' }}
@@ -164,6 +168,7 @@ const NotificationPreferencesScreen: React.FC<Props> = ({
         visible={showRationale}
         permissionType="notifications"
         showSettings={notifPermissionDenied}
+        returnFocusRef={medicationSwitchRef}
         onAllow={async () => {
           setShowRationale(false);
           const granted = await requestNotificationPermission();
@@ -209,6 +214,7 @@ const NotificationPreferencesScreen: React.FC<Props> = ({
           <Row
             label="Medication Reminders"
             value={prefs.medicationReminders}
+            switchRef={medicationSwitchRef}
             onValueChange={(v) => void handleToggleMedicationReminders(v)}
           />
           <View style={styles.sep} />
