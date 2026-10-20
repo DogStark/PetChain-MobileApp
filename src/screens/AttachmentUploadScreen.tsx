@@ -9,6 +9,8 @@ import {
   View,
 } from 'react-native';
 
+import useNetworkStatus from '../hooks/useNetworkStatus';
+
 /**
  * Offline attachment upload with resume + integrity verification (issue #1061).
  *
@@ -93,6 +95,13 @@ export function splitIntoChunks(data: string, chunkSize: number): UploadChunk[] 
   return chunks;
 }
 
+export interface ResumeOptions {
+  /** Checked before each chunk transfer; true stops the upload with status 'paused'. */
+  shouldPause?: () => boolean;
+  /** Called with the latest metadata after each persisted change, for live progress. */
+  onProgress?: (meta: UploadMetadata) => void;
+}
+
 /**
  * Resumes an upload from the server-confirmed offset. Chunks already covered by
  * the confirmed offset are skipped; failed chunks are quarantined for retry.
@@ -103,16 +112,22 @@ export async function resumeUpload(
   objectData: string,
   server: ChunkServer,
   store: UploadMetadataStore,
+  options: ResumeOptions = {},
 ): Promise<UploadMetadata> {
   const confirmedOffset = await server.getOffset(meta.uploadId);
   let current: UploadMetadata = {
     ...meta,
     confirmedOffset,
     status: 'uploading',
-    attempts: meta.attempts + 1,
+    // Resuming after a pause is not a failure, so it does not consume a retry.
+    attempts: meta.status === 'paused' ? meta.attempts : meta.attempts + 1,
     updatedAt: Date.now(),
   };
-  await store.save(current);
+  const save = async () => {
+    await store.save(current);
+    options.onProgress?.(current);
+  };
+  await save();
 
   const chunks = splitIntoChunks(objectData, meta.chunkSize);
   const quarantined: number[] = [];
@@ -121,10 +136,15 @@ export async function resumeUpload(
     if (chunk.end <= current.confirmedOffset) {
       continue;
     }
+    if (options.shouldPause?.()) {
+      current = { ...current, status: 'paused', updatedAt: Date.now() };
+      await save();
+      return current;
+    }
     try {
       const newOffset = await server.putChunk(meta.uploadId, chunk);
       current = { ...current, confirmedOffset: newOffset, updatedAt: Date.now() };
-      await store.save(current);
+      await save();
     } catch (err) {
       quarantined.push(chunk.index);
     }
@@ -137,23 +157,23 @@ export async function resumeUpload(
       quarantinedChunks: quarantined,
       updatedAt: Date.now(),
     };
-    await store.save(current);
+    await save();
     return current;
   }
 
   current = { ...current, status: 'verifying', updatedAt: Date.now() };
-  await store.save(current);
+  await save();
 
   const { hash } = await server.complete(meta.uploadId);
   if (hash !== meta.expectedHash) {
     // Hash mismatch: never mark the record uploaded.
     current = { ...current, status: 'failed', updatedAt: Date.now() };
-    await store.save(current);
+    await save();
     return current;
   }
 
   current = { ...current, status: 'uploaded', quarantinedChunks: [], updatedAt: Date.now() };
-  await store.save(current);
+  await save();
   return current;
 }
 
@@ -201,6 +221,8 @@ export default function AttachmentUploadScreen({
   const [meta, setMeta] = useState<UploadMetadata | null>(null);
   const [busy, setBusy] = useState(false);
   const mounted = useRef(true);
+  const pauseRequested = useRef(false);
+  const { isOnline } = useNetworkStatus();
 
   useEffect(() => {
     mounted.current = true;
@@ -214,11 +236,36 @@ export default function AttachmentUploadScreen({
     [accountId, recordId, fileName],
   );
 
+  // Surface any persisted upload so a paused transfer survives leaving the screen or a restart.
+  useEffect(() => {
+    let active = true;
+    store.load(accountId).then((uploads) => {
+      const existing = uploads.find((u) => u.uploadId === uploadId);
+      if (!active || !existing) {
+        return;
+      }
+      // An app killed mid-transfer leaves 'uploading' or 'verifying' behind; treat it as paused.
+      const interrupted = existing.status === 'uploading' || existing.status === 'verifying';
+      setMeta((current) => current ?? (interrupted ? { ...existing, status: 'paused' } : existing));
+    });
+    return () => {
+      active = false;
+    };
+  }, [store, accountId, uploadId]);
+
   const runResume = useCallback(
     async (base: UploadMetadata) => {
+      pauseRequested.current = false;
       setBusy(true);
       try {
-        const next = await resumeUpload(base, objectData, server, store);
+        const next = await resumeUpload(base, objectData, server, store, {
+          shouldPause: () => pauseRequested.current,
+          onProgress: (progress) => {
+            if (mounted.current) {
+              setMeta(progress);
+            }
+          },
+        });
         if (!mounted.current) {
           return;
         }
@@ -273,10 +320,27 @@ export default function AttachmentUploadScreen({
     await runResume(meta);
   }, [meta, runResume]);
 
+  const handlePause = useCallback(() => {
+    pauseRequested.current = true;
+  }, []);
+
+  const handleResume = useCallback(async () => {
+    if (!meta) {
+      return;
+    }
+    await runResume(meta);
+  }, [meta, runResume]);
+
   const retriesRemaining = meta ? Math.max(0, MAX_UPLOAD_ATTEMPTS - meta.attempts) : MAX_UPLOAD_ATTEMPTS;
+  const totalChunks = meta ? Math.ceil(meta.totalBytes / meta.chunkSize) : 0;
+  const acceptedChunks = meta
+    ? Math.min(totalChunks, Math.ceil(meta.confirmedOffset / meta.chunkSize))
+    : 0;
+  const canPause = busy && meta?.status === 'uploading';
+  const canResume = !!meta && meta.status === 'paused' && !busy;
   const canRetry =
     !!meta &&
-    (meta.status === 'quarantined' || meta.status === 'failed' || meta.status === 'paused') &&
+    (meta.status === 'quarantined' || meta.status === 'failed') &&
     retriesRemaining > 0;
 
   return (
@@ -286,9 +350,14 @@ export default function AttachmentUploadScreen({
 
       {meta ? (
         <View style={styles.statusBox}>
-          <Text style={styles.status}>{STATUS_LABEL[meta.status]}</Text>
+          <Text style={styles.status} accessibilityLiveRegion="polite">
+            {STATUS_LABEL[meta.status]}
+          </Text>
           <Text style={styles.detail}>
             {meta.confirmedOffset} / {meta.totalBytes} bytes confirmed
+          </Text>
+          <Text style={styles.detail}>
+            Chunks accepted by server: {acceptedChunks} / {totalChunks}
           </Text>
           <Text style={styles.detail}>
             Attempts: {meta.attempts} · Retries remaining: {retriesRemaining}
@@ -298,6 +367,9 @@ export default function AttachmentUploadScreen({
               Quarantined chunks: {meta.quarantinedChunks.join(', ')}
             </Text>
           ) : null}
+          {meta.status === 'paused' && !isOnline ? (
+            <Text style={styles.detail}>Waiting for a connection to resume.</Text>
+          ) : null}
         </View>
       ) : (
         <Text style={styles.detail}>No upload in progress.</Text>
@@ -306,13 +378,49 @@ export default function AttachmentUploadScreen({
       {busy ? <ActivityIndicator style={styles.spinner} /> : null}
 
       {!meta ? (
-        <TouchableOpacity style={styles.button} onPress={handleStart} disabled={busy}>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={handleStart}
+          disabled={busy}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: busy }}
+        >
           <Text style={styles.buttonText}>Start upload</Text>
         </TouchableOpacity>
       ) : null}
 
+      {canPause ? (
+        <TouchableOpacity
+          style={styles.button}
+          onPress={handlePause}
+          accessibilityRole="button"
+          accessibilityLabel="Pause upload"
+        >
+          <Text style={styles.buttonText}>Pause upload</Text>
+        </TouchableOpacity>
+      ) : null}
+
+      {canResume ? (
+        <TouchableOpacity
+          style={[styles.button, !isOnline && styles.buttonDisabled]}
+          onPress={handleResume}
+          disabled={!isOnline}
+          accessibilityRole="button"
+          accessibilityLabel="Resume upload"
+          accessibilityState={{ disabled: !isOnline }}
+        >
+          <Text style={styles.buttonText}>Resume upload</Text>
+        </TouchableOpacity>
+      ) : null}
+
       {canRetry ? (
-        <TouchableOpacity style={styles.button} onPress={handleRetry} disabled={busy}>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={handleRetry}
+          disabled={busy}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: busy }}
+        >
           <Text style={styles.buttonText}>Retry upload</Text>
         </TouchableOpacity>
       ) : null}
@@ -335,5 +443,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 8,
   },
+  buttonDisabled: { backgroundColor: '#9bb5e8' },
   buttonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
 });
