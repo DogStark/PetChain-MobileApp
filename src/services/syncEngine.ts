@@ -12,7 +12,8 @@ export type SyncEntityType =
   | 'medication'
   | 'medicalRecord'
   | 'streak'
-  | 'badge';
+  | 'badge'
+  | 'lostPetReport';
 export type SyncAction = 'create' | 'update' | 'delete';
 export type ConflictResolutionStrategy = 'last-write-wins' | 'server-wins' | 'client-wins';
 export type SyncEventType = 'queued' | 'started' | 'progress' | 'completed' | 'failed' | 'conflict';
