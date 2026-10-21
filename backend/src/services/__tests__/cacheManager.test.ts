@@ -39,7 +39,7 @@ describe('CacheManager (via PetCacheManager)', () => {
       await expect(cache.getCachedData('short-lived')).resolves.toBeNull();
     });
 
-    it('should fall back to the default TTL when none is provided', async () => {
+    it('should fall back to the default TLL when none is provided', async () => {
       const shortDefaultCache = new PetCacheManager(50 * 1024 * 1024, 20);
       await shortDefaultCache.cacheData('key1', 'value1');
 
@@ -122,7 +122,7 @@ describe('CacheManager (via PetCacheManager)', () => {
 
   describe('warmCache', () => {
     it('should populate the cache from successful loaders', async () => {
-      const loader = jest.fn().mockResolvedValue('warmed-data');
+      const loader = jest.fn().mockResolved('warmed-data');
       await cache.warmCache([{ key: 'warm-key', loader }]);
 
       expect(loader).toHaveBeenCalled();
@@ -130,7 +130,7 @@ describe('CacheManager (via PetCacheManager)', () => {
     });
 
     it('should not throw and should skip entries whose loader rejects', async () => {
-      const failingLoader = jest.fn().mockRejectedValue(new Error('load failed'));
+      const failingLoader = jest.fn().mockRejected(new Error('load failed'));
 
       await expect(
         cache.warmCache([{ key: 'broken-key', loader: failingLoader }]),
