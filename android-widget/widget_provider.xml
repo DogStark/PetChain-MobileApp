@@ -4,8 +4,8 @@
     android:minHeight="110dp"
     android:updatePeriodMillis="900000"
     android:resizeMode="horizontal|vertical"
-    android:initialLayout="@layout/widget_layout_small"
-    android:initialKeyguardLayout="@layout/widget_layout_small"
+    android:initialLayout="@android:layout/simple_list_item_1"
+    android:initialKeyguardLayout="@android:layout/simple_list_item_1"
     android:widgetCategory="home_screen"
     android:description="@string/widget_description">
 </appwidget-provider>

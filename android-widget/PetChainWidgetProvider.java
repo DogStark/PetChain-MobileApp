@@ -3,6 +3,7 @@ package app.petchain.mobile.widget;
 import android.app.PendingIntent;
 import android.appwidget.AppWidgetManager;
 import android.appwidget.AppWidgetProvider;
+import android.app.KeyguardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -31,8 +32,13 @@ public class PetChainWidgetProvider extends AppWidgetProvider {
     @Override
     public void onReceive(Context context, Intent intent) {
         super.onReceive(context, intent);
-        
-        if (ACTION_UPDATE_WIDGET.equals(intent.getAction())) {
+
+        String action = intent.getAction();
+        if (
+            ACTION_UPDATE_WIDGET.equals(action)
+                || Intent.ACTION_SCREEN_OFF.equals(action)
+                || Intent.ACTION_USER_PRESENT.equals(action)
+        ) {
             AppWidgetManager appWidgetManager = AppWidgetManager.getInstance(context);
             int[] appWidgetIds = appWidgetManager.getAppWidgetIds(
                     new android.content.ComponentName(context, PetChainWidgetProvider.class)
@@ -79,22 +85,60 @@ public class PetChainWidgetProvider extends AppWidgetProvider {
             throws JSONException {
         RemoteViews views = new RemoteViews(context.getPackageName(), layoutId);
         
-        // Parse widget data
-        JSONArray medications = widgetData.optJSONArray("medications");
-        JSONArray appointments = widgetData.optJSONArray("appointments");
-        JSONArray healthScores = widgetData.optJSONArray("healthScores");
-        
-        // Update based on layout (small, medium, large)
-        if (layoutId == android.R.layout.simple_list_item_1) {
-            updateSmallWidget(views, context, medications, appointments, healthScores);
-        } else {
-            updateMediumLargeWidget(views, context, medications, appointments, healthScores);
-        }
+        JSONArray agenda = widgetData.optJSONArray("agenda");
+        updateCareAgenda(
+                views,
+                context,
+                agenda,
+                widgetData.optBoolean("hideDetailsOnLockScreen", true)
+        );
         
         // Set click intent to open app
         setClickIntent(context, views);
         
         return views;
+    }
+
+    private static void updateCareAgenda(
+            RemoteViews views,
+            Context context,
+            JSONArray agenda,
+            boolean hideDetailsOnLockScreen
+    ) throws JSONException {
+        KeyguardManager keyguardManager =
+                (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
+        boolean redact = hideDetailsOnLockScreen
+                && (keyguardManager == null || keyguardManager.isKeyguardLocked());
+        StringBuilder text = new StringBuilder("PetChain care agenda");
+
+        if (agenda == null || agenda.length() == 0) {
+            text.append("\nNo upcoming care tasks");
+        } else {
+            for (int index = 0; index < Math.min(5, agenda.length()); index++) {
+                JSONObject task = agenda.getJSONObject(index);
+                String type = task.optString("type", "care");
+                String title = task.optString(
+                        "title",
+                        type.equals("medication") ? "Medication" : "Appointment"
+                );
+                if (redact) title = "Care task";
+                String scheduledAt = task.optString("scheduledAt", "");
+                String time = scheduledAt.length() >= 16
+                        ? scheduledAt.substring(11, 16)
+                        : "";
+                text.append("\n");
+                if (!redact) {
+                    if (!time.isEmpty()) text.append(time).append("  ");
+                    text.append(title);
+                    String detail = task.optString("detail", "");
+                    if (!detail.isEmpty()) text.append(" · ").append(detail);
+                } else {
+                    text.append(title);
+                }
+            }
+        }
+        views.setTextViewText(android.R.id.text1, text.toString());
+        views.setContentDescription(android.R.id.text1, "PetChain care agenda");
     }
 
     private static void updateSmallWidget(RemoteViews views, Context context,
@@ -178,7 +222,7 @@ public class PetChainWidgetProvider extends AppWidgetProvider {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         
         // Set click listener to open app
-        views.setOnClickPendingIntent(android.R.id.background, pendingIntent);
+        views.setOnClickPendingIntent(android.R.id.text1, pendingIntent);
     }
 
     /**

@@ -9,6 +9,7 @@
 import WidgetKit
 import SwiftUI
 import Foundation
+import UIKit
 
 // MARK: - Data Models
 
@@ -43,10 +44,29 @@ struct HealthScore: Codable {
     let lastUpdated: String
 }
 
+struct CareAgendaTask: Codable, Identifiable {
+    let id: String
+    let petId: String
+    let type: String
+    let title: String
+    let detail: String?
+    let scheduledAt: String
+
+    var displayTime: String {
+        guard let date = ISO8601DateFormatter().date(from: scheduledAt) else {
+            return scheduledAt
+        }
+        return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .short)
+    }
+}
+
 struct WidgetDataModel: Codable {
     let medications: [MedicationItem]
     let appointments: [AppointmentItem]
     let healthScores: [HealthScore]
+    let agenda: [CareAgendaTask]?
+    let selectedPetId: String?
+    let hideDetailsOnLockScreen: Bool?
     let lastUpdated: String
     let timestamp: Int
 }
@@ -338,14 +358,62 @@ struct PetChainWidgetEntryView: View {
     var body: some View {
         switch widgetFamily {
         case .systemSmall:
-            PetChainSmallWidget(entry: entry)
+            PetChainAgendaWidget(entry: entry, taskLimit: 2)
         case .systemMedium:
-            PetChainMediumWidget(entry: entry)
+            PetChainAgendaWidget(entry: entry, taskLimit: 4)
         case .systemLarge:
-            PetChainLargeWidget(entry: entry)
+            PetChainAgendaWidget(entry: entry, taskLimit: 7)
         default:
-            PetChainMediumWidget(entry: entry)
+            PetChainAgendaWidget(entry: entry, taskLimit: 4)
         }
+    }
+}
+
+struct PetChainAgendaWidget: View {
+    let entry: PetChainWidgetProvider.Entry
+    let taskLimit: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Care agenda", systemImage: "pawprint.fill")
+                .font(.headline)
+                .lineLimit(1)
+
+            if let data = entry.widgetData {
+                let tasks = Array((data.agenda ?? []).prefix(taskLimit))
+                if tasks.isEmpty {
+                    Text("No upcoming care tasks")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(tasks) { task in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: task.type == "medication" ? "pills.fill" : "calendar")
+                                .foregroundStyle(task.type == "medication" ? .orange : .blue)
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(task.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .lineLimit(1)
+                                Text("\(task.displayTime)\(task.detail.map { " · \($0)" } ?? "")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+            } else {
+                Text("Open PetChain to refresh your agenda")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .privacySensitive(entry.widgetData?.hideDetailsOnLockScreen ?? true)
     }
 }
 
