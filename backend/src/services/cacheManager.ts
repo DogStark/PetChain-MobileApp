@@ -9,6 +9,19 @@ interface CacheStats {
   itemCount: number;
 }
 
+interface CacheBreakdown {
+  media: CacheStats;
+  records: CacheStats;
+  drafts: CacheStats;
+  total: CacheStats;
+}
+
+interface CleanupOptions {
+  media?: boolean;
+  records?: boolean;
+  expiredOnly?: boolean;
+}
+
 class CacheManager {
   private cache = new Map<string, CacheItem<unknown>>();
   private readonly maxSize: number;
@@ -92,6 +105,71 @@ class CacheManager {
     this.cache.clear();
   }
 
+  async getCacheBreakdown(): Promise<CacheBreakdown> {
+    const media: CacheStats = { size: 0, itemCount: 0 };
+    const records: CacheStats = { size: 0, itemCount: 0 };
+    const drafts: CacheStats = { size: 0, itemCount: 0 };
+
+    for (const [key, item] of this.cache.entries()) {
+      const itemSize = JSON.stringify(item).length * 2;
+      const bucket = this.classifyKey(key);
+      bucket.size += itemSize;
+      bucket.itemCount += 1;
+    }
+
+    return {
+      media,
+      records,
+      drafts,
+      total: await this.getCacheSize(),
+    };
+  }
+
+  async cleanupCache(options: CleanupOptions = {}): Promise<CacheStats> {
+    const { media = true, records = true, expiredOnly = false } = options;
+    const removedKeys: string[] = [];
+
+    for (const [key, item] of this.cache.entries()) {
+      // Never remove unsynchronized user-authored drafts.
+      if (this.isDraftKey(key)) continue;
+
+      const bucket = this.classifyKey(key);
+      const inScope =
+        (media && bucket === this.mediaBucket) ||
+        (records && bucket === this.recordsBucket);
+
+      if (!inScope) continue;
+      if (expiredOnly && !this.isExpired(item)) continue;
+
+      removedKeys.push(key);
+    }
+
+    let freedSize = 0;
+    for (const key of removedKeys) {
+      const item = this.cache.get(key);
+      if (item) freedSize += JSON.stringify(item).length * 2;
+      this.cache.delete(key);
+    }
+
+    return { size: freedSize, itemCount: removedKeys.length };
+  }
+
+  private readonly mediaBucket: CacheStats = { size: 0, itemCount: 0 };
+  private readonly recordsBucket: CacheStats = { size: 0, itemCount: 0 };
+
+  private classifyKey(key: string): CacheStats {
+    if (this.isMediaKey(key)) return this.mediaBucket;
+    return this.recordsBucket;
+  }
+
+  private isMediaKey(key: string): boolean {
+    return /^(media|image|photo|video|attachment):/i.test(key);
+  }
+
+  private isDraftKey(key: string): boolean {
+    return /^draft:/i.test(key);
+  }
+
   async resolveConflict<T>(key: string, localData: T, remoteData: T): Promise<T> {
     const localItem = this.cache.get(key);
 
@@ -168,6 +246,22 @@ export class PetCacheManager extends CacheManager {
   async invalidatePet(petId: string): Promise<void> {
     await this.invalidateCache(`pet:${petId}`);
     await this.invalidateCache('pets:list');
+  }
+
+  async cacheDraft(draftId: string, draftData: unknown): Promise<void> {
+    await this.cacheData(`draft:${draftId}`, draftData);
+  }
+
+  async getCachedDraft(draftId: string): Promise<unknown> {
+    return await this.getCachedData(`draft:${draftId}`);
+  }
+
+  async getStorageUsage(): Promise<CacheBreakdown> {
+    return await this.getCacheBreakdown();
+  }
+
+  async cleanupStorage(options: CleanupOptions = {}): Promise<CacheStats> {
+    return await this.cleanupCache(options);
   }
 
   async syncPetData(petId: string, remoteData: unknown): Promise<unknown> {

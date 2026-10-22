@@ -16,6 +16,15 @@ export class StorageError extends Error {
 }
 
 /**
+ * Keys that hold unsynchronized user-authored drafts and must survive a clear.
+ */
+const PRESERVED_PREFIXES = ['@drafts'] as const;
+
+function isPreservedKey(key: string): boolean {
+  return PRESERVED_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+/**
  * Get data from storage
  * @param key - Storage key
  * @returns Parsed data or null if not found
@@ -68,16 +77,25 @@ export async function remove(key: string): Promise<void> {
 }
 
 /**
- * Clear all data from storage
+ * Clear offline data from storage while preserving unsynchronized user-authored drafts.
+ * Falls back to a full wipe only if key enumeration fails.
  */
 export async function clear(): Promise<void> {
   try {
-    await AsyncStorage.clear();
-  } catch (error) {
-    throw new StorageError(
-      `Failed to clear storage: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      'clear',
-    );
+    const keys = await AsyncStorage.getAllKeys();
+    const removable = keys.filter((key) => !isPreservedKey(key));
+    if (removable.length > 0) {
+      await AsyncStorage.multiRemove(removable);
+    }
+  } catch {
+    try {
+      await AsyncStorage.clear();
+    } catch (error) {
+      throw new StorageError(
+        `Failed to clear storage: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'clear',
+      );
+    }
   }
 }
 
@@ -108,13 +126,11 @@ export async function getMultiple<T>(keys: string[]): Promise<Record<string, T |
  * Set multiple items in storage
  * @param items - Array of key-value pairs
  */
-export async function setMultiple<T>(items: Array<[string, T]>): Promise<void> {
+export async function setMultiple<T>(keys: string[], values: T[]): Promise<void> {
   try {
-    const serializedItems: Array<[string, string]> = items.map(([key, value]) => [
-      key,
-      JSON.stringify(value),
-    ]);
-    await AsyncStorage.multiSet(serializedItems);
+    const pairs = keys.map((key, index) => [key, values[index]] as [string, T]);
+    const serialized = pairs.map(([key, value]) => [key, JSON.stringify(value)] as [string, string]);
+    await AsyncStorage.multiSet(serialized);
   } catch (error) {
     throw new StorageError(
       `Failed to set multiple items: ${error instanceof Error ? error.message : 'Unknown error'}`,
