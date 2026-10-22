@@ -42,7 +42,18 @@ export async function deleteX(id): Promise<void> { ... }
 | `blockchainService.ts`, `blockchainIntegration.ts`, `blockchainEventService.ts` | On-chain record anchoring and event sync |
 | `cloudSyncService.ts`, `backgroundTaskService.ts` | Background/offline sync orchestration |
 | `localDB.ts` | Local persistence (offline cache / queue) |
+| `localDraftExportService.ts` | Server-authorized encrypted export of clinical note drafts and pending sync changes before logout |
 | `analyticsService.ts`, `auditService.ts`, `auditTrailService.ts` | Usage analytics and audit logging |
+
+### Local draft export before sign-out
+
+Settings checks `/api/privacy/export/permission` with the active session before
+offering an export and checks again immediately before writing it. The
+authenticated server response is not cached. The export includes locally saved
+clinical note drafts and queued sync changes; its contents are encrypted using a
+user-provided passphrase before the OS share sheet receives the temporary file.
+If permission cannot be confirmed or sharing is unavailable, users can still
+sign out after explicitly confirming that local work may be cleared.
 
 ## Backend Endpoints
 
