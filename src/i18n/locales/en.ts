@@ -82,6 +82,37 @@ export default {
     exportFailed: 'Failed to request data export. Please try again.',
     requestExport: 'Request Export',
     syncStatus: 'Sync Status',
+    unsyncedWorkWarning:
+      'You have local drafts or unsynchronized changes. Signing out clears them from this device.',
+    localDraftCount: 'Clinical note drafts: {{count}}',
+    pendingChangeCount: 'Unsynchronized changes: {{count}}',
+    encryptedDraftExportAvailable:
+      'You can save an encrypted export before signing out. Choose a passphrase you can remember; it cannot be recovered.',
+    draftExportDenied: 'The server denied draft export permission.',
+    draftExportUnconfirmed:
+      'Export permission could not be confirmed. You can retry when connected or sign out without exporting.',
+    draftSharingUnavailable: 'Encrypted sharing is unavailable on this device.',
+    exportDraftsAndLogout: 'Export and sign out',
+    retryExportPermission: 'Retry export permission',
+    continueWithoutExport: 'Sign out without export',
+    logoutDraftWarning: 'Signing out clears local drafts and unsynchronized changes from this device.',
+    exportReady: 'Your encrypted export is ready to save.',
+    draftsChangedSinceExport:
+      'Local work changed after the export was created. Export the latest copy or explicitly sign out and clear it.',
+    exportUpdatedDrafts: 'Export latest drafts',
+    clearDraftsAndLogout: 'Sign out and clear drafts',
+    draftStatusFailed: 'Unable to check local drafts.',
+    unknownDraftWarning:
+      'Local draft status could not be checked. Signing out may clear unsynchronized work.',
+    continueSignOut: 'Continue to sign out',
+    draftPassphraseMismatch: 'The passphrases do not match.',
+    draftExportFailed: 'Could not create the encrypted draft export.',
+    draftExportPasswordTitle: 'Encrypt local drafts',
+    draftExportPasswordMessage:
+      'Choose a passphrase with at least 12 characters. You will need it to open this export; PetChain cannot recover it.',
+    draftExportPasswordPlaceholder: 'Export passphrase',
+    draftExportPasswordConfirmPlaceholder: 'Confirm passphrase',
+    createEncryptedExport: 'Create encrypted export',
   },
   changePassword: {
     title: 'Change Password',
