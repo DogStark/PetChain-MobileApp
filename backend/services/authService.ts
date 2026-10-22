@@ -8,22 +8,25 @@ interface LoginCredentials {
 interface AuthResponse {
   token: string;
   refreshToken?: string;
-  user: any;
+  user: Record<string, unknown>;
 }
 
 const TOKEN_KEY = 'auth_token';
 const REFRESH_TOKEN_KEY = 'refresh_token';
 
 class AuthService {
-  async login(credentials: LoginCredentials, apiClient: any): Promise<AuthResponse> {
+  async login(
+    credentials: LoginCredentials,
+    apiClient: { post: (url: string, data: unknown) => Promise<{ data: AuthResponse }> },
+  ): Promise<AuthResponse> {
     const response = await apiClient.post('/auth/login', credentials);
     const { token, refreshToken, user } = response.data;
-    
+
     await this.storeToken(token);
     if (refreshToken) {
       await this.storeRefreshToken(refreshToken);
     }
-    
+
     return { token, refreshToken, user };
   }
 
@@ -50,7 +53,7 @@ class AuthService {
 
   validateToken(token: string): boolean {
     if (!token) return false;
-    
+
     try {
       const payload = this.decodeToken(token);
       const now = Math.floor(Date.now() / 1000);
@@ -60,10 +63,10 @@ class AuthService {
     }
   }
 
-  private decodeToken(token: string): any {
+  private decodeToken(token: string): { exp: number } {
     const parts = token.split('.');
     if (parts.length !== 3) throw new Error('Invalid token');
-    
+
     const payload = parts[1];
     const decoded = Buffer.from(payload, 'base64').toString('utf-8');
     return JSON.parse(decoded);

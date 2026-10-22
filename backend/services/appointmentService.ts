@@ -1,22 +1,23 @@
-import apiClient from "./apiClient";
-import { errorHandler } from "../middleware/errorHandler";
-import type {
-  Appointment,
-  CreateAppointmentInput,
-  UpdateAppointmentInput,
-  AppointmentResponse,
-  AppointmentsListResponse,
-} from "../models/Appointment";
+import apiClient from './apiClient';
+import { errorHandler } from '../middleware/errorHandler';
+import {
+  type Appointment,
+  AppointmentStatus,
+  type CreateAppointmentInput,
+  type UpdateAppointmentInput,
+  type AppointmentResponse,
+  type AppointmentListResponse,
+} from '../models/Appointment';
 
-const APPOINTMENTS_ENDPOINT = "/appointments";
+const APPOINTMENTS_ENDPOINT = '/appointments';
 
 /**
  * Fetch all appointments, optionally filtered by petId.
  */
-export async function getAppointments(petId?: string): Promise<AppointmentsListResponse> {
+export async function getAppointments(petId?: string): Promise<AppointmentListResponse> {
   try {
     const params = petId ? { petId } : {};
-    const response = await apiClient.get<AppointmentsListResponse>(APPOINTMENTS_ENDPOINT, {
+    const response = await apiClient.get<AppointmentListResponse>(APPOINTMENTS_ENDPOINT, {
       params,
     });
     return response.data;
@@ -31,9 +32,7 @@ export async function getAppointments(petId?: string): Promise<AppointmentsListR
  */
 export async function getAppointment(id: string): Promise<AppointmentResponse> {
   try {
-    const response = await apiClient.get<AppointmentResponse>(
-      `${APPOINTMENTS_ENDPOINT}/${id}`
-    );
+    const response = await apiClient.get<AppointmentResponse>(`${APPOINTMENTS_ENDPOINT}/${id}`);
     return response.data;
   } catch (error) {
     const handled = errorHandler(error);
@@ -45,13 +44,10 @@ export async function getAppointment(id: string): Promise<AppointmentResponse> {
  * Create a new appointment.
  */
 export async function createAppointment(
-  input: CreateAppointmentInput
+  input: CreateAppointmentInput,
 ): Promise<AppointmentResponse> {
   try {
-    const response = await apiClient.post<AppointmentResponse>(
-      APPOINTMENTS_ENDPOINT,
-      input
-    );
+    const response = await apiClient.post<AppointmentResponse>(APPOINTMENTS_ENDPOINT, input);
     return response.data;
   } catch (error) {
     const handled = errorHandler(error);
@@ -64,12 +60,12 @@ export async function createAppointment(
  */
 export async function updateAppointment(
   id: string,
-  input: UpdateAppointmentInput
+  input: UpdateAppointmentInput,
 ): Promise<AppointmentResponse> {
   try {
     const response = await apiClient.put<AppointmentResponse>(
       `${APPOINTMENTS_ENDPOINT}/${id}`,
-      input
+      input,
     );
     return response.data;
   } catch (error) {
@@ -82,30 +78,31 @@ export async function updateAppointment(
  * Cancel an appointment (sets status to "cancelled").
  */
 export async function cancelAppointment(id: string): Promise<AppointmentResponse> {
-  return updateAppointment(id, { status: "cancelled" });
+  return updateAppointment(id, { status: AppointmentStatus.CANCELLED });
 }
 
 /**
  * Fetch upcoming appointments (scheduled, not cancelled, dateTime >= now).
  * Optionally filter by petId.
  */
-export async function getUpcomingAppointments(
-  petId?: string
-): Promise<AppointmentsListResponse> {
+export async function getUpcomingAppointments(petId?: string): Promise<AppointmentListResponse> {
   try {
     const { data: appointments } = await getAppointments(petId);
     const list = Array.isArray(appointments) ? appointments : [];
 
     const now = new Date();
     const upcoming = list.filter((apt: Appointment) => {
-      if (apt.status === "cancelled" || apt.status === "completed") return false;
-      return new Date(apt.dateTime) >= now;
+      if (apt.status === AppointmentStatus.CANCELLED || apt.status === AppointmentStatus.COMPLETED)
+        return false;
+      const appointmentDateTime = new Date(`${apt.date}T${apt.time}`);
+      return appointmentDateTime >= now;
     });
 
     return {
+      success: true,
       data: upcoming.sort(
         (a, b) =>
-          new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime()
+          new Date(`${a.date}T${a.time}`).getTime() - new Date(`${b.date}T${b.time}`).getTime(),
       ),
       total: upcoming.length,
     };

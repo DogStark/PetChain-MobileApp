@@ -1,0 +1,51 @@
+{/* Introduction.stories.mdx */}
+import { Meta } from '@storybook/blocks';
+
+<Meta title="PetChain / Introduction" />
+
+# PetChain Component Library
+
+Welcome to the **PetChain** component library. This Storybook documents every
+reusable UI component in the `src/components/` directory.
+
+---
+
+## Components
+
+| Component | Description |
+|-----------|-------------|
+| `EmergencyCallButton` | One-tap / hold-to-call button with confirmation dialog |
+| `ErrorBoundary` | React error boundary with Retry and Report actions |
+| `MetricBarChart` | Bar chart for pet health metrics (weight, heart rate, etc.) |
+| `OfflineIndicator` | Animated top banner for offline / syncing / pending states |
+| `OptimizedImage` | Cached, thumbnail-first progressive image loader |
+| `PermissionRationaleModal` | Pre-permission modal explaining why access is needed |
+| `PetAggregateView` | Multi-pet summary card grid |
+| `PetPhotoUploader` | Tappable photo widget with upload and preview |
+| `PetSelectorBar` | Horizontal scrollable pet tab bar |
+| `RetryError` | Inline error state with retry counter |
+| `SecureView` | Screenshot-protected `View` wrapper |
+| `SOSButton` | Hold-to-activate SOS button with countdown |
+| `VerificationBadge` | Blockchain verification status badge |
+
+---
+
+## Design Tokens
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| Primary green | `#4CAF50` | Active states, CTAs |
+| Dark green | `#2e7d32` | Active text |
+| Emergency red | `#e53e3e` | SOS, emergency actions |
+| Blockchain teal | `#4A90A4` | Verify button |
+| Amber | `#FFA000` | Pending / warning states |
+
+---
+
+## Accessibility
+
+All interactive components include:
+- `accessibilityRole` (button, tab, etc.)
+- `accessibilityLabel` with meaningful descriptions
+- `accessibilityState` where applicable (e.g. `selected` on tabs)
+- `accessibilityHint` for non-obvious actions

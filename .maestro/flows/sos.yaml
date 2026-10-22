@@ -1,0 +1,160 @@
+appId: app.petchain.mobile.staging
+---
+# SOS happy path: tap button → countdown → contacts notified
+- launchApp
+
+# Navigate to Emergency Contacts screen
+- tapOn: "Emergency"
+- assertVisible: "Emergency"
+
+# ── Scenario 0: Pre-flight channel verification before an incident ──────────
+# Each contact's delivery channel status is validated and displayed up front
+- assertVisible:
+    id: "contact-channel-status"
+
+# A test notification can be sent that discloses no health data or location
+- tapOn:
+    id: "send-test-notification-button"
+- assertVisible: "Test Notification Sent"
+- assertNotVisible: "Location"
+- assertNotVisible: "Health"
+
+# ── Scenario 1: Full SOS activation ──────────────────────────────────────────
+# Mock the emergency API so no real alerts are sent
+- runScript:
+    file: ../scripts/mockEmergencyApi.js
+
+# Hold the SOS button long enough to trigger countdown (1.5 s hold → 3 s countdown)
+- longPressOn:
+    id: "sos-button"
+    duration: 2000
+
+# Confirm dialog / countdown is visible
+- assertVisible:
+    id: "sos-confirm-dialog"
+
+# Wait for auto-send (countdown finishes in 3 s)
+- waitForAnimationToEnd:
+    timeout: 5000
+
+# Verify the confirmation that contacts were notified
+- assertVisible: "SOS Sent"
+
+# ── Scenario 2: SOS cancelled during countdown ─────────────────────────────
+- tapOn:
+    id: "sos-button"
+- longPressOn:
+    id: "sos-button"
+    duration: 2000
+
+- assertVisible:
+    id: "sos-confirm-dialog"
+
+# Tap cancel before countdown ends
+- tapOn:
+    id: "sos-cancel-button"
+
+# Dialog should dismiss and no SOS should be sent
+- assertNotVisible: "SOS Sent"
+- assertVisible:
+    id: "sos-button"
+
+# ── Scenario 3: SOS with no emergency contacts configured ──────────────────
+# Remove all contacts first
+- runScript:
+    file: ../scripts/clearEmergencyContacts.js
+
+- longPressOn:
+    id: "sos-button"
+    duration: 2000
+
+- waitForAnimationToEnd:
+    timeout: 5000
+
+# Should show "add contacts" prompt when no contacts exist
+- assertVisible: "Add Emergency Contact"
+
+# ── Scenario 4: Invalid number / expired token / partial delivery ──────────
+# Seed contacts with an invalid number and an expired push token
+- runScript:
+    file: ../scripts/seedInvalidEmergencyContacts.js
+
+# Failed channels are clearly reported
+- assertVisible:
+    id: "contact-channel-status"
+- assertVisible: "Invalid number"
+- assertVisible: "Expired token"
+
+# Healthy fallback channels still proceed despite the failures
+- longPressOn:
+    id: "sos-button"
+    duration: 2000
+- waitForAnimationToEnd:
+    timeout: 5000
+- assertVisible: "SOS Sent"
+
+# ── Scenario 5: Offline activation ─────────────────────────────────────────
+- runScript:
+    file: ../scripts/setOfflineMode.js
+
+- longPressOn:
+    id: "sos-button"
+    duration: 2000
+- waitForAnimationToEnd:
+    timeout: 5000
+
+# Offline activation is queued and reported rather than silently dropped
+- assertVisible: "SOS Queued"
+
+# ── Scenario 6: Crash-safe SOS draft recovery ──────────────────────────────
+# Seed a valid, unexpired SOS draft scoped to the signed-in account
+- runScript:
+    file: ../scripts/seedSosDraft.js
+
+# Relaunch to simulate a crash-restart after the SOS flow was interrupted
+- launchApp
+- tapOn: "Emergency"
+
+# A recovery confirmation is shown before any draft data is reused
+- assertVisible:
+    id: "sos-draft-recovery-prompt"
+
+# Recovery never sends without explicit confirmation
+- assertNotVisible: "SOS Sent"
+
+# Explicitly confirm recovery to reuse the draft
+- tapOn:
+    id: "sos-draft-recover-button"
+
+# Stale location is reacquired rather than silently reused
+- assertVisible:
+    id: "sos-location-reacquiring"
+
+# ── Scenario 7: Expired SOS draft is discarded ─────────────────────────────
+# Seed a draft whose expiration timestamp is in the past
+- runScript:
+    file: ../scripts/seedExpiredSosDraft.js
+
+- launchApp
+- tapOn: "Emergency"
+
+# Expired drafts are deleted on startup and never offered for recovery
+- assertNotVisible:
+    id: "sos-draft-recovery-prompt"
+- assertVisible:
+    id: "sos-button"
+
+# ── Scenario 8: Drafts are cleared on account logout ───────────────────────
+# Seed a valid draft, then log out and back in
+- runScript:
+    file: ../scripts/seedSosDraft.js
+- runScript:
+    file: ../scripts/logoutAndLogin.js
+
+- tapOn: "Emergency"
+
+# Drafts are scoped to the signed-in account and cleared on logout
+- assertNotVisible:
+    id: "sos-draft-recovery-prompt"
+- assertVisible:
+    id: "sos-button"

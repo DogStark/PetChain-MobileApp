@@ -23,9 +23,7 @@ export const getGenericPassword = jest.fn(
   },
 );
 
-export const resetGenericPassword = jest.fn(
-  (options?: { service?: string }): Promise<boolean> => {
-    delete store[options?.service ?? '__default__'];
-    return Promise.resolve(true);
-  },
-);
+export const resetGenericPassword = jest.fn((options?: { service?: string }): Promise<boolean> => {
+  delete store[options?.service ?? '__default__'];
+  return Promise.resolve(true);
+});

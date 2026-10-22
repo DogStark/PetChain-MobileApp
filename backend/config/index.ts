@@ -1,7 +1,16 @@
-import Constants from 'expo-constants';
-
 // Environment type
 type Environment = 'development' | 'staging' | 'production';
+
+function getExpoVersion(): string {
+  try {
+    const Constants = require('expo-constants') as {
+      expoConfig?: { version?: string };
+    };
+    return Constants.expoConfig?.version || '1.0.0';
+  } catch {
+    return '1.0.0';
+  }
+}
 
 // Determine current environment
 const ENV: Environment = (process.env.APP_ENV as Environment) || 'development';
@@ -22,6 +31,82 @@ const CONSTANTS = {
   TOKEN_EXPIRY_DAYS: 7,
 } as const;
 
+// Calendar-sync conflict policy for appointments (#1034)
+// Controls how two-way calendar synchronization resolves conflicts between
+// device-calendar events and PetChain appointments.
+type CalendarSyncConflictPolicy =
+  | 'device-wins'
+  | 'app-wins'
+  | 'newest-wins'
+  | 'manual';
+
+const CALENDAR_SYNC = {
+  // When a conflict is detected, preserve both timestamps and require an
+  // explicit resolution unless a deterministic policy is configured.
+  conflictPolicy: (process.env.CALENDAR_SYNC_CONFLICT_POLICY as CalendarSyncConflictPolicy) || 'manual',
+  // Persist external event IDs and source ownership so imports/exports are
+  // idempotent and retries do not duplicate events.
+  persistExternalEventIds: true,
+  trackSourceOwnership: true,
+  // Idempotency window (ms) used to dedupe retried sync operations.
+  idempotencyWindowMs: Number(process.env.CALENDAR_SYNC_IDEMPOTENCY_WINDOW_MS) || 300000,
+  // Sync recurring events and honor device timezone changes.
+  syncRecurringEvents: true,
+  respectTimezoneChanges: true,
+  // Revoked calendar permissions pause sync until re-granted.
+  pauseOnRevokedPermission: true,
+} as const;
+
+// Support-bundle redaction policy (#1089)
+// Support exports must never leak authorization headers, account identifiers,
+// or full endpoint URLs. Only allowlisted diagnostic keys survive redaction,
+// and the serialized bundle is bounded to keep exports small and safe.
+type SupportBundleRedactionPolicy = {
+  // Keys that are always dropped, matched case-insensitively at any depth.
+  forbiddenKeys: readonly string[];
+  // Substrings that, when found in a string value, cause the value to be
+  // replaced with a redaction placeholder.
+  forbiddenValuePatterns: readonly string[];
+  // Maximum serialized bundle size in bytes; oversized bundles are truncated.
+  maxBundleBytes: number;
+  // Placeholder written in place of redacted values.
+  redactionPlaceholder: string;
+};
+
+const SUPPORT_BUNDLE_REDACTION: SupportBundleRedactionPolicy = {
+  forbiddenKeys: [
+    'authorization',
+    'auth',
+    'token',
+    'accessToken',
+    'refreshToken',
+    'jwt',
+    'secret',
+    'password',
+    'apiKey',
+    'cookie',
+    'set-cookie',
+    'email',
+    'phone',
+    'accountId',
+    'userId',
+    'ownerId',
+    'deviceId',
+    'url',
+    'endpoint',
+    'baseUrl',
+  ],
+  forbiddenValuePatterns: [
+    'bearer ',
+    'authorization:',
+    'https://',
+    'http://',
+    '@',
+  ],
+  maxBundleBytes: Number(process.env.SUPPORT_BUNDLE_MAX_BYTES) || 262144, // 256 KB
+  redactionPlaceholder: '[REDACTED]',
+};
+
 // Typed config object
 const config = {
   env: ENV,
@@ -35,14 +120,26 @@ const config = {
     maxRetries: CONSTANTS.MAX_RETRY_ATTEMPTS,
   },
 
+  database: {
+    url: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/petchain',
+    poolSize: Number(process.env.DB_POOL_SIZE) || 20,
+    idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT) || 30000,
+  },
+
   app: {
     name: process.env.APP_NAME || 'PetChain',
-    version: Constants.expoConfig?.version || '1.0.0',
+    version: getExpoVersion(),
     maxImageSizeMB: CONSTANTS.MAX_IMAGE_SIZE_MB,
     paginationLimit: CONSTANTS.PAGINATION_LIMIT,
     tokenExpiryDays: CONSTANTS.TOKEN_EXPIRY_DAYS,
+    jwtSecret: process.env.JWT_SECRET || 'petchain-dev-secret-key-change-in-prod',
   },
+
+  calendarSync: CALENDAR_SYNC,
+
+  supportBundle: SUPPORT_BUNDLE_REDACTION,
 } as const;
 
 export type AppConfig = typeof config;
+export type { CalendarSyncConflictPolicy, SupportBundleRedactionPolicy };
 export default config;

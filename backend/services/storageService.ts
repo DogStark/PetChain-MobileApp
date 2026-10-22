@@ -6,10 +6,22 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
  */
 
 export class StorageError extends Error {
-  constructor(message: string, public readonly operation: string) {
+  constructor(
+    message: string,
+    public readonly operation: string,
+  ) {
     super(message);
     this.name = 'StorageError';
   }
+}
+
+/**
+ * Keys that hold unsynchronized user-authored drafts and must survive a clear.
+ */
+const PRESERVED_PREFIXES = ['@drafts'] as const;
+
+function isPreservedKey(key: string): boolean {
+  return PRESERVED_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
 
 /**
@@ -27,7 +39,7 @@ export async function get<T>(key: string): Promise<T | null> {
   } catch (error) {
     throw new StorageError(
       `Failed to get item with key "${key}": ${error instanceof Error ? error.message : 'Unknown error'}`,
-      'get'
+      'get',
     );
   }
 }
@@ -44,7 +56,7 @@ export async function set<T>(key: string, value: T): Promise<void> {
   } catch (error) {
     throw new StorageError(
       `Failed to set item with key "${key}": ${error instanceof Error ? error.message : 'Unknown error'}`,
-      'set'
+      'set',
     );
   }
 }
@@ -59,22 +71,31 @@ export async function remove(key: string): Promise<void> {
   } catch (error) {
     throw new StorageError(
       `Failed to remove item with key "${key}": ${error instanceof Error ? error.message : 'Unknown error'}`,
-      'remove'
+      'remove',
     );
   }
 }
 
 /**
- * Clear all data from storage
+ * Clear offline data from storage while preserving unsynchronized user-authored drafts.
+ * Falls back to a full wipe only if key enumeration fails.
  */
 export async function clear(): Promise<void> {
   try {
-    await AsyncStorage.clear();
-  } catch (error) {
-    throw new StorageError(
-      `Failed to clear storage: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      'clear'
-    );
+    const keys = await AsyncStorage.getAllKeys();
+    const removable = keys.filter((key) => !isPreservedKey(key));
+    if (removable.length > 0) {
+      await AsyncStorage.multiRemove(removable);
+    }
+  } catch {
+    try {
+      await AsyncStorage.clear();
+    } catch (error) {
+      throw new StorageError(
+        `Failed to clear storage: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        'clear',
+      );
+    }
   }
 }
 
@@ -87,16 +108,16 @@ export async function getMultiple<T>(keys: string[]): Promise<Record<string, T |
   try {
     const pairs = await AsyncStorage.multiGet(keys);
     const result: Record<string, T | null> = {};
-    
+
     for (const [key, value] of pairs) {
-      result[key] = value ? JSON.parse(value) as T : null;
+      result[key] = value ? (JSON.parse(value) as T) : null;
     }
-    
+
     return result;
   } catch (error) {
     throw new StorageError(
       `Failed to get multiple items: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      'getMultiple'
+      'getMultiple',
     );
   }
 }
@@ -105,17 +126,15 @@ export async function getMultiple<T>(keys: string[]): Promise<Record<string, T |
  * Set multiple items in storage
  * @param items - Array of key-value pairs
  */
-export async function setMultiple<T>(items: Array<[string, T]>): Promise<void> {
+export async function setMultiple<T>(keys: string[], values: T[]): Promise<void> {
   try {
-    const serializedItems: Array<[string, string]> = items.map(([key, value]) => [
-      key,
-      JSON.stringify(value)
-    ]);
-    await AsyncStorage.multiSet(serializedItems);
+    const pairs = keys.map((key, index) => [key, values[index]] as [string, T]);
+    const serialized = pairs.map(([key, value]) => [key, JSON.stringify(value)] as [string, string]);
+    await AsyncStorage.multiSet(serialized);
   } catch (error) {
     throw new StorageError(
       `Failed to set multiple items: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      'setMultiple'
+      'setMultiple',
     );
   }
 }
@@ -130,7 +149,7 @@ export async function removeMultiple(keys: string[]): Promise<void> {
   } catch (error) {
     throw new StorageError(
       `Failed to remove multiple items: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      'removeMultiple'
+      'removeMultiple',
     );
   }
 }
@@ -141,11 +160,11 @@ export async function removeMultiple(keys: string[]): Promise<void> {
  */
 export async function getAllKeys(): Promise<string[]> {
   try {
-    return await AsyncStorage.getAllKeys();
+    return [...(await AsyncStorage.getAllKeys())];
   } catch (error) {
     throw new StorageError(
       `Failed to get all keys: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      'getAllKeys'
+      'getAllKeys',
     );
   }
 }
@@ -159,5 +178,5 @@ export default {
   setMultiple,
   removeMultiple,
   getAllKeys,
-  StorageError
+  StorageError,
 };

@@ -1,0 +1,10 @@
+VERSION = "2.0.0"
+
+NETWORK_PASSPHRASE = "Test SDF Network ; September 2015"
+
+[DOCUMENTATION]
+ORG_NAME = "PetChain"
+ORG_URL = "https://petchain.app"
+ORG_DESCRIPTION = "Blockchain-verified pet health records"
+
+FEDERATION_SERVER = "https://petchain.app/api/federation"

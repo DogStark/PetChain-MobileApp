@@ -1,11 +1,11 @@
-import { UserRole } from "./UserRole";
+import { UserRole } from './UserRole';
 
 export { UserRole };
 
 /**
  * Authentication providers supported by the backend.
  */
-export type AuthProvider = "local" | "google" | "apple";
+export type AuthProvider = 'local' | 'google' | 'apple';
 
 /**
  * Lightweight reference to a pet owned by a user.
@@ -34,6 +34,7 @@ export interface User {
   authProvider: AuthProvider;
   isEmailVerified: boolean;
   lastLoginAt?: string;
+  timezone?: string;
 }
 
 /**
@@ -65,4 +66,5 @@ export interface UpdateUserInput {
   role?: UserRole;
   pets?: PetReference[];
   isEmailVerified?: boolean;
+  timezone?: string;
 }

@@ -1,0 +1,114 @@
+import type { BottomTabScreenProps } from '@react-navigation/bottom-tabs';
+import type { CompositeScreenProps } from '@react-navigation/native';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+
+import type { Pet } from '../models/Pet';
+import type { CoSignPayload } from '../screens/PendingCoSignScreen';
+import type { SubscriptionPlan } from '../models/Payment';
+import type { PathPaymentQuote } from '../services/stellarPathPaymentService';
+
+// ─── Root Stack ───────────────────────────────────────────────────────────────
+export type RootStackParamList = {
+  Onboarding: undefined;
+  Auth: undefined;
+  InvalidLink: undefined;
+  Main: undefined;
+  Forum: undefined;
+  LostFound: undefined;
+  DoseConfirmation: { petId: string; medicationId: string };
+  // Modals
+  QRScanner: { onScanSuccess?: (data: string) => void };
+  ManualEntry: undefined;
+  // Future: Payment / Subscription
+  Payment: { planId?: string };
+  PaymentReview: { plan: SubscriptionPlan; quote?: PathPaymentQuote };
+  PendingCoSign: {
+    payload: CoSignPayload;
+    expectedSequence: number;
+    onApprove: (payload: CoSignPayload) => void;
+    onReject: (txId: string) => void;
+  };
+};
+
+// ─── Main Tab ─────────────────────────────────────────────────────────────────
+export type MainTabParamList = {
+  PetList: undefined;
+  Medications: { medicationId?: string };
+  Appointments: {
+    appointmentId?: string;
+    initialVetId?: string;
+    initialVetName?: string;
+    initialDate?: string;
+    initialTime?: string;
+    openBooking?: boolean;
+  };
+  Vaccinations: { vaccinationId?: string; petId?: string; dueDate?: string };
+  HealthAlerts: undefined;
+  Telemedicine: undefined;
+  Community: undefined;
+  Referrals: undefined;
+  Emergency: { sosId?: string };
+  Notifications: undefined;
+  Profile: undefined;
+};
+
+// ─── Pet Stack (nested inside PetList tab) ────────────────────────────────────
+export type PetStackParamList = {
+  PetListScreen: undefined;
+  Adoption: undefined;
+  PetDetail: { petId: string };
+  Achievements: undefined;
+  AuditHistory: {
+    entityType: 'pet' | 'medication' | 'appointment';
+    entityId: string;
+    title?: string;
+  };
+  PetProfile: { petId: string };
+  PetHealthDashboard: { petId: string; petName?: string };
+  PetHealthMetrics: { petId: string; petName?: string };
+  ExpenseExport: { petId: string; petName?: string };
+  PetForm: { pet?: Pet; ownerId?: string };
+  MedicalRecordSearch: { petId: string };
+  MedicalRecordViewer: { petId: string; petName?: string };
+  PetShare: { petId: string; petName: string };
+  PetCareCard: { petId: string; petName: string };
+  TravelCertificate: { petId: string; petName?: string };
+  TravelPackingChecklist: { petId: string; tripId?: string; tripName?: string };
+  DosageCalculator: { petId?: string; species?: string; weightKg?: number };
+  ReconciliationReport: { reportId?: string };
+  TrustlineManager: undefined;
+  NearbyVet: undefined;
+  VetMap: undefined;
+  VetDirectory: undefined;
+  PrivacyDashboard: undefined;
+  SecuritySessions: undefined;
+  SyncRetryDetail: { recordId?: string } | undefined;
+  Insurance: undefined;
+  Search: undefined;
+  NotificationPreferences: undefined;
+  NotificationTroubleshooting: undefined;
+  DeleteAccount: undefined;
+  AccountDeletionProgress: undefined;
+  ClinicalNotes: { petId: string; vetId?: string };
+  RoutineStreak: { petId: string; petName?: string };
+  FosterHandover: { petId: string; petName?: string };
+};
+
+// ─── Screen prop helpers ──────────────────────────────────────────────────────
+export type RootStackScreenProps<T extends keyof RootStackParamList> = NativeStackScreenProps<
+  RootStackParamList,
+  T
+>;
+
+export type MainTabScreenProps<T extends keyof MainTabParamList> = CompositeScreenProps<
+  BottomTabScreenProps<MainTabParamList, T>,
+  NativeStackScreenProps<RootStackParamList>
+>;
+
+export type PetStackScreenProps<T extends keyof PetStackParamList> = CompositeScreenProps<
+  NativeStackScreenProps<PetStackParamList, T>,
+  MainTabScreenProps<'PetList'>
+>;
+
+// ─── Deep link config ─────────────────────────────────────────────────────────
+export const DEEP_LINK_PREFIX = ['petchain://', 'petchainapp://', 'https://petchain.app'];

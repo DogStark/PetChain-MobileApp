@@ -1,0 +1,246 @@
+name: Security — Dependency Audit & Vulnerability Scanning
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  # ─── npm audit — Dependency vulnerability scanning ──────────────────────
+  npm-audit:
+    name: npm audit — Dependency Vulnerabilities
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        id: npm-audit
+        run: |
+          npm audit --audit-level=moderate --json > npm-audit-report.json || true
+          cat npm-audit-report.json
+
+      - name: Parse npm audit results
+        id: parse-audit
+        run: |
+          CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' npm-audit-report.json)
+          HIGH=$(jq '.metadata.vulnerabilities.high // 0' npm-audit-report.json)
+          MODERATE=$(jq '.metadata.vulnerabilities.moderate // 0' npm-audit-report.json)
+          LOW=$(jq '.metadata.vulnerabilities.low // 0' npm-audit-report.json)
+          
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "moderate=$MODERATE" >> $GITHUB_OUTPUT
+          echo "low=$LOW" >> $GITHUB_OUTPUT
+          
+          echo "## npm audit Results" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔴 Critical: $CRITICAL" >> $GITHUB_STEP_SUMMARY
+          echo "- 🟠 High: $HIGH" >> $GITHUB_STEP_SUMMARY
+          echo "- 🟡 Moderate: $MODERATE" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔵 Low: $LOW" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload npm audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-report
+          path: npm-audit-report.json
+          retention-days: 30
+
+      - name: Comment PR with npm audit results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('npm-audit-report.json', 'utf8'));
+            const critical = report.metadata.vulnerabilities.critical || 0;
+            const high = report.metadata.vulnerabilities.high || 0;
+            const moderate = report.metadata.vulnerabilities.moderate || 0;
+            const low = report.metadata.vulnerabilities.low || 0;
+            
+            const comment = `## 🔒 npm audit Results
+            
+| Severity | Count |
+|----------|-------|
+| 🔴 Critical | ${critical} |
+| 🟠 High | ${high} |
+| 🟡 Moderate | ${moderate} |
+| 🔵 Low | ${low} |
+
+${critical > 0 || high > 0 ? '⚠️ **This PR has unresolved vulnerabilities and cannot be merged.**' : '✅ No critical or high vulnerabilities detected.'}`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Block PR if critical or high vulnerabilities
+        if: github.event_name == 'pull_request'
+        run: |
+          CRITICAL=${{ steps.parse-audit.outputs.critical }}
+          HIGH=${{ steps.parse-audit.outputs.high }}
+          
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo "❌ PR blocked: Found $CRITICAL critical and $HIGH high severity vulnerabilities"
+            exit 1
+          fi
+
+  # ─── Snyk — Advanced vulnerability scanning ────────────────────────────
+  snyk-scan:
+    name: Snyk — Advanced Vulnerability Scanning
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule' # Skip on scheduled runs to avoid rate limits
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Snyk scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --json-file-output=snyk-report.json
+        continue-on-error: true
+
+      - name: Upload Snyk report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-report
+          path: snyk-report.json
+          retention-days: 30
+
+      - name: Comment PR with Snyk results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('snyk-report.json')) {
+              console.log('Snyk report not found');
+              return;
+            }
+            
+            const report = JSON.parse(fs.readFileSync('snyk-report.json', 'utf8'));
+            const vulnerabilities = report.vulnerabilities || [];
+            const critical = vulnerabilities.filter(v => v.severity === 'critical').length;
+            const high = vulnerabilities.filter(v => v.severity === 'high').length;
+            
+            const comment = `## 🔍 Snyk Scan Results
+            
+| Severity | Count |
+|----------|-------|
+| 🔴 Critical | ${critical} |
+| 🟠 High | ${high} |
+
+${critical > 0 || high > 0 ? '⚠️ **Snyk detected vulnerabilities.**' : '✅ No critical or high vulnerabilities detected by Snyk.'}`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # ─── Generate security report ────────────────────────────────────────────
+  security-report:
+    name: Generate Security Report
+    runs-on: ubuntu-latest
+    needs: [npm-audit]
+    if: always()
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download npm audit report
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-audit-report
+
+      - name: Generate security report
+        run: |
+          cat > security-report.md << 'EOF'
+          # Security Audit Report
+          
+          Generated: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          Branch: ${{ github.ref_name }}
+          Commit: ${{ github.sha }}
+          
+          ## npm audit Results
+          
+          $(jq -r '.metadata | "- Total vulnerabilities: \(.vulnerabilities | add)\n- Critical: \(.vulnerabilities.critical // 0)\n- High: \(.vulnerabilities.high // 0)\n- Moderate: \(.vulnerabilities.moderate // 0)\n- Low: \(.vulnerabilities.low // 0)"' npm-audit-report.json)
+          
+          ## Recommendations
+          
+          1. Review all critical and high severity vulnerabilities
+          2. Update affected packages to patched versions
+          3. If updates are not available, consider alternative packages
+          4. Document any accepted risks in SECURITY.md
+          
+          ## Next Steps
+          
+          - Run `npm audit fix` to automatically fix vulnerabilities
+          - Run `npm audit fix --force` for major version updates (use with caution)
+          - Review changes before committing
+          EOF
+          cat security-report.md
+
+      - name: Upload security report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: security-report.md
+          retention-days: 90
+
+      - name: Comment PR with security report
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('security-report.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });

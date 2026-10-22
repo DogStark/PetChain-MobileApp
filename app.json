@@ -1,0 +1,407 @@
+{
+  "expo": {
+    "name": "PetChain",
+    "slug": "petchain-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "scheme": "petchain",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.petchain.mobile",
+      "buildNumber": "1",
+      "associatedDomains": [
+        "applinks:petchain.app"
+      ],
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "fetch",
+          "processing"
+        ],
+        "BGTaskSchedulerPermittedIdentifiers": [
+          "app.petchain.mobile.refresh",
+          "app.petchain.mobile.processing"
+        ],
+        "NSCalendarsUsageDescription": "PetChain writes to your calendar only the appointments you choose to export, so vet visits appear alongside your other events.",
+        "NSCalendarsFullAccessUsageDescription": "PetChain writes to your calendar only the appointments you choose to export, so vet visits appear alongside your other events.",
+        "NSRemindersUsageDescription": "PetChain adds reminders to exported appointment events so you do not miss a vet visit."
+      },
+      "privacyManifests": {
+        "NSPrivacyTracking": false,
+        "NSPrivacyTrackingDomains": [],
+        "NSPrivacyCollectedDataTypes": [
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypePhotosorVideos",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          },
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypePreciseLocation",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          },
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeHealth",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          },
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeEmailAddress",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          },
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeUserID",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality",
+              "NSPrivacyCollectedDataTypePurposeAnalytics"
+            ]
+          }
+        ],
+        "NSPrivacyAccessedAPITypes": [
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+            "NSPrivacyAccessedAPITypeReasons": [
+              "CA92.1"
+            ]
+          },
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
+            "NSPrivacyAccessedAPITypeReasons": [
+              "C617.1"
+            ]
+          },
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategorySystemBootTime",
+            "NSPrivacyAccessedAPITypeReasons": [
+              "35F9.1"
+            ]
+          },
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryDiskSpace",
+            "NSPrivacyAccessedAPITypeReasons": [
+              "E174.1"
+            ]
+          }
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "app.petchain.mobile",
+      "versionCode": 1,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "petchain.app",
+              "pathPrefix": "/"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ],
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACTIVITY_RECOGNITION",
+        "POST_NOTIFICATIONS",
+        "READ_CALENDAR",
+        "WRITE_CALENDAR"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "@sentry/react-native/expo",
+        {
+          "organization": "petchain",
+          "project": "mobile-app"
+        }
+      ],
+      [
+        "expo-screen-capture",
+        {
+          "sensitiveScreens": [
+            "MedicalRecords",
+            "WalletSecrets",
+            "EmergencyDetails"
+          ],
+          "publicScreens": [
+            "QRVerification"
+          ]
+        }
+      ],
+      [
+        "expo-background-fetch",
+        {
+          "minimumInterval": 900,
+          "stopOnTerminate": false,
+          "startOnBoot": true
+        }
+      ]
+    ],
+    "extra": {
+      "APP_ENV": "development",
+      "SENTRY_DSN": "",
+      "diagnostics": {
+        "enabled": true,
+        "access": "support",
+        "redact": [
+          "SENTRY_DSN",
+          "API_BASE_URL",
+          "AUTH_TOKEN",
+          "userContent"
+        ],
+        "fields": [
+          "appVersion",
+          "buildNumber",
+          "environment",
+          "releaseChannel",
+          "commitId",
+          "apiBaseUrlOrigin",
+          "featureFlags"
+        ],
+        "provenance": {
+          "source": "eas",
+          "commitId": "EAS_BUILD_GIT_COMMIT_HASH",
+          "releaseChannel": "EAS_BUILD_PROFILE",
+          "environment": "APP_ENV",
+          "apiBaseUrl": "API_BASE_URL"
+        }
+      },
+      "backgroundRefresh": {
+        "enabled": true,
+        "taskIdentifier": "app.petchain.mobile.refresh",
+        "processingTaskIdentifier": "app.petchain.mobile.processing",
+        "minimumIntervalSeconds": 900,
+        "requiresBackgroundModes": [
+          "fetch",
+          "processing"
+        ],
+        "requiresBackgroundAppRefresh": true,
+        "degradeToForeground": true,
+        "iosConfigurationChecklist": [
+          "Enable the 'Background Modes' capability in Xcode for the app target.",
+          "Check 'Background fetch' and 'Background processing' under Background Modes.",
+          "Ensure the device setting Settings > General > Background App Refresh is ON for PetChain.",
+          "Verify BGTaskSchedulerPermittedIdentifiers includes app.petchain.mobile.refresh and app.petchain.mobile.processing.",
+          "Confirm UIBackgroundModes includes fetch and processing in Info.plist.",
+          "Do not re-prompt for permission; surface registration status to support instead."
+        ]
+      },
+      "snapshotProtection": {
+        "enabled": true,
+        "sensitiveScreens": [
+          "MedicalRecords",
+          "WalletSecrets",
+          "EmergencyDetails"
+        ],
+        "publicScreens": [
+          "QRVerification"
+        ],
+        "ios": {
+          "strategy": "blur-overlay",
+          "applyOn": [
+            "focus",
+            "background"
+          ]
+        },
+        "android": {
+          "strategy": "FLAG_SECURE",
+          "applyOn": [
+            "focus",
+            "background"
+          ]
+        }
+      },
+      "deepLink": {
+        "scheme": "petchain",
+        "universalLinkHost": "petchain.app",
+        "routes": [
+          {
+            "path": "/pets/:petId",
+            "params": {
+              "petId": "string"
+            },
+            "requiresAuth": true,
+            "mutating": false
+          },
+          {
+            "path": "/appointments/:appointmentId",
+            "params": {
+              "appointmentId": "string"
+            },
+            "requiresAuth": true,
+            "mutating": false
+          },
+          {
+            "path": "/invite/:token",
+            "params": {
+              "token": "string"
+            },
+            "requiresAuth": false,
+            "mutating": false
+          }
+        ]
+      },
+      "dataSafety": {
+        "dataCollected": [
+          {
+            "type": "Photos",
+            "purposes": [
+              "AppFunctionality"
+            ],
+            "shared": false,
+            "optional": true
+          },
+          {
+            "type": "PreciseLocation",
+            "purposes": [
+              "AppFunctionality"
+            ],
+            "shared": false,
+            "optional": true
+          },
+          {
+            "type": "HealthInfo",
+            "purposes": [
+              "AppFunctionality"
+            ],
+            "shared": false,
+            "optional": true
+          },
+          {
+            "type": "EmailAddress",
+            "purposes": [
+              "AppFunctionality"
+            ],
+            "shared": false,
+            "optional": false
+          },
+          {
+            "type": "UserID",
+            "purposes": [
+              "AppFunctionality",
+              "Analytics"
+            ],
+            "shared": false,
+            "optional": false
+          }
+        ],
+        "dataShared": [],
+        "securityPractices": {
+          "dataEncryptedInTransit": true,
+          "dataDeletionRequestSupported": true
+        }
+      },
+      "notificationChannels": {
+        "policyVersion": 1,
+        "channels": [
+          {
+            "id": "petchain.medication.v1",
+            "name": "Medication reminders",
+            "description": "Reminders to give your pet scheduled medication.",
+            "importance": "high",
+            "purpose": "medication",
+            "sensitive": true,
+            "showBadge": true,
+            "enableVibrate": true,
+            "lockscreenVisibility": "private",
+            "sound": "default"
+          },
+          {
+            "id": "petchain.appointment.v1",
+            "name": "Appointment reminders",
+            "description": "Reminders for upcoming vet appointments.",
+            "importance": "default",
+            "purpose": "appointment",
+            "sensitive": true,
+            "showBadge": true,
+            "enableVibrate": true,
+            "lockscreenVisibility": "private",
+            "sound": "default"
+          },
+          {
+            "id": "petchain.sos.v1",
+            "name": "Emergency (SOS) alerts",
+            "description": "Critical emergency alerts for your pet.",
+            "importance": "max",
+            "purpose": "sos",
+            "sensitive": true,
+            "showBadge": true,
+            "enableVibrate": true,
+            "lockscreenVisibility": "private",
+            "sound": "default"
+          }
+        ],
+        "reminderChannelMap": {
+          "medication": "petchain.medication.v1",
+          "appointment": "petchain.appointment.v1",
+          "sos": "petchain.sos.v1"
+        },
+        "deprecatedChannels": [
+          {
+            "id": "petchain.medication",
+            "replacedBy": "petchain.medication.v1",
+            "retire": true,
+            "reuse": false
+          },
+          {
+            "id": "petchain.appointment",
+            "replacedBy": "petchain.appointment.v1",
+            "retire": true,
+            "reuse": false
+          },
+          {
+            "id": "petchain.sos",
+            "replacedBy": "petchain.sos.v1",
+            "retire": true,
+            "reuse": false
+          }
+        ],
+        "disabledState": {
+          "detect": true,
+          "explain": true,
+          "promptFrequency": "once-per-channel",
+          "deepLinkToSettings": true
+        }
+      }
+    }
+  }
+}

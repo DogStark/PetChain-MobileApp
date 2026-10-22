@@ -1,0 +1,125 @@
+{
+  "common": {
+    "loading": "Cargando...",
+    "retry": "Reintentar",
+    "cancel": "Cancelar",
+    "save": "Guardar",
+    "delete": "Eliminar",
+    "confirm": "Confirmar",
+    "back": "Atrás",
+    "next": "Siguiente",
+    "done": "Listo",
+    "error": "Error",
+    "success": "Éxito",
+    "unknown_error": "Ocurrió un error inesperado.",
+    "network_error": "Error de red. Verifica tu conexión.",
+    "timeout_error": "La solicitud tardó demasiado. Inténtalo de nuevo."
+  },
+  "auth": {
+    "login_title": "Bienvenido de nuevo",
+    "login_subtitle": "Inicia sesión en tu cuenta",
+    "register_title": "Crear cuenta",
+    "email_label": "Correo electrónico",
+    "email_placeholder": "tu@ejemplo.com",
+    "password_label": "Contraseña",
+    "password_placeholder": "Al menos 8 caracteres",
+    "name_label": "Nombre completo",
+    "name_placeholder": "Tu nombre",
+    "login_button": "Iniciar sesión",
+    "register_button": "Crear cuenta",
+    "logout_button": "Cerrar sesión",
+    "no_account": "¿No tienes una cuenta?",
+    "have_account": "¿Ya tienes una cuenta?",
+    "forgot_password": "¿Olvidaste tu contraseña?",
+    "validation": {
+      "email_required": "El correo electrónico es obligatorio.",
+      "email_invalid": "Por favor ingresa un correo electrónico válido.",
+      "password_required": "La contraseña es obligatoria.",
+      "password_weak": "La contraseña debe tener al menos 8 caracteres, incluir 1 letra mayúscula y 1 número.",
+      "name_required": "El nombre es obligatorio."
+    }
+  },
+  "home": {
+    "title": "Mis mascotas",
+    "add_pet": "Agregar mascota",
+    "no_pets": "Aún no tienes mascotas. ¡Agrega tu primera mascota!",
+    "greeting": "Hola, {{name}}"
+  },
+  "pet": {
+    "profile_title": "Perfil de mascota",
+    "name_label": "Nombre",
+    "species_label": "Especie",
+    "breed_label": "Raza",
+    "dob_label": "Fecha de nacimiento",
+    "weight_label": "Peso",
+    "edit_button": "Editar perfil",
+    "delete_button": "Eliminar mascota",
+    "delete_confirm": "¿Estás seguro de que deseas eliminar a {{name}}?",
+    "validation": {
+      "name_required": "El nombre de la mascota es obligatorio.",
+      "dob_invalid": "Por favor ingresa una fecha de nacimiento válida."
+    }
+  },
+  "medical": {
+    "title": "Registros médicos",
+    "add_record": "Agregar registro",
+    "no_records": "No se encontraron registros médicos.",
+    "record_date": "Fecha",
+    "record_type": "Tipo",
+    "record_notes": "Notas",
+    "vaccination": "Vacunación",
+    "checkup": "Revisión",
+    "surgery": "Cirugía",
+    "other": "Otro"
+  },
+  "appointments": {
+    "title": "Citas",
+    "add_appointment": "Programar cita",
+    "no_appointments": "No hay citas próximas.",
+    "date_label": "Fecha",
+    "time_label": "Hora",
+    "vet_label": "Veterinario",
+    "notes_label": "Notas",
+    "upcoming": "Próximas",
+    "past": "Pasadas",
+    "cancel_confirm": "¿Cancelar esta cita?"
+  },
+  "medication": {
+    "title": "Medicamentos",
+    "add_medication": "Agregar medicamento",
+    "no_medications": "No hay medicamentos registrados.",
+    "name_label": "Nombre del medicamento",
+    "dosage_label": "Dosis",
+    "frequency_label": "Frecuencia",
+    "start_date_label": "Fecha de inicio",
+    "end_date_label": "Fecha de fin",
+    "reminder": "Recordatorio activado"
+  },
+  "qr": {
+    "title": "Escáner QR",
+    "scan_prompt": "Apunta la cámara hacia un código QR",
+    "scan_success": "Código QR escaneado correctamente",
+    "scan_error": "No se pudo leer el código QR. Inténtalo de nuevo.",
+    "permission_denied": "Se requiere permiso de cámara para escanear códigos QR."
+  },
+  "emergency": {
+    "title": "Emergencia",
+    "call_vet": "Llamar al veterinario de emergencias",
+    "nearest_clinic": "Encontrar clínica más cercana",
+    "first_aid": "Guía de primeros auxilios",
+    "alert_sent": "Alerta de emergencia enviada"
+  },
+  "error_boundary": {
+    "title": "Algo salió mal",
+    "subtitle": "Ocurrió un error inesperado en la pantalla {{screen}}. Nuestro equipo ha sido notificado.",
+    "report_retry": "Reportar y reintentar"
+  },
+  "accessibility": {
+    "close_button": "Cerrar",
+    "menu_button": "Abrir menú",
+    "back_button": "Volver",
+    "loading_indicator": "Cargando",
+    "error_screen": "Pantalla de error",
+    "pet_image": "Foto de {{name}}"
+  }
+}

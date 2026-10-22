@@ -44,7 +44,7 @@ function invalid(error: string): ValidationResult {
 }
 
 function normalizeValue(value: unknown): string {
-  if (value === null || value === undefined) return "";
+  if (value === null || value === undefined) return '';
   return String(value).trim();
 }
 
@@ -64,9 +64,7 @@ function isRealCalendarDate(value: string): boolean {
   const date = new Date(Date.UTC(year, month - 1, day));
 
   return (
-    date.getUTCFullYear() === year &&
-    date.getUTCMonth() + 1 === month &&
-    date.getUTCDate() === day
+    date.getUTCFullYear() === year && date.getUTCMonth() + 1 === month && date.getUTCDate() === day
   );
 }
 
@@ -75,9 +73,9 @@ function isRealCalendarDate(value: string): boolean {
  */
 export function validateEmail(email: unknown): ValidationResult {
   const value = normalizeValue(email);
-  if (!value) return invalid("Email is required.");
-  if (value.length > 254) return invalid("Email must be 254 characters or fewer.");
-  if (!EMAIL_REGEX.test(value)) return invalid("Please enter a valid email address.");
+  if (!value) return invalid('Email is required.');
+  if (value.length > 254) return invalid('Email must be 254 characters or fewer.');
+  if (!EMAIL_REGEX.test(value)) return invalid('Please enter a valid email address.');
   return valid();
 }
 
@@ -87,11 +85,11 @@ export function validateEmail(email: unknown): ValidationResult {
  */
 export function validatePhoneNumber(phone: unknown): ValidationResult {
   const raw = normalizeValue(phone);
-  if (!raw) return invalid("Phone number is required.");
+  if (!raw) return invalid('Phone number is required.');
 
-  const normalized = raw.replace(/[\s\-().]/g, "");
+  const normalized = raw.replace(/[\s\-().]/g, '');
   if (!PHONE_REGEX.test(normalized)) {
-    return invalid("Please enter a valid phone number (7 to 15 digits, optional leading +).");
+    return invalid('Please enter a valid phone number (7 to 15 digits, optional leading +).');
   }
 
   return valid();
@@ -102,23 +100,23 @@ export function validatePhoneNumber(phone: unknown): ValidationResult {
  */
 export function validateDate(
   input: Date | string | unknown,
-  options: DateValidationOptions = {}
+  options: DateValidationOptions = {},
 ): ValidationResult {
   const value = normalizeValue(input);
-  if (!value) return invalid("Date is required.");
+  if (!value) return invalid('Date is required.');
 
   if (!isRealCalendarDate(value)) {
-    return invalid("Please enter a real calendar date.");
+    return invalid('Please enter a real calendar date.');
   }
 
   const date = parseDate(value);
-  if (!date) return invalid("Please enter a valid date.");
+  if (!date) return invalid('Please enter a valid date.');
 
   const minDate = options.minDate ? parseDate(options.minDate) : null;
   const maxDate = options.maxDate ? parseDate(options.maxDate) : null;
 
-  if (options.minDate && !minDate) return invalid("Invalid minimum date constraint.");
-  if (options.maxDate && !maxDate) return invalid("Invalid maximum date constraint.");
+  if (options.minDate && !minDate) return invalid('Invalid minimum date constraint.');
+  if (options.maxDate && !maxDate) return invalid('Invalid maximum date constraint.');
 
   if (minDate && date < minDate) {
     return invalid(`Date must be on or after ${minDate.toISOString().slice(0, 10)}.`);
@@ -130,10 +128,10 @@ export function validateDate(
 
   const now = new Date();
   if (options.allowPast === false && date < now) {
-    return invalid("Date cannot be in the past.");
+    return invalid('Date cannot be in the past.');
   }
   if (options.allowFuture === false && date > now) {
-    return invalid("Date cannot be in the future.");
+    return invalid('Date cannot be in the future.');
   }
 
   return valid();
@@ -144,10 +142,10 @@ export function validateDate(
  */
 export function validatePasswordStrength(
   password: unknown,
-  options: PasswordValidationOptions = {}
+  options: PasswordValidationOptions = {},
 ): ValidationResult {
   const value = normalizeValue(password);
-  if (!value) return invalid("Password is required.");
+  if (!value) return invalid('Password is required.');
 
   const {
     minLength = 8,
@@ -158,19 +156,21 @@ export function validatePasswordStrength(
     requireSpecial = true,
   } = options;
 
-  if (value.length < minLength) return invalid(`Password must be at least ${minLength} characters.`);
-  if (value.length > maxLength) return invalid(`Password must be ${maxLength} characters or fewer.`);
+  if (value.length < minLength)
+    return invalid(`Password must be at least ${minLength} characters.`);
+  if (value.length > maxLength)
+    return invalid(`Password must be ${maxLength} characters or fewer.`);
   if (requireUppercase && !UPPERCASE_REGEX.test(value)) {
-    return invalid("Password must include at least one uppercase letter.");
+    return invalid('Password must include at least one uppercase letter.');
   }
   if (requireLowercase && !LOWERCASE_REGEX.test(value)) {
-    return invalid("Password must include at least one lowercase letter.");
+    return invalid('Password must include at least one lowercase letter.');
   }
   if (requireNumber && !NUMBER_REGEX.test(value)) {
-    return invalid("Password must include at least one number.");
+    return invalid('Password must include at least one number.');
   }
   if (requireSpecial && !SPECIAL_REGEX.test(value)) {
-    return invalid("Password must include at least one special character.");
+    return invalid('Password must include at least one special character.');
   }
 
   return valid();
@@ -179,7 +179,7 @@ export function validatePasswordStrength(
 /**
  * Generic required field validator.
  */
-export function validateRequired(value: unknown, fieldName = "Field"): ValidationResult {
+export function validateRequired(value: unknown, fieldName = 'Field'): ValidationResult {
   const normalized = normalizeValue(value);
   if (!normalized) return invalid(`${fieldName} is required.`);
   return valid();
@@ -191,7 +191,7 @@ export function validateRequired(value: unknown, fieldName = "Field"): Validatio
 export function validateMinLength(
   value: unknown,
   minLength: number,
-  fieldName = "Field"
+  fieldName = 'Field',
 ): ValidationResult {
   const normalized = normalizeValue(value);
   if (normalized.length < minLength) {
@@ -206,7 +206,7 @@ export function validateMinLength(
 export function validateMaxLength(
   value: unknown,
   maxLength: number,
-  fieldName = "Field"
+  fieldName = 'Field',
 ): ValidationResult {
   const normalized = normalizeValue(value);
   if (normalized.length > maxLength) {
@@ -221,8 +221,8 @@ export function validateMaxLength(
 export function validatePattern(
   value: unknown,
   pattern: RegExp,
-  fieldName = "Field",
-  message?: string
+  fieldName = 'Field',
+  message?: string,
 ): ValidationResult {
   const normalized = normalizeValue(value);
   if (!pattern.test(normalized)) {
@@ -237,7 +237,7 @@ export function validatePattern(
 export function validateField(
   value: unknown,
   rules: GenericFieldRule,
-  fieldName = "Field"
+  fieldName = 'Field',
 ): ValidationResult {
   if (rules.required) {
     const requiredResult = validateRequired(value, fieldName);
@@ -247,12 +247,12 @@ export function validateField(
   const normalized = normalizeValue(value);
   if (!normalized && !rules.required) return valid();
 
-  if (typeof rules.minLength === "number") {
+  if (typeof rules.minLength === 'number') {
     const minLengthResult = validateMinLength(normalized, rules.minLength, fieldName);
     if (!minLengthResult.isValid) return minLengthResult;
   }
 
-  if (typeof rules.maxLength === "number") {
+  if (typeof rules.maxLength === 'number') {
     const maxLengthResult = validateMaxLength(normalized, rules.maxLength, fieldName);
     if (!maxLengthResult.isValid) return maxLengthResult;
   }
@@ -262,7 +262,7 @@ export function validateField(
       normalized,
       rules.pattern,
       fieldName,
-      rules.patternMessage
+      rules.patternMessage,
     );
     if (!patternResult.isValid) return patternResult;
   }

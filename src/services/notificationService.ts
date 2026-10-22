@@ -1,84 +1,1153 @@
 import * as Notifications from 'expo-notifications';
+import { Linking } from 'react-native';
 
-// Types
-interface Medication {
+import apiClient from './apiClient';
+import { getItem, setItem, removeItem } from './localDB';
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+export interface Medication {
   id: string;
   name: string;
   dosage: string;
   frequency: number; // hours between doses
-  startDate: Date;
+  startDate: string;
+  endDate?: string;
 }
 
-interface Appointment {
+export interface Appointment {
   id: string;
   title: string;
-  date: Date;
+  date: string;
   location?: string;
 }
 
-interface Vaccination {
+export interface Vaccination {
   id: string;
   name: string;
-  dueDate: Date;
+  dueDate: string;
   petId: string;
 }
 
-// Configure notification behavior
+export interface ScheduledNotification {
+  id: string;
+  title: string;
+  body: string;
+  scheduledDate: string; // ISO date string
+  category?: NotificationCategory;
+  data?: Record<string, unknown>; // additional data
+  categoryIdentifier?: string;
+}
+
+export interface NotificationPreferences {
+  medicationReminders: boolean;
+  appointmentReminders: boolean;
+  vaccinationAlerts: boolean;
+  marketingNotifications: boolean;
+  reminderLeadTimeMinutes: number;
+  soundEnabled: boolean;
+  vibrationEnabled: boolean;
+  badgeEnabled: boolean;
+  quietHoursEnabled: boolean;
+  quietHoursStart: string; // "HH:MM"
+  quietHoursEnd: string; // "HH:MM"
+  petOverrides: {
+    petId: string;
+    medicationReminders?: boolean;
+    appointmentReminders?: boolean;
+    vaccinationAlerts?: boolean;
+  }[];
+  privacySettings?: {
+    medicationDetailsPrivate?: boolean;
+    appointmentDetailsPrivate?: boolean;
+    vaccinationDetailsPrivate?: boolean;
+  };
+}
+
+export type NotificationCategory = 'medication' | 'appointments' | 'health' | 'general';
+export type NotificationGroup =
+  | 'medication'
+  | 'appointment'
+  | 'vaccination'
+  | 'alert'
+  | 'scheduled'
+  | 'sos';
+export type NotificationAction =
+  | 'open'
+  | 'snooze'
+  | 'mark_as_read'
+  | 'mark_as_taken'
+  | 'skip_dose'
+  | 'snooze_30min';
+
+// ─── Deep Link Navigation Types ───────────────────────────────────────────────
+export interface DeepLinkParams {
+  route: string;
+  params?: Record<string, any>;
+}
+
+export interface NotificationDeepLink {
+  petId?: string;
+  medicationId?: string;
+  appointmentId?: string;
+  vaccinationId?: string;
+  sosId?: string;
+  [key: string]: any;
+}
+
+export const NOTIFICATION_CATEGORIES: NotificationCategory[] = [
+  'medication',
+  'appointments',
+  'health',
+  'general',
+];
+
+const CATEGORY_BY_GROUP: Record<NotificationGroup, NotificationCategory> = {
+  medication: 'medication',
+  appointment: 'appointments',
+  vaccination: 'health',
+  alert: 'health',
+  scheduled: 'general',
+  sos: 'health',
+};
+
+const resolveNotificationCategory = (
+  group: NotificationGroup,
+  category?: NotificationCategory,
+): NotificationCategory => category ?? CATEGORY_BY_GROUP[group];
+
+const isNotificationCategory = (value: unknown): value is NotificationCategory =>
+  typeof value === 'string' && NOTIFICATION_CATEGORIES.includes(value as NotificationCategory);
+
+const getRequestCategory = (
+  notification: Notifications.NotificationRequest,
+): NotificationCategory => {
+  const category = notification.content.data?.category;
+  if (isNotificationCategory(category)) return category;
+
+  const group = notification.content.data?.type;
+  if (typeof group === 'string' && group in CATEGORY_BY_GROUP) {
+    return CATEGORY_BY_GROUP[group as NotificationGroup];
+  }
+
+  return 'general';
+};
+
+const PREFS_KEY = '@notification_preferences';
+const NOTIFICATION_MAP_KEY = '@notification_map'; // maps entity id -> notification ids
+const READ_NOTIFICATIONS_KEY = '@read_notifications';
+const SNOOZED_NOTIFICATIONS_KEY = '@snoozed_notifications';
+const ACTION_IDEMPOTENCY_KEY = '@action_idempotency';
+const SNOOZE_DELAY_MS = 10 * 60 * 1000;
+const IDEMPOTENCY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+
+const ACTION_OPEN = 'OPEN_APP';
+const ACTION_SNOOZE = 'SNOOZE';
+const ACTION_MARK_AS_READ = 'MARK_AS_READ';
+const ACTION_MARK_AS_TAKEN = 'MARK_AS_TAKEN';
+const ACTION_SNOOZE_30MIN = 'SNOOZE_30MIN';
+const ACTION_SKIP_DOSE = 'SKIP_DOSE';
+
+// Session-scoped set to track notification IDs that have already triggered navigation.
+// Ensures cold-start and listener paths don't both navigate for the same notification.
+// Cleared on app restart (not persisted).
+const processedNotificationIds = new Set<string>();
+
+// Timezone reconciliation: track the device timezone at the time of medication scheduling.
+// Used to detect changes and reschedule notifications as needed.
+const SCHEDULED_MEDICATIONS_TIMEZONE_KEY = '@scheduled_medications_timezone';
+let lastKnownTimezone: string | null = null;
+
+/**
+ * Gets the current device timezone identifier (e.g., 'America/New_York').
+ * Falls back to 'UTC' if unable to determine.
+ */
+function getDeviceTimezone(): string {
+  try {
+    // Try to get timezone from device Intl API
+    const formatter = new Intl.DateTimeFormat('en-US', { timeZoneName: 'long' });
+    // This is a best-effort approximation; for production use a library like `react-native-timezone`
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+/**
+ * Stores the timezone context for a medication's scheduled notifications.
+ * Called when scheduling medication reminders to establish baseline timezone.
+ */
+async function storeMedicationTimezone(medicationId: string, timezone: string): Promise<void> {
+  try {
+    const storedJson = await getItem(SCHEDULED_MEDICATIONS_TIMEZONE_KEY);
+    const stored = storedJson ? JSON.parse(storedJson) : {};
+    const updated = { ...stored, [medicationId]: timezone };
+    await setItem(SCHEDULED_MEDICATIONS_TIMEZONE_KEY, JSON.stringify(updated));
+  } catch {
+    // Ignore storage errors; timezone tracking is best-effort
+  }
+}
+
+/**
+ * Retrieves the stored timezone for a medication's scheduled notifications.
+ */
+async function getMedicationTimezone(medicationId: string): Promise<string | null> {
+  try {
+    const storedJson = await getItem(SCHEDULED_MEDICATIONS_TIMEZONE_KEY);
+    if (!storedJson) return null;
+    const stored = JSON.parse(storedJson) as Record<string, string>;
+    return stored[medicationId] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const DEFAULT_PREFS: NotificationPreferences = {
+  medicationReminders: true,
+  appointmentReminders: true,
+  vaccinationAlerts: true,
+  marketingNotifications: false,
+  reminderLeadTimeMinutes: 60,
+  soundEnabled: true,
+  vibrationEnabled: true,
+  badgeEnabled: true,
+  quietHoursEnabled: false,
+  quietHoursStart: '22:00',
+  quietHoursEnd: '07:00',
+  petOverrides: [],
+  privacySettings: {
+    medicationDetailsPrivate: true,
+    appointmentDetailsPrivate: true,
+    vaccinationDetailsPrivate: true,
+  },
+};
+
+// ─── Notification actions ────────────────────────────────────────────────────
+
+const readActionState = async (key: string): Promise<Record<string, number>> => {
+  const stored = await getItem(key);
+  return stored ? JSON.parse(stored) : {};
+};
+
+const saveActionState = async (
+  key: string,
+  notificationId: string,
+  timestamp: number,
+): Promise<void> => {
+  const state = await readActionState(key);
+  state[notificationId] = timestamp;
+  await setItem(key, JSON.stringify(state));
+};
+
+/**
+ * Read idempotency state: stores action ID + action type -> processed timestamp
+ * Only stores action IDs and timestamps, no sensitive data
+ */
+const readIdempotencyState = async (): Promise<Record<string, { timestamp: number }>> => {
+  const stored = await getItem(ACTION_IDEMPOTENCY_KEY);
+  return stored ? JSON.parse(stored) : {};
+};
+
+/**
+ * Check if an action has been processed recently (within idempotency window)
+ * Returns true if action should be skipped (already processed)
+ */
+const isActionAlreadyProcessed = async (
+  notificationId: string,
+  actionIdentifier: string,
+): Promise<boolean> => {
+  const state = await readIdempotencyState();
+  const idempotencyKey = `${notificationId}::${actionIdentifier}`;
+  const record = state[idempotencyKey];
+
+  if (!record) return false; // Not seen before
+
+  const timeSinceProcessing = Date.now() - record.timestamp;
+  return timeSinceProcessing < IDEMPOTENCY_WINDOW_MS;
+};
+
+/**
+ * Mark an action as processed to prevent duplicate mutations
+ */
+const markActionAsProcessed = async (
+  notificationId: string,
+  actionIdentifier: string,
+): Promise<void> => {
+  const state = await readIdempotencyState();
+  const idempotencyKey = `${notificationId}::${actionIdentifier}`;
+  state[idempotencyKey] = { timestamp: Date.now() };
+
+  // Clean up old entries outside the idempotency window to avoid unbounded growth
+  const now = Date.now();
+  Object.entries(state).forEach(([key, value]) => {
+    if (now - value.timestamp > IDEMPOTENCY_WINDOW_MS) {
+      delete state[key];
+    }
+  });
+
+  await setItem(ACTION_IDEMPOTENCY_KEY, JSON.stringify(state));
+};
+
+const getNotificationUrl = (data: Record<string, unknown> = {}): string => {
+  const deepLink = data.deepLink ?? data.url;
+  if (typeof deepLink === 'string' && deepLink.length > 0) return deepLink;
+
+  if (typeof data.petId === 'string') return `petchain://pets/${encodeURIComponent(data.petId)}`;
+  if (data.type === 'medication' && typeof data.medicationId === 'string') {
+    return `petchain://medications?medicationId=${encodeURIComponent(data.medicationId)}`;
+  }
+  if (data.type === 'appointment' && typeof data.appointmentId === 'string') {
+    return `petchain://appointments?appointmentId=${encodeURIComponent(data.appointmentId)}`;
+  }
+  if (data.type === 'vaccination' && typeof data.vaccinationId === 'string') {
+    return `petchain://vaccinations?vaccinationId=${encodeURIComponent(data.vaccinationId)}`;
+  }
+  if (data.type === 'sos' && typeof data.sosId === 'string') {
+    return `petchain://emergency?sosId=${encodeURIComponent(data.sosId)}`;
+  }
+  if (data.type === 'medication') return 'petchain://medications';
+  if (data.type === 'appointment') return 'petchain://appointments';
+  if (data.type === 'vaccination') return 'petchain://vaccinations';
+  if (data.type === 'sos') return 'petchain://emergency';
+
+  return 'petchain://';
+};
+
+export const registerNotificationActions = async (): Promise<void> => {
+  const defaultActions = [
+    {
+      identifier: ACTION_OPEN,
+      buttonTitle: 'Open',
+      options: { opensAppToForeground: true },
+    },
+    {
+      identifier: ACTION_SNOOZE,
+      buttonTitle: 'Snooze',
+      options: { opensAppToForeground: false },
+    },
+    {
+      identifier: ACTION_MARK_AS_READ,
+      buttonTitle: 'Mark read',
+      options: { opensAppToForeground: false },
+    },
+  ];
+
+  const medicationActions = [
+    {
+      identifier: ACTION_MARK_AS_TAKEN,
+      buttonTitle: 'Mark as Taken',
+      options: { opensAppToForeground: false },
+    },
+    {
+      identifier: ACTION_SNOOZE_30MIN,
+      buttonTitle: 'Snooze 30 min',
+      options: { opensAppToForeground: false },
+    },
+    {
+      identifier: ACTION_SKIP_DOSE,
+      buttonTitle: 'Skip Dose',
+      options: { opensAppToForeground: false },
+    },
+    {
+      identifier: ACTION_OPEN,
+      buttonTitle: 'Open',
+      options: { opensAppToForeground: true },
+    },
+  ];
+
+  await Promise.all([
+    Notifications.setNotificationCategoryAsync('medication', medicationActions),
+    ...['appointment', 'vaccination', 'alert', 'scheduled'].map((category) =>
+      Notifications.setNotificationCategoryAsync(category, defaultActions),
+    ),
+  ]);
+};
+
+export const markAsRead = async (notificationId: string): Promise<void> => {
+  if (!notificationId) return;
+  await saveActionState(READ_NOTIFICATIONS_KEY, notificationId, Date.now());
+  await (
+    Notifications as unknown as { dismissNotificationAsync?: (id: string) => Promise<void> }
+  ).dismissNotificationAsync?.(notificationId);
+};
+
+export const snooze = async (
+  notification: Notifications.Notification,
+  delayMs = SNOOZE_DELAY_MS,
+): Promise<string> => {
+  const snoozedUntil = Date.now() + delayMs;
+  const { content } = notification.request;
+  const notificationId = await Notifications.scheduleNotificationAsync({
+    content: {
+      title: content.title ?? '',
+      body: content.body ?? '',
+      sound: content.sound ?? undefined,
+      data: {
+        ...(content.data ?? {}),
+        snoozedUntil,
+        originalNotificationId: notification.request.identifier,
+      },
+      categoryIdentifier: content.categoryIdentifier,
+    },
+    trigger: {
+      type: 'date',
+      date: new Date(snoozedUntil),
+    } as Notifications.DateTriggerInput,
+  });
+
+  await saveActionState(SNOOZED_NOTIFICATIONS_KEY, notification.request.identifier, snoozedUntil);
+  return notificationId;
+};
+
+export const openApp = async (notification: Notifications.Notification): Promise<void> => {
+  await markAsRead(notification.request.identifier);
+  await Linking.openURL(getNotificationUrl(notification.request.content.data));
+};
+
+// ─── Deep Link Builders & Validation ──────────────────────────────────────────
+
+/**
+ * Validates that a value is a non-empty string (for schema validation).
+ */
+function isValidString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * Validates a deep-link payload against a versioned schema.
+ * Ensures that only trusted routes and parameter shapes are accepted;
+ * rejects unknown routes, missing required params, and malformed param types.
+ *
+ * Returns the validated route and params, or null if schema validation fails.
+ *
+ * Note: This validates structural schema only. Destination screens must verify
+ * authorization/ownership (e.g., confirm current user owns the petId) separately.
+ */
+function validateDeepLinkPayload(
+  data: Record<string, unknown>,
+): { route: string; params: Record<string, any> } | null {
+  // Validate version field (currently only v1 supported)
+  if (!('version' in data) || data.version !== 1) {
+    return null;
+  }
+
+  const type = data.type as string | undefined;
+
+  // Medication notification: requires type='medication' and medicationId (string)
+  if (type === 'medication') {
+    if (!isValidString(data.medicationId)) {
+      return null;
+    }
+    return {
+      route: 'Medications',
+      params: { medicationId: data.medicationId },
+    };
+  }
+
+  // Appointment notification: requires type='appointment' and appointmentId (string)
+  if (type === 'appointment') {
+    if (!isValidString(data.appointmentId)) {
+      return null;
+    }
+    return {
+      route: 'Appointments',
+      params: { appointmentId: data.appointmentId },
+    };
+  }
+
+  // Vaccination notification: requires type='vaccination' and vaccinationId (string)
+  // Optional: petId (string) and dueDate (string)
+  if (type === 'vaccination') {
+    if (!isValidString(data.vaccinationId)) {
+      return null;
+    }
+    const params: Record<string, any> = { vaccinationId: data.vaccinationId };
+    if (isValidString(data.petId)) {
+      params.petId = data.petId;
+    }
+    if (isValidString(data.dueDate)) {
+      params.dueDate = data.dueDate;
+    }
+    return {
+      route: 'Vaccinations',
+      params,
+    };
+  }
+
+  // SOS notification: requires type='sos' and sosId (string)
+  if (type === 'sos') {
+    if (!isValidString(data.sosId)) {
+      return null;
+    }
+    return {
+      route: 'Emergency',
+      params: { sosId: data.sosId },
+    };
+  }
+
+  // Fallback to petId if available (type='general' or unspecified, but petId present)
+  // Only allow if petId is a valid string; destination screen verifies ownership
+  if (isValidString(data.petId)) {
+    return {
+      route: 'PetDetail',
+      params: { petId: data.petId },
+    };
+  }
+
+  // No valid route found; reject the payload
+  return null;
+}
+
+/**
+ * Extract deep link parameters from notification data.
+ *
+ * Validates the payload against a versioned schema before returning navigation params.
+ * Ensures only trusted routes and parameter shapes are accepted.
+ * Destination screens remain responsible for verifying user authorization/ownership.
+ *
+ * @returns Validated route and params, or null if schema validation fails.
+ */
+export const extractDeepLinkParams = (
+  data: Record<string, unknown>,
+): { route: string; params: Record<string, any> } | null => {
+  return validateDeepLinkPayload(data);
+};
+
+/**
+ * Checks if a notification has already been processed for navigation in this session.
+ * Returns true if the notification ID has been seen before (dedup skip), false otherwise.
+ *
+ * @param notificationId - Stable ID from the push notification payload
+ * @returns true if already processed (skip navigation), false if new (proceed and mark)
+ */
+export const hasNotificationBeenProcessed = (notificationId: string | undefined): boolean => {
+  if (!notificationId) return false;
+  return processedNotificationIds.has(notificationId);
+};
+
+/**
+ * Marks a notification as processed for navigation in this session.
+ * Called after a notification has triggered navigation to prevent duplicates
+ * from cold-start and listener paths.
+ *
+ * @param notificationId - Stable ID from the push notification payload
+ */
+export const markNotificationAsProcessed = (notificationId: string | undefined): void => {
+  if (notificationId) {
+    processedNotificationIds.add(notificationId);
+  }
+};
+
+let medicationServiceModule: typeof import('./medicationService') | null = null;
+
+async function getMedicationService() {
+  if (!medicationServiceModule) {
+    medicationServiceModule = await import('./medicationService');
+  }
+  return medicationServiceModule;
+}
+
+async function findMedicationId(notification: Notifications.Notification): Promise<string | null> {
+  const data = notification.request.content.data ?? {};
+  const medicationId = data.medicationId as string | undefined;
+  return medicationId ?? null;
+}
+
+/**
+ * Resolves the instant the reminder was scheduled for, so a dose action lands on
+ * the same scheduled-dose identity as the reminder and a manual tap. Falls back to
+ * the trigger date for payloads that predate `scheduledFor`.
+ */
+const getScheduledFor = (notification: Notifications.Notification): string => {
+  const data = notification.request.content.data ?? {};
+  if (isValidString(data.scheduledFor)) return data.scheduledFor;
+
+  const trigger = notification.request.trigger as { date?: unknown } | null | undefined;
+  if (typeof trigger?.date === 'number' || typeof trigger?.date === 'string') {
+    return new Date(trigger.date).toISOString();
+  }
+  return new Date().toISOString();
+};
+
+/**
+ * A dose action is stale when its medication was removed after the reminder was
+ * scheduled. Callers dismiss the notification instead of writing an orphaned log.
+ */
+async function isStaleDoseAction(
+  medService: typeof import('./medicationService'),
+  medicationId: string,
+): Promise<boolean> {
+  const medications = await medService.getMedications();
+  return !medications.some((medication) => medication.id === medicationId);
+}
+
+async function handleMarkAsTaken(notification: Notifications.Notification): Promise<void> {
+  const notificationId = notification.request.identifier;
+
+  // Check idempotency: skip if action already processed recently
+  if (await isActionAlreadyProcessed(notificationId, 'MARK_AS_TAKEN')) {
+    return;
+  }
+
+  const medicationId = await findMedicationId(notification);
+  if (!medicationId) return;
+
+  try {
+    const medService = await getMedicationService();
+    if (await isStaleDoseAction(medService, medicationId)) {
+      await markAsRead(notificationId);
+      return;
+    }
+
+    // Idempotent: a duplicate for the same scheduled dose resolves as success
+    await medService.transitionDose(medicationId, getScheduledFor(notification), 'taken');
+    await markAsRead(notificationId);
+
+    // Mark action as processed after successful mutation
+    await markActionAsProcessed(notificationId, 'MARK_AS_TAKEN');
+  } catch {
+    // Non-fatal — dose can be recorded manually
+  }
+}
+
+async function handleSnooze30Min(notification: Notifications.Notification): Promise<void> {
+  const notificationId = notification.request.identifier;
+
+  // Check idempotency: skip if action already processed recently
+  if (await isActionAlreadyProcessed(notificationId, 'SNOOZE_30MIN')) {
+    return;
+  }
+
+  await snooze(notification, 30 * 60 * 1000);
+
+  // Mark action as processed after successful snooze
+  await markActionAsProcessed(notificationId, 'SNOOZE_30MIN');
+}
+
+async function handleSkipDose(notification: Notifications.Notification): Promise<void> {
+  const notificationId = notification.request.identifier;
+
+  // Check idempotency: skip if action already processed recently
+  if (await isActionAlreadyProcessed(notificationId, 'SKIP_DOSE')) {
+    return;
+  }
+
+  const medicationId = await findMedicationId(notification);
+  if (!medicationId) return;
+
+  try {
+    const medService = await getMedicationService();
+    if (await isStaleDoseAction(medService, medicationId)) {
+      await markAsRead(notificationId);
+      return;
+    }
+
+    await medService.transitionDose(medicationId, getScheduledFor(notification), 'skipped');
+    await cancelEntityNotification(medicationId);
+    await markAsRead(notificationId);
+
+    // Mark action as processed after successful mutation
+    await markActionAsProcessed(notificationId, 'SKIP_DOSE');
+  } catch {
+    // Non-fatal
+  }
+}
+
+export const handleNotificationAction = async (
+  response: Notifications.NotificationResponse,
+): Promise<void> => {
+  const { actionIdentifier, notification } = response;
+
+  if (actionIdentifier === ACTION_MARK_AS_TAKEN) {
+    await handleMarkAsTaken(notification);
+    return;
+  }
+
+  if (actionIdentifier === ACTION_SNOOZE_30MIN) {
+    await handleSnooze30Min(notification);
+    return;
+  }
+
+  if (actionIdentifier === ACTION_SKIP_DOSE) {
+    await handleSkipDose(notification);
+    return;
+  }
+
+  if (actionIdentifier === ACTION_SNOOZE) {
+    await snooze(notification);
+    return;
+  }
+
+  if (actionIdentifier === ACTION_MARK_AS_READ) {
+    await markAsRead(notification.request.identifier);
+    return;
+  }
+
+  await openApp(notification);
+};
+
+export const watchNotificationActions = (): ReturnType<
+  typeof Notifications.addNotificationResponseReceivedListener
+> =>
+  Notifications.addNotificationResponseReceivedListener((response) => {
+    void handleNotificationAction(response);
+  });
+
+// ─── Notification handler ─────────────────────────────────────────────────────
+
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
+  handleNotification: async () => {
+    const prefs = await getPreferences();
+    const suppressed =
+      prefs.quietHoursEnabled && isQuietHour(prefs.quietHoursStart, prefs.quietHoursEnd);
+    return {
+      shouldShowAlert: !suppressed,
+      shouldPlaySound: !suppressed && prefs.soundEnabled,
+      shouldSetBadge: prefs.badgeEnabled,
+      shouldShowBanner: !suppressed,
+      shouldShowList: true,
+    };
+  },
 });
 
+// Returns true if the current time falls within quiet hours
+export const isQuietHour = (start: string, end: string): boolean => {
+  const now = new Date();
+  const toMinutes = (hhmm: string) => {
+    const [h, m] = hhmm.split(':').map(Number);
+    return h * 60 + m;
+  };
+  const current = now.getHours() * 60 + now.getMinutes();
+  const s = toMinutes(start);
+  const e = toMinutes(end);
+  return s < e ? current >= s && current < e : current >= s || current < e;
+};
+
+// ─── Permissions ──────────────────────────────────────────────────────────────
+
+export type PermissionState =
+  | 'granted'
+  | 'denied'
+  | 'provisional'
+  | 'ephemeral'
+  | 'not_determined'
+  | 'permanently_denied'
+  | 'unknown';
+
+export const checkPermissionState = async (): Promise<PermissionState> => {
+  try {
+    const result = await Notifications.getPermissionsAsync();
+    const ios = (result as any).ios;
+    const android = (result as any).android;
+
+    if (ios) {
+      const status = ios.status;
+      if (status === 'granted') return 'granted';
+      if (status === 'denied') return 'denied';
+      if (status === 'provisional') return 'provisional';
+      if (status === 'ephemeral') return 'ephemeral';
+      if (status === 'undetermined') return 'not_determined';
+    }
+
+    if (android) {
+      if (android.granted) return 'granted';
+      if (android.canAskAgain === false) return 'permanently_denied';
+      return 'denied';
+    }
+
+    const granted = (result as any).granted ?? (result as any).status === 'granted';
+    return granted ? 'granted' : 'not_determined';
+  } catch {
+    return 'unknown';
+  }
+};
+
 export const requestPermissions = async (): Promise<boolean> => {
-  const { status } = await Notifications.requestPermissionsAsync();
-  return status === 'granted';
+  const state = await checkPermissionState();
+  if (state === 'granted' || state === 'provisional') return true;
+  if (state === 'denied' || state === 'permanently_denied') return false;
+
+  try {
+    const result = await Notifications.requestPermissionsAsync();
+    return (result as any).granted ?? (result as any).status === 'granted';
+  } catch {
+    return false;
+  }
 };
 
-export const scheduleMedicationReminder = async (medication: Medication): Promise<string> => {
+export const checkPermissions = async (): Promise<boolean> => {
+  const state = await checkPermissionState();
+  return state === 'granted' || state === 'provisional';
+};
+
+export interface RefillThresholdMedication {
+  id: string;
+  currentSupply?: number;
+  remainingPills?: number;
+  refillThreshold?: number;
+  refillThresholdNotifiedAt?: number;
+  status?: string;
+}
+
+export type RefillThresholdSyncResult =
+  | { status: 'scheduled' }
+  | { status: 'already-notified' }
+  | { status: 'not-applicable' }
+  | { status: 'permission-denied' }
+  | { status: 'unavailable' };
+
+const refillThresholdEntityId = (medicationId: string): string =>
+  `refill-threshold:${medicationId}`;
+
+const cancelRefillThresholdNotification = async (entityId: string): Promise<boolean> => {
+  try {
+    await cancelEntityNotification(entityId);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Reconcile one generic, private refill alert against recorded on-hand supply. */
+export const syncRefillThresholdNotification = async (
+  medication: RefillThresholdMedication,
+): Promise<RefillThresholdSyncResult> => {
+  const threshold = medication.refillThreshold;
+  const supply = medication.currentSupply ?? medication.remainingPills;
+  const entityId = refillThresholdEntityId(medication.id);
+
+  if (
+    medication.status === 'discontinued' ||
+    !Number.isFinite(threshold) ||
+    (threshold as number) < 0 ||
+    !Number.isFinite(supply) ||
+    (supply as number) > (threshold as number)
+  ) {
+    await cancelRefillThresholdNotification(entityId);
+    return { status: 'not-applicable' };
+  }
+
+  let serverPreferences: { enabled: boolean; topics: Record<PushTopic, boolean> };
+  try {
+    serverPreferences = await getServerPreferences();
+  } catch {
+    // Keep an already scheduled alert if the server cannot be reached offline.
+    return { status: 'unavailable' };
+  }
+
+  if (!serverPreferences.enabled || !serverPreferences.topics.medication_reminders) {
+    return (await cancelRefillThresholdNotification(entityId))
+      ? { status: 'permission-denied' }
+      : { status: 'unavailable' };
+  }
+
+  let devicePermission = false;
+  try {
+    devicePermission = await checkPermissions();
+  } catch {
+    // Permission state could not be confirmed, so do not schedule a new alert.
+  }
+  if (!devicePermission) {
+    return (await cancelRefillThresholdNotification(entityId))
+      ? { status: 'permission-denied' }
+      : { status: 'unavailable' };
+  }
+
+  if (medication.refillThresholdNotifiedAt === threshold) {
+    return { status: 'already-notified' };
+  }
+
+  if (!(await cancelRefillThresholdNotification(entityId))) {
+    return { status: 'unavailable' };
+  }
+  let notificationId: string | undefined;
+  try {
+    notificationId = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Refill reminder',
+        body: 'Recorded medication supply is at or below your set refill threshold.',
+        data: { type: 'medication' as NotificationGroup, category: 'medication' },
+        categoryIdentifier: 'medication',
+      },
+      trigger: null,
+    });
+    await saveNotificationIds(entityId, [notificationId]);
+    return { status: 'scheduled' };
+  } catch {
+    if (notificationId) {
+      await Notifications.cancelScheduledNotificationAsync(notificationId).catch(() => undefined);
+    }
+    return { status: 'unavailable' };
+  }
+};
+
+// ─── Preferences ─────────────────────────────────────────────────────────────
+
+export const getPreferences = async (): Promise<NotificationPreferences> => {
+  const stored = await getItem(PREFS_KEY);
+  return stored ? { ...DEFAULT_PREFS, ...JSON.parse(stored) } : DEFAULT_PREFS;
+};
+
+export const savePreferences = async (prefs: Partial<NotificationPreferences>): Promise<void> => {
+  const current = await getPreferences();
+  await setItem(PREFS_KEY, JSON.stringify({ ...current, ...prefs }));
+};
+
+// ─── Notification ID map helpers ─────────────────────────────────────────────
+
+const getNotificationMap = async (): Promise<Record<string, string[]>> => {
+  const stored = await getItem(NOTIFICATION_MAP_KEY);
+  return stored ? JSON.parse(stored) : {};
+};
+
+const saveNotificationIds = async (entityId: string, notificationIds: string[]): Promise<void> => {
+  const map = await getNotificationMap();
+  map[entityId] = notificationIds;
+  await setItem(NOTIFICATION_MAP_KEY, JSON.stringify(map));
+};
+
+const removeNotificationId = async (entityId: string): Promise<void> => {
+  const map = await getNotificationMap();
+  delete map[entityId];
+  await setItem(NOTIFICATION_MAP_KEY, JSON.stringify(map));
+};
+
+// ─── Medication reminders ─────────────────────────────────────────────────────
+
+export const scheduleMedicationReminder = async (medication: Medication): Promise<string[]> => {
+  const prefs = await getPreferences();
+  if (!prefs.medicationReminders) return [];
+
+  await cancelEntityNotification(medication.id);
+
+  const startDate = new Date(medication.startDate);
+  if (Number.isNaN(startDate.getTime())) return [];
+
+  const now = new Date();
+  const windowStart = startDate > now ? startDate : now;
+  const windowEnd = new Date(windowStart);
+  windowEnd.setDate(windowEnd.getDate() + 7);
+
+  const intervalMs = medication.frequency * 60 * 60 * 1000;
+  if (intervalMs <= 0) return [];
+
+  const endDate = medication.endDate ? new Date(medication.endDate) : null;
+  if (endDate && Number.isNaN(endDate.getTime())) return [];
+  if (endDate && endDate < windowStart) return [];
+
+  const lastDate = endDate && endDate < windowEnd ? endDate : windowEnd;
+  const notificationIds: string[] = [];
+
+  let currentDose = new Date(startDate);
+  if (currentDose < windowStart) {
+    const diff = windowStart.getTime() - currentDose.getTime();
+    const steps = Math.ceil(diff / intervalMs);
+    currentDose = new Date(currentDose.getTime() + steps * intervalMs);
+  }
+
+  while (currentDose <= lastDate) {
+    if (currentDose > new Date()) {
+      const notificationId = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: '💊 Medication Reminder',
+          body: `Time to give ${medication.name} (${medication.dosage})`,
+          sound: prefs.soundEnabled ? 'default' : undefined,
+          data: {
+            type: 'medication' as NotificationGroup,
+            category: resolveNotificationCategory('medication'),
+            medicationId: medication.id,
+          },
+          categoryIdentifier: resolveNotificationCategory('medication'),
+        },
+        trigger: {
+          type: 'date',
+          date: currentDose,
+        } as Notifications.DateTriggerInput,
+      });
+      notificationIds.push(notificationId);
+    }
+    currentDose = new Date(currentDose.getTime() + intervalMs);
+  }
+
+  await saveNotificationIds(medication.id, notificationIds);
+
+  // Store the timezone context for this medication's scheduled notifications
+  // Used to detect timezone changes and reschedule as needed
+  const currentTimezone = getDeviceTimezone();
+  await storeMedicationTimezone(medication.id, currentTimezone);
+
+  return notificationIds;
+};
+
+/**
+ * Reconciles medication reminder notifications after a timezone change.
+ *
+ * When the device timezone changes (travel, DST boundary, system settings):
+ * 1. Detects timezone mismatch with stored intent
+ * 2. Cancels all pending scheduled notifications for the medication
+ * 3. Reschedules them using the new device timezone (maintaining local time intent)
+ * 4. Updates stored timezone to current device timezone
+ *
+ * Idempotent: running twice in succession produces the same result (no duplicates).
+ *
+ * @param medicationId - ID of the medication to reconcile
+ * @param medication - The medication object (for rescheduling)
+ */
+export const reconcileMedicationNotificationsForTimezone = async (
+  medicationId: string,
+  medication: Medication,
+): Promise<void> => {
+  const storedTimezone = await getMedicationTimezone(medicationId);
+  const currentTimezone = getDeviceTimezone();
+
+  // If timezone hasn't changed, nothing to do
+  if (storedTimezone === currentTimezone) return;
+
+  // Reschedule all notifications for this medication
+  // (scheduleMedicationReminder cancels old ones and creates new ones)
+  await scheduleMedicationReminder(medication);
+};
+
+/**
+ * Reconciles timezone for all medications with pending scheduled notifications.
+ * Called on app foreground to detect and respond to timezone changes (travel, DST, etc).
+ *
+ * @param medications - Array of active medications to check
+ */
+export const reconcileAllMedicationNotificationsForTimezone = async (
+  medications: Medication[],
+): Promise<void> => {
+  const currentTimezone = getDeviceTimezone();
+
+  // Detect if any medication was scheduled in a different timezone
+  for (const med of medications) {
+    const storedTimezone = await getMedicationTimezone(med.id);
+    if (storedTimezone && storedTimezone !== currentTimezone) {
+      // Timezone has changed since last scheduling; reconcile this medication
+      await reconcileMedicationNotificationsForTimezone(med.id, med);
+    }
+  }
+};
+
+// ─── Appointment reminders ────────────────────────────────────────────────────
+
+export const scheduleAppointmentNotification = async (
+  appointment: Appointment,
+): Promise<string> => {
+  const prefs = await getPreferences();
+  if (!prefs.appointmentReminders) return '';
+
+  await cancelEntityNotification(appointment.id);
+
+  const appointmentDate = new Date(appointment.date);
+  const triggerDate = new Date(
+    appointmentDate.getTime() - prefs.reminderLeadTimeMinutes * 60 * 1000,
+  );
+
+  if (triggerDate <= new Date()) return ''; // already past
+
   const notificationId = await Notifications.scheduleNotificationAsync({
     content: {
-      title: 'Medication Reminder',
-      body: `Time to give ${medication.name} (${medication.dosage})`,
-      data: { type: 'medication', medicationId: medication.id },
+      title: '📅 Appointment Reminder',
+      body: `${appointment.title}${appointment.location ? ` at ${appointment.location}` : ''} in ${prefs.reminderLeadTimeMinutes} min`,
+      sound: prefs.soundEnabled ? 'default' : undefined,
+      data: {
+        type: 'appointment' as NotificationGroup,
+        category: resolveNotificationCategory('appointment'),
+        appointmentId: appointment.id,
+      },
+      categoryIdentifier: resolveNotificationCategory('appointment'),
     },
     trigger: {
-      hour: new Date(medication.startDate).getHours(),
-      minute: new Date(medication.startDate).getMinutes(),
-      repeats: true,
-    },
+      type: 'date',
+      date: triggerDate,
+    } as Notifications.DateTriggerInput,
   });
+
+  await saveNotificationIds(appointment.id, [notificationId]);
   return notificationId;
 };
 
-export const scheduleAppointmentNotification = async (appointment: Appointment): Promise<string> => {
-  const notificationId = await Notifications.scheduleNotificationAsync({
-    content: {
-      title: 'Appointment Reminder',
-      body: `${appointment.title}${appointment.location ? ` at ${appointment.location}` : ''}`,
-      data: { type: 'appointment', appointmentId: appointment.id },
-    },
-    trigger: {
-      date: new Date(appointment.date.getTime() - 60 * 60 * 1000), // 1 hour before
-    },
-  });
-  return notificationId;
-};
+// ─── Vaccination reminders ────────────────────────────────────────────────────
 
 export const scheduleVaccinationReminder = async (vaccination: Vaccination): Promise<string> => {
+  const prefs = await getPreferences();
+  if (!prefs.vaccinationAlerts) return '';
+
+  await cancelEntityNotification(vaccination.id);
+
+  const dueDate = new Date(vaccination.dueDate);
+  if (Number.isNaN(dueDate.getTime()) || dueDate <= new Date()) return '';
+
+  const notificationIds: string[] = [];
+  for (const leadDays of [30, 7, 1]) {
+    const triggerDate = new Date(dueDate);
+    triggerDate.setDate(dueDate.getDate() - leadDays);
+    if (triggerDate <= new Date()) continue;
+
+    const notificationId = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Vaccination Reminder',
+        body: `${vaccination.name} is due in ${leadDays} day${leadDays === 1 ? '' : 's'}`,
+        sound: prefs.soundEnabled ? 'default' : undefined,
+        data: {
+          type: 'vaccination' as NotificationGroup,
+          category: resolveNotificationCategory('vaccination'),
+          vaccinationId: vaccination.id,
+          petId: vaccination.petId,
+          dueDate: vaccination.dueDate,
+          leadDays,
+        },
+        categoryIdentifier: resolveNotificationCategory('vaccination'),
+      },
+      trigger: {
+        type: 'date',
+        date: triggerDate,
+      } as Notifications.DateTriggerInput,
+    });
+    notificationIds.push(notificationId);
+  }
+
+  await saveNotificationIds(vaccination.id, notificationIds);
+  return notificationIds[0] ?? '';
+};
+
+// ─── Alert helpers ───────────────────────────────────────────────────────────
+
+export const sendAlertNotification = async (
+  title: string,
+  body: string,
+  data: Record<string, unknown> = {},
+): Promise<string> => {
+  const prefs = await getPreferences();
   const notificationId = await Notifications.scheduleNotificationAsync({
     content: {
-      title: 'Vaccination Due',
-      body: `${vaccination.name} vaccination is due for your pet`,
-      data: { type: 'vaccination', vaccinationId: vaccination.id, petId: vaccination.petId },
+      title,
+      body,
+      sound: prefs.soundEnabled ? 'default' : undefined,
+      data: {
+        type: 'alert' as NotificationGroup,
+        ...data,
+        category: resolveNotificationCategory('alert'),
+      },
+      categoryIdentifier: resolveNotificationCategory('alert'),
     },
-    trigger: {
-      date: vaccination.dueDate,
-    },
+    trigger: null, // fire immediately
   });
   return notificationId;
+};
+
+// ─── Cancel helpers ───────────────────────────────────────────────────────────
+
+export const cancelEntityNotification = async (entityId: string): Promise<void> => {
+  const map = await getNotificationMap();
+  const notificationIds = map[entityId] ?? [];
+  await Promise.all(
+    notificationIds.map((notificationId) =>
+      Notifications.cancelScheduledNotificationAsync(notificationId),
+    ),
+  );
+  await removeNotificationId(entityId);
 };
 
 export const cancelNotification = async (notificationId: string): Promise<void> => {
@@ -87,4 +1156,333 @@ export const cancelNotification = async (notificationId: string): Promise<void> 
 
 export const cancelAllNotifications = async (): Promise<void> => {
   await Notifications.cancelAllScheduledNotificationsAsync();
+  await removeItem(NOTIFICATION_MAP_KEY);
+};
+
+// ─── Grouping helpers ─────────────────────────────────────────────────────────
+
+export const cancelGroupNotifications = async (
+  group: NotificationGroup,
+): Promise<Notifications.NotificationRequest[]> => {
+  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+  const toCancel = scheduled.filter(
+    (n: Notifications.NotificationRequest) => n.content.data?.type === group,
+  );
+  await Promise.all(
+    toCancel.map((n: Notifications.NotificationRequest) =>
+      Notifications.cancelScheduledNotificationAsync(n.identifier),
+    ),
+  );
+  return toCancel;
+};
+
+export const getScheduledByGroup = async (
+  group: NotificationGroup,
+): Promise<Notifications.NotificationRequest[]> => {
+  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+  return scheduled.filter((n: Notifications.NotificationRequest) => n.content.data?.type === group);
+};
+
+export const getAllScheduled = async (): Promise<Notifications.NotificationRequest[]> => {
+  return Notifications.getAllScheduledNotificationsAsync();
+};
+
+export const filterNotificationsByCategory = (
+  notifications: Notifications.NotificationRequest[],
+  category?: NotificationCategory | 'all',
+): Notifications.NotificationRequest[] => {
+  if (!category || category === 'all') return notifications;
+  return notifications.filter((notification) => getRequestCategory(notification) === category);
+};
+
+export const groupNotificationsByCategory = (
+  notifications: Notifications.NotificationRequest[],
+): Record<NotificationCategory, Notifications.NotificationRequest[]> => {
+  return notifications.reduce(
+    (groups, notification) => {
+      groups[getRequestCategory(notification)].push(notification);
+      return groups;
+    },
+    {
+      medication: [],
+      appointments: [],
+      health: [],
+      general: [],
+    } as Record<NotificationCategory, Notifications.NotificationRequest[]>,
+  );
+};
+
+export const getScheduledByCategory = async (
+  category: NotificationCategory | 'all',
+): Promise<Notifications.NotificationRequest[]> => {
+  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+  return filterNotificationsByCategory(scheduled, category);
+};
+
+// ─── Generic Scheduled Notifications ──────────────────────────────────────────
+
+export const scheduleFutureNotification = async (
+  notification: ScheduledNotification,
+): Promise<string> => {
+  const prefs = await getPreferences();
+  const scheduledDate = new Date(notification.scheduledDate);
+
+  if (scheduledDate <= new Date()) {
+    throw new Error('Scheduled date must be in the future');
+  }
+
+  const notificationId = await Notifications.scheduleNotificationAsync({
+    content: {
+      title: notification.title,
+      body: notification.body,
+      sound: prefs.soundEnabled ? 'default' : undefined,
+      data: {
+        type: 'scheduled' as NotificationGroup,
+        notificationId: notification.id,
+        ...notification.data,
+        category: resolveNotificationCategory('scheduled', notification.category),
+      },
+      categoryIdentifier:
+        notification.categoryIdentifier ||
+        resolveNotificationCategory('scheduled', notification.category),
+    },
+    trigger: {
+      type: 'date',
+      date: scheduledDate,
+    } as Notifications.DateTriggerInput,
+  });
+
+  // Store the mapping
+  const map = await getNotificationMap();
+  map[notification.id] = [notificationId];
+  await setItem(NOTIFICATION_MAP_KEY, JSON.stringify(map));
+
+  return notificationId;
+};
+
+export const updateScheduledNotification = async (
+  notification: ScheduledNotification,
+): Promise<string> => {
+  // Cancel existing notification
+  await cancelEntityNotification(notification.id);
+
+  // Schedule new one
+  return scheduleFutureNotification(notification);
+};
+
+export const cancelScheduledNotification = async (notificationId: string): Promise<void> => {
+  await cancelEntityNotification(notificationId);
+};
+
+// ─── Vaccination notification transfer ───────────────────────────────────────
+
+/**
+ * Called when a pet changes owner. Cancels all scheduled vaccination
+ * notifications for the pet on the current device, then asks the backend to
+ * trigger a push to the new owner so they can re-schedule the reminders.
+ *
+ * @param petId - ID of the transferred pet
+ * @param newOwnerUserId - User ID of the new owner
+ */
+export const cancelAndTransferVaccinationNotifications = async (
+  petId: string,
+  newOwnerUserId: string,
+): Promise<void> => {
+  // 1. Cancel every scheduled vaccination notification that belongs to this pet
+  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+  const petVaccinationNotifs = scheduled.filter(
+    (n: Notifications.NotificationRequest) =>
+      n.content.data?.type === 'vaccination' && n.content.data?.petId === petId,
+  );
+  await Promise.all(
+    petVaccinationNotifs.map((n: Notifications.NotificationRequest) =>
+      Notifications.cancelScheduledNotificationAsync(n.identifier),
+    ),
+  );
+
+  // 2. Clean up the notification map for any reminder ids associated with this pet
+  const map = await getNotificationMap();
+  const petReminderKeys = Object.keys(map).filter((key) => key.startsWith(`${petId}-`));
+  for (const key of petReminderKeys) {
+    delete map[key];
+  }
+  await setItem(NOTIFICATION_MAP_KEY, JSON.stringify(map));
+
+  // 3. Notify the backend so it can push a re-schedule request to the new owner's device
+  await apiClient.post('/api/notifications/vaccination-transfer', { petId, newOwnerUserId });
+};
+
+// ─── Ownership transfer: re-schedule vaccination reminders ───────────────────
+
+/**
+ * Called when a pet is transferred TO the current device/user.
+ * Cancels any existing vaccination notifications for each reminder (the previous
+ * owner's device keeps its own scheduled notifications — they will naturally
+ * become stale since the pet no longer belongs to them) and schedules fresh
+ * ones on this device.
+ *
+ * @param reminders - The vaccination reminders for the transferred pet,
+ *                    fetched fresh from the server after the transfer completes.
+ */
+export const transferVaccinationNotifications = async (
+  reminders: Array<{ id: string; name: string; dueDate: string; petId: string }>,
+): Promise<void> => {
+  await Promise.all(
+    reminders.map(async (reminder) => {
+      // Cancel any stale local notification for this reminder id, then re-schedule
+      await cancelEntityNotification(reminder.id);
+      await scheduleVaccinationReminder(reminder);
+    }),
+  );
+};
+
+// ─── Push token registration ──────────────────────────────────────────────────
+
+export type PushTopic =
+  | 'medication_reminders'
+  | 'appointment_alerts'
+  | 'sos_notifications'
+  | 'health_tips';
+
+export const ALL_PUSH_TOPICS: PushTopic[] = [
+  'medication_reminders',
+  'appointment_alerts',
+  'sos_notifications',
+  'health_tips',
+];
+
+/** Register the device's Expo push token with the backend. */
+export async function registerDeviceToken(): Promise<void> {
+  const granted = await requestPermissions();
+  if (!granted) return;
+
+  const tokenData = await Notifications.getExpoPushTokenAsync();
+  const token = tokenData.data;
+  await apiClient.post('/api/notifications/tokens', { token });
+}
+
+/** Remove a specific token (e.g. on logout). */
+export async function unregisterDeviceToken(token?: string): Promise<void> {
+  if (token) {
+    await apiClient.delete('/api/notifications/tokens', { data: { token } });
+  } else {
+    await apiClient.delete('/api/notifications/tokens/all');
+  }
+}
+
+/** Subscribe to a push topic. */
+export async function subscribeTopic(topic: PushTopic): Promise<void> {
+  await apiClient.put(`/api/notifications/subscriptions/${topic}`);
+}
+
+/** Unsubscribe from a push topic. */
+export async function unsubscribeTopic(topic: PushTopic): Promise<void> {
+  await apiClient.delete(`/api/notifications/subscriptions/${topic}`);
+}
+
+/** Get current topic subscriptions from backend. */
+export async function getTopicSubscriptions(): Promise<PushTopic[]> {
+  const res = await apiClient.get<{ success: boolean; data: { subscriptions: PushTopic[] } }>(
+    '/api/notifications/subscriptions',
+  );
+  return res.data.data.subscriptions;
+}
+
+/** Get push preferences from backend. */
+export async function getServerPreferences(): Promise<{
+  enabled: boolean;
+  topics: Record<PushTopic, boolean>;
+}> {
+  const res = await apiClient.get<{
+    success: boolean;
+    data: { enabled: boolean; topics: Record<PushTopic, boolean> };
+  }>('/api/notifications/preferences');
+  return res.data.data;
+}
+
+/** Update push preferences on backend. */
+export async function updateServerPreferences(
+  prefs: Partial<{ enabled: boolean; topics: Partial<Record<PushTopic, boolean>> }>,
+): Promise<void> {
+  await apiClient.patch('/api/notifications/preferences', prefs);
+}
+
+// ─── Privacy-aware notification content ─────────────────────────────────────
+
+export const getPrivateNotificationContent = (
+  category: NotificationCategory | NotificationGroup,
+  originalContent: { title: string; body: string },
+): { title: string; body: string } => {
+  const isPrivate =
+    (category === 'medication') || (category === 'appointment') || (category === 'vaccination' || category === 'health');
+
+  if (!isPrivate) return originalContent;
+
+  return {
+    title:
+      category === 'medication'
+        ? '💊 Reminder'
+        : category === 'appointment'
+          ? '📅 Reminder'
+          : category === 'vaccination' || category === 'health'
+            ? '🏥 Reminder'
+            : originalContent.title,
+    body: 'You have a reminder',
+  };
+};
+
+// ─── Push token lifecycle (rotation & revocation) ────────────────────────────
+
+const PUSH_TOKEN_KEY = '@push_token';
+
+export const registerPushToken = async (token?: string): Promise<string | null> => {
+  try {
+    const pushToken = token || (await Notifications.getExpoPushTokenAsync()).data;
+    if (!pushToken) return null;
+
+    await apiClient.post('/api/push/tokens', {
+      token: pushToken,
+      platform: 'mobile',
+      deviceId: 'device-fingerprint',
+    });
+
+    await setItem(PUSH_TOKEN_KEY, pushToken);
+    return pushToken;
+  } catch {
+    return null;
+  }
+};
+
+export const rotatePushToken = async (oldToken: string, newToken: string): Promise<void> => {
+  try {
+    await apiClient.post('/api/push/tokens', {
+      token: newToken,
+      platform: 'mobile',
+    });
+    await apiClient.delete(`/api/push/tokens/${oldToken}`);
+    await setItem(PUSH_TOKEN_KEY, newToken);
+  } catch {
+    // Non-critical
+  }
+};
+
+export const revokePushToken = async (token: string): Promise<void> => {
+  try {
+    await apiClient.delete(`/api/push/tokens/${token}`);
+    const stored = await getItem(PUSH_TOKEN_KEY);
+    if (stored === token) await removeItem(PUSH_TOKEN_KEY);
+  } catch {
+    // Non-critical
+  }
+};
+
+export const revokeAllDeviceTokensOnLogout = async (): Promise<void> => {
+  try {
+    const token = await getItem(PUSH_TOKEN_KEY);
+    if (token) {
+      await revokePushToken(token);
+    }
+  } catch {
+    // Non-critical
+  }
 };

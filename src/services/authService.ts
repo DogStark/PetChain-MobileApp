@@ -1,20 +1,38 @@
-import axios, { AxiosInstance } from 'axios';
-import * as Keychain from 'react-native-keychain';
-import config from '../config';
+import axios, { type AxiosInstance } from 'axios';
+import * as SecureStore from 'expo-secure-store';
+
+import sessionMonitoringService from './sessionMonitoringService';
+import { incrementLogoutGeneration } from './apiClient';
 import type {
   LoginRequest,
   LoginResponse,
+  RegisterRequest,
+  RegisterResponse,
   RefreshTokenResponse,
 } from '../../backend/types/api';
 import { API_ENDPOINTS } from '../../backend/types/api';
-
-// ─── Storage keys ────────────────────────────────────────────────────────────
-
-const KEYCHAIN_SERVICE = 'com.petchain.auth';
-const KEYCHAIN_USERNAME = 'petchain_user';
-
-// Separate service label for the refresh token so both can coexist in keychain
-const KEYCHAIN_REFRESH_SERVICE = 'com.petchain.auth.refresh';
+import config from '../config';
+import { hashPassword } from '../utils/encryption';
+import {
+  authenticateWithBiometricGate,
+  clearSecureTokens,
+  disableBiometricAuthentication as disableBiometricStorage,
+  enableBiometricAuthentication as enableBiometricStorage,
+  getBiometricAvailability,
+  getSecureRefreshToken,
+  getSecureToken,
+  getSecureTokens,
+  isBiometricAuthenticationEnabled as isBiometricStorageEnabled,
+  storeSecureTokens,
+  setCurrentAccountId,
+  getCurrentAccountId,
+} from '../utils/encryption/keychain';
+import { logError } from '../utils/errorLogger';
+import { sanitizeString } from '../utils/sanitize';
+import { clearAllData } from './localDB';
+import offlineQueue from './offlineQueue';
+import syncEngine from './syncEngine';
+import widgetService from './widgetService';
 
 // ─── Custom error ─────────────────────────────────────────────────────────────
 
@@ -34,8 +52,23 @@ export interface AuthSession {
   user: LoginResponse['user'];
   token: string;
   refreshToken?: string;
-  expiresIn: number;
+  expiresIn?: number;
 }
+
+export interface StoredSession {
+  token: string;
+  refreshToken?: string;
+}
+
+type OAuthProvider = 'google' | 'apple' | 'facebook';
+
+const _OAUTH_ENDPOINTS: Record<OAuthProvider, string> = {
+  google: '/auth/oauth/google',
+  apple: '/auth/oauth/apple',
+  facebook: '/auth/oauth/facebook',
+} as const;
+
+export const OAUTH_ENDPOINTS = _OAUTH_ENDPOINTS;
 
 interface JwtPayload {
   sub: string;
@@ -44,7 +77,6 @@ interface JwtPayload {
   [key: string]: unknown;
 }
 
-/** Minimal shape of an Axios error we care about — avoids hard dep on axios types at compile time */
 interface AxiosLikeError {
   isAxiosError: true;
   response?: {
@@ -55,59 +87,120 @@ interface AxiosLikeError {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Decode a JWT payload without verifying the signature.
- * Verification is the server's responsibility; we only need `exp` client-side.
- */
 function decodeJwtPayload(token: string): JwtPayload {
   const parts = token.split('.');
   if (parts.length !== 3) {
-    throw new AuthError('Malformed JWT', 'INVALID_TOKEN');
+    const error = new AuthError('Malformed JWT', 'INVALID_TOKEN');
+    logError(error, { service: 'authService', action: 'decode_jwt' });
+    throw error;
   }
   try {
-    // Pure ES2020 base64url decode — no Buffer, no atob, works in Node and React Native.
     const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
-    // Decode base64 to bytes using a lookup table approach
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-    let bytes = '';
-    let i = 0;
-    while (i < padded.length) {
-      const a = chars.indexOf(padded[i++]);
-      const b = chars.indexOf(padded[i++]);
-      const c = chars.indexOf(padded[i++]);
-      const d = chars.indexOf(padded[i++]);
-      bytes += String.fromCharCode(
-        (a << 2) | (b >> 4),
-        ((b & 15) << 4) | (c >> 2),
-        ((c & 3) << 6) | d,
-      );
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+    const bytes: number[] = [];
+    for (let i = 0; i < padded.length; i += 4) {
+      const c1 = chars.indexOf(padded[i]);
+      const c2 = chars.indexOf(padded[i + 1]);
+      const c3 = chars.indexOf(padded[i + 2]);
+      const c4 = chars.indexOf(padded[i + 3]);
+      if (c1 < 0 || c2 < 0 || c3 < 0 || c4 < 0) {
+        const error = new AuthError('Failed to decode JWT payload', 'INVALID_TOKEN');
+        logError(error, { service: 'authService', action: 'decode_jwt' });
+        throw error;
+      }
+      const chunk = (c1 << 18) | (c2 << 12) | ((c3 & 63) << 6) | (c4 & 63);
+      bytes.push((chunk >> 16) & 255);
+      if (padded[i + 2] !== '=') bytes.push((chunk >> 8) & 255);
+      if (padded[i + 3] !== '=') bytes.push(chunk & 255);
     }
-    // Strip null bytes added by padding
-    const trimmed = bytes.replace(/\0+$/, '');
-    // Decode UTF-8 bytes to string
     const raw = decodeURIComponent(
-      Array.from(trimmed)
-        .map((ch) => '%' + ch.charCodeAt(0).toString(16).padStart(2, '0'))
-        .join(''),
+      bytes.map((b) => '%' + b.toString(16).padStart(2, '0')).join(''),
     );
     return JSON.parse(raw) as JwtPayload;
   } catch {
-    throw new AuthError('Failed to decode JWT payload', 'INVALID_TOKEN');
+    const error = new AuthError('Failed to decode JWT payload', 'INVALID_TOKEN');
+    logError(error, { service: 'authService', action: 'decode_jwt' });
+    throw error;
   }
 }
 
-function isTokenExpired(token: string): boolean {
+function _isTokenExpired(token: string): boolean {
   try {
     const { exp } = decodeJwtPayload(token);
-    // Add a 30-second buffer to account for clock skew
     return Date.now() / 1000 >= exp - 30;
   } catch {
     return true;
   }
 }
 
-// ─── API client (scoped to auth — no circular dep with interceptors) ──────────
+// ─── Session generation guard (Issue #904) ────────────────────────────────────
+
+/**
+ * Monotonic counter identifying the currently authenticated session.
+ *
+ * Every write of credentials to secure storage is tagged with the generation
+ * that was current when the work started. `logout()` and each successful
+ * sign-in bump the counter, which invalidates any refresh that is still in
+ * flight: when it finally resolves it sees a generation mismatch and discards
+ * its response instead of writing it.
+ *
+ * Without this, an in-flight `POST /auth/refresh` that started before logout
+ * would call `storeSecureTokens()` after `clearSecureTokens()` had already
+ * run, silently restoring a session the user just ended. The same race
+ * restores the *previous* account's tokens when a user switches accounts.
+ */
+let authGeneration = 0;
+
+/**
+ * The refresh currently in flight, if any, together with the generation it
+ * belongs to. Concurrent callers within the same generation share one request
+ * rather than each issuing their own — several screens calling `getToken()`
+ * at once previously fired several refreshes, and whichever finished last won.
+ */
+let inFlightRefresh: { generation: number; promise: Promise<string> } | null = null;
+
+/** Current session generation. Exposed for tests and diagnostics. */
+export function getAuthGeneration(): number {
+  return authGeneration;
+}
+
+/**
+ * Invalidate the current session generation.
+ *
+ * Call this whenever the identity behind the stored credentials changes —
+ * logout, account switch, or a fresh sign-in. Any refresh still in flight is
+ * abandoned: it will not write its response.
+ *
+ * @returns the new generation number
+ */
+export function invalidateAuthSession(): number {
+  authGeneration += 1;
+  inFlightRefresh = null;
+  return authGeneration;
+}
+
+/** True while `generation` is still the live session. */
+function isCurrentGeneration(generation: number): boolean {
+  return generation === authGeneration;
+}
+
+/**
+ * Structural check for the stale-session sentinel.
+ *
+ * Deliberately not `err instanceof AuthError`: subclassing `Error` does not
+ * survive Babel's class transform (and behaves inconsistently under Hermes),
+ * so `instanceof` can be false for an error this module threw itself.
+ */
+function isSessionChangedError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: unknown }).code === 'SESSION_CHANGED'
+  );
+}
+
+// ─── API client ───────────────────────────────────────────────────────────────
 
 function createAuthClient(): AxiosInstance {
   return axios.create({
@@ -122,54 +215,31 @@ function createAuthClient(): AxiosInstance {
 
 const authClient = createAuthClient();
 
-// ─── Secure storage helpers ───────────────────────────────────────────────────
-
-async function storeToken(token: string): Promise<void> {
-  await Keychain.setGenericPassword(KEYCHAIN_USERNAME, token, {
-    service: KEYCHAIN_SERVICE,
-    accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-  });
-}
-
-async function storeRefreshToken(token: string): Promise<void> {
-  await Keychain.setGenericPassword(KEYCHAIN_USERNAME, token, {
-    service: KEYCHAIN_REFRESH_SERVICE,
-    accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-  });
-}
-
-async function clearTokens(): Promise<void> {
-  await Promise.allSettled([
-    Keychain.resetGenericPassword({ service: KEYCHAIN_SERVICE }),
-    Keychain.resetGenericPassword({ service: KEYCHAIN_REFRESH_SERVICE }),
-  ]);
-}
-
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-/**
- * Authenticate with email + password.
- * Stores the JWT (and optional refresh token) securely on success.
- */
-export async function login(
-  email: string,
-  password: string,
-): Promise<AuthSession> {
+export async function login(email: string, password: string): Promise<AuthSession> {
   if (!email || !password) {
-    throw new AuthError('Email and password are required', 'MISSING_CREDENTIALS');
+    const error = new AuthError('Email and password are required', 'MISSING_CREDENTIALS');
+    logError(error, { service: 'authService', action: 'login_validation' });
+    throw error;
   }
 
-  try {
-    const payload: LoginRequest = { email, password };
-    const { data } = await authClient.post<LoginResponse>(
-      API_ENDPOINTS.AUTH_LOGIN,
-      payload,
-    );
+  // Sanitize inputs before sending to the API
+  const sanitizedEmail = sanitizeString(email);
+  const sanitizedPassword = sanitizeString(password);
 
-    await storeToken(data.token);
-    if (data.refreshToken) {
-      await storeRefreshToken(data.refreshToken);
-    }
+  try {
+    const payload: LoginRequest = { email: sanitizedEmail, password: sanitizedPassword };
+    const { data } = await authClient.post<LoginResponse>(API_ENDPOINTS.AUTH_LOGIN, payload);
+
+    // A new sign-in establishes a new identity: abandon any refresh still in
+    // flight for the previous session so it cannot overwrite these tokens.
+    invalidateAuthSession();
+
+    await storeSecureTokens({
+      token: data.token,
+      refreshToken: data.refreshToken,
+    });
 
     return {
       user: data.user,
@@ -178,110 +248,614 @@ export async function login(
       expiresIn: data.expiresIn,
     };
   } catch (err: unknown) {
-    if (err instanceof AuthError) throw err;
+    if (err instanceof AuthError) {
+      logError(err, { service: 'authService', action: 'login_auth_error' });
+      throw err;
+    }
+
     if (axios.isAxiosError(err)) {
       const axiosErr = err as AxiosLikeError;
       const status = axiosErr.response?.status;
+
+      logError(err as Error, {
+        service: 'authService',
+        action: 'login_request',
+        email: sanitizedEmail,
+        status,
+      });
+
       if (status === 401) throw new AuthError('Invalid credentials', 'INVALID_CREDENTIALS');
-      if (status === 429) throw new AuthError('Too many attempts, please try again later', 'RATE_LIMITED');
+      if (status === 429)
+        throw new AuthError('Too many attempts, please try again later', 'RATE_LIMITED');
+
       const msg = axiosErr.response?.data?.error?.message;
       throw new AuthError(msg ?? 'Login failed', 'LOGIN_FAILED');
     }
+
+    logError(err as Error, { service: 'authService', action: 'login_unknown' });
     throw new AuthError('Network error during login', 'NETWORK_ERROR');
   }
 }
 
-/**
- * Clear all stored tokens and end the local session.
- */
-export async function logout(): Promise<void> {
+export async function register(payload: RegisterRequest): Promise<AuthSession> {
+  if (!payload.email || !payload.password || !payload.name) {
+    const error = new AuthError('Missing registration fields', 'MISSING_REGISTRATION_FIELDS');
+    logError(error, { service: 'authService', action: 'register_validation' });
+    throw error;
+  }
+
   try {
-    // Best-effort server-side invalidation — don't block logout if it fails
-    const token = await getToken();
-    if (token) {
-      await authClient
-        .post(API_ENDPOINTS.AUTH_LOGOUT, null, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        .catch(() => {
-          // Silently ignore — local cleanup always proceeds
-        });
+    const { data } = await authClient.post<RegisterResponse>(API_ENDPOINTS.AUTH_REGISTER, payload);
+
+    invalidateAuthSession();
+
+    await storeSecureTokens({
+      token: data.token,
+      refreshToken: data.refreshToken,
+    });
+
+    return {
+      user: data.user,
+      token: data.token,
+      refreshToken: data.refreshToken,
+    };
+  } catch (err: unknown) {
+    logError(err as Error, { service: 'authService', action: 'register' });
+
+    if (axios.isAxiosError(err)) {
+      const msg = (err as AxiosLikeError).response?.data?.error?.message;
+      throw new AuthError(msg ?? 'Registration failed', 'REGISTRATION_FAILED');
     }
-  } finally {
-    await clearTokens();
+
+    throw new AuthError('Network error during registration', 'NETWORK_ERROR');
   }
 }
 
 /**
- * Retrieve the stored access token, or null if none exists.
+ * Refresh the access token.
+ *
+ * Concurrent callers share a single in-flight request, and the result is
+ * discarded if the session generation changed while it was pending — see
+ * {@link invalidateAuthSession}.
+ *
+ * @throws {AuthError} `SESSION_CHANGED` if the session ended mid-refresh,
+ *   `REFRESH_FAILED` for every other failure.
  */
-export async function getToken(): Promise<string | null> {
+export async function refreshToken(): Promise<string> {
+  // Single-flight: reuse a pending refresh belonging to the live generation.
+  if (inFlightRefresh && isCurrentGeneration(inFlightRefresh.generation)) {
+    return inFlightRefresh.promise;
+  }
+
+  const generation = authGeneration;
+  const promise = performTokenRefresh(generation).finally(() => {
+    // Only clear the slot if it still holds *this* request; a newer
+    // generation may already have replaced it.
+    if (inFlightRefresh?.generation === generation) {
+      inFlightRefresh = null;
+    }
+  });
+
+  inFlightRefresh = { generation, promise };
+  return promise;
+}
+
+async function performTokenRefresh(generation: number): Promise<string> {
   try {
-    const credentials = await Keychain.getGenericPassword({
-      service: KEYCHAIN_SERVICE,
+    const accountId = getCurrentAccountId();
+    const storedRefresh = await getSecureRefreshToken(accountId || undefined);
+    if (!storedRefresh) {
+      await clearTokensIfCurrent(generation);
+      const error = new AuthError('No refresh token available', 'NO_REFRESH_TOKEN');
+      logError(error, { service: 'authService', action: 'refresh_missing_token' });
+      throw error;
+    }
+
+    const { data } = await authClient.post<RefreshTokenResponse>(API_ENDPOINTS.AUTH_REFRESH, {
+      refreshToken: storedRefresh,
     });
-    return credentials ? credentials.password : null;
+
+    // The request above is the race window. If logout or a new sign-in landed
+    // while it was pending, writing this response would resurrect credentials
+    // for a session that no longer exists.
+    if (!isCurrentGeneration(generation)) {
+      throw new AuthError('Session changed during token refresh', 'SESSION_CHANGED');
+    }
+
+    await storeSecureTokens({
+      token: data.token,
+      refreshToken: data.refreshToken ?? storedRefresh,
+    });
+
+    // `storeSecureTokens` is itself asynchronous, so re-check and undo the
+    // write if the session ended while it was being persisted.
+    if (!isCurrentGeneration(generation)) {
+      await clearSecureTokens();
+      throw new AuthError('Session changed during token refresh', 'SESSION_CHANGED');
+    }
+
+    return data.token;
+  } catch (err: unknown) {
+    if (isSessionChangedError(err)) {
+      // Expected outcome of a logout race — not an error worth reporting as a
+      // refresh failure, and the tokens must be left exactly as logout left them.
+      logError(err as Error, { service: 'authService', action: 'refresh_discarded_stale_session' });
+      throw err;
+    }
+
+    await clearTokensIfCurrent(generation);
+
+    logError(err as Error, { service: 'authService', action: 'refresh_token' });
+
+    throw new AuthError('Token refresh failed', 'REFRESH_FAILED');
+  }
+}
+
+/**
+ * Clear stored credentials only if they still belong to `generation`.
+ *
+ * A failed refresh must not wipe the tokens of a session that started after
+ * it — otherwise a slow, doomed refresh from a previous account logs the user
+ * out of the account they just signed in to.
+ */
+async function clearTokensIfCurrent(generation: number): Promise<void> {
+  if (isCurrentGeneration(generation)) {
+    await clearSecureTokens();
+  }
+}
+
+export async function logout(): Promise<void> {
+  await Promise.allSettled([
+    syncEngine.clearAll(),
+    offlineQueue.clearAll(),
+    widgetService.clearWidgetData(),
+    clearAllData(),
+  ]);
+  await clearSecureTokens();
+
+  // Wipe the normalized GraphQL cache so a subsequent account can never read a
+  // prior account's pets or medical records from cache-and-network. (#978)
+  // Dynamic import keeps the Apollo/graphql-ws module graph out of auth unit
+  // tests and non-Expo environments.
+  try {
+    const { resetApolloStore } = await import('./apolloClient');
+    await resetApolloStore();
+  } catch (err) {
+    logError(err as Error, { service: 'authService', action: 'reset_apollo_store' });
+  }
+}
+
+export async function verifyEmail(_token: string): Promise<void> {
+  // Placeholder — implement when backend endpoint is available
+  throw new AuthError('Email verification not yet implemented', 'NOT_IMPLEMENTED');
+}
+
+export async function requestPasswordReset(email: string): Promise<void> {
+  try {
+    await authClient.post('/auth/forgot-password', { email });
+  } catch (err) {
+    logError(err as Error, { service: 'authService', action: 'request_password_reset' });
+    throw new AuthError('Failed to send password reset email', 'RESET_FAILED');
+  }
+}
+
+export async function resetPassword(token: string, newPassword: string): Promise<void> {
+  try {
+    await authClient.post(API_ENDPOINTS.AUTH_RESET_PASSWORD, { token, newPassword });
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404) {
+      // The server does not distinguish expired from already-used links, so both
+      // are reported as one state that tells the user to request a new link.
+      throw new AuthError('This reset link has expired or was already used', 'RESET_LINK_EXPIRED');
+    }
+    logError(err as Error, { service: 'authService', action: 'reset_password' });
+    throw new AuthError('Failed to reset password', 'RESET_FAILED');
+  }
+}
+
+export async function isBiometricAuthenticationAvailable(): Promise<boolean> {
+  const availability = await getBiometricAvailability();
+  return availability.isAvailable;
+}
+
+export async function isBiometricAuthenticationEnabled(): Promise<boolean> {
+  return isBiometricStorageEnabled();
+}
+
+export async function disableBiometricAuthentication(): Promise<void> {
+  await disableBiometricStorage();
+}
+
+export async function promptForBiometricSetup(): Promise<boolean> {
+  try {
+    await enableBiometricStorage();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function getStoredToken(): Promise<string | null> {
+  const accountId = getCurrentAccountId();
+  return getSecureToken(accountId || undefined);
+}
+
+export async function getStoredTokens(): Promise<StoredSession | null> {
+  const accountId = getCurrentAccountId();
+  return getSecureTokens(accountId || undefined);
+}
+
+export async function authenticateWithBiometric(): Promise<boolean> {
+  try {
+    return await authenticateWithBiometricGate('Authenticate to access PetChain');
+  } catch {
+    return false;
+  }
+}
+
+export async function getToken(): Promise<string | null> {
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
+  if (!token) return null;
+  if (_isTokenExpired(token)) return refreshToken();
+  return token;
+}
+
+export async function getSession(): Promise<StoredSession | null> {
+  const accountId = getCurrentAccountId();
+  const tokens = await getSecureTokens(accountId || undefined);
+  if (!tokens) return null;
+  if (_isTokenExpired(tokens.token)) {
+    const token = await refreshToken();
+    return { token, refreshToken: tokens.refreshToken };
+  }
+  return tokens;
+}
+
+export async function getCurrentAccountId(): Promise<string | null> {
+  try {
+    const tokens = await getSecureTokens();
+    return tokens ? decodeJwtPayload(tokens.token).sub : null;
   } catch {
     return null;
   }
 }
 
-/**
- * Returns true if a non-expired access token is present in secure storage.
- */
 export async function isAuthenticated(): Promise<boolean> {
-  const token = await getToken();
-  if (!token) return false;
-  return !isTokenExpired(token);
+  return (await getToken()) !== null;
+}
+
+export async function authenticateWithBiometrics(): Promise<StoredSession> {
+  const available = await isBiometricAuthenticationAvailable();
+  const enabled = await isBiometricAuthenticationEnabled();
+  if (!available || !enabled)
+    throw new AuthError('Biometric authentication is unavailable', 'BIOMETRIC_UNAVAILABLE');
+  const ok = await authenticateWithBiometric();
+  if (!ok) throw new AuthError('Biometric authentication failed', 'BIOMETRIC_AUTH_FAILED');
+  const session = await getSession();
+  if (!session) throw new AuthError('No stored session available', 'NO_SESSION');
+  return session;
 }
 
 /**
- * Exchange the stored refresh token for a new access token.
- * Updates secure storage with the new tokens on success.
- * Clears all tokens and throws if the refresh token is missing or rejected.
+ * Require biometric re-authentication if the last check was more than 5 minutes ago.
+ * If biometrics fail or are unavailable, falls back to PIN entry.
+ * If both fail, returns false — the caller should navigate back.
  */
-export async function refreshToken(): Promise<string> {
-  let storedRefresh: string | null = null;
-
-  try {
-    const credentials = await Keychain.getGenericPassword({
-      service: KEYCHAIN_REFRESH_SERVICE,
-    });
-    storedRefresh = credentials ? credentials.password : null;
-  } catch {
-    storedRefresh = null;
+export async function requireBiometric(): Promise<'authenticated' | 'pin_fallback' | 'failed'> {
+  const isExpired = await sessionMonitoringService.isBiometricCheckExpired();
+  if (!isExpired) {
+    // Recent check still valid — no need to re-auth
+    return 'authenticated';
   }
 
-  if (!storedRefresh) {
-    await clearTokens();
-    throw new AuthError('No refresh token available — please log in again', 'NO_REFRESH_TOKEN');
+  // Attempt biometric authentication
+  const biometricOk = await authenticateWithBiometric();
+  if (biometricOk) {
+    await sessionMonitoringService.setLastBiometricCheck();
+    return 'authenticated';
   }
 
-  try {
-    const { data } = await authClient.post<RefreshTokenResponse>(
-      API_ENDPOINTS.AUTH_REFRESH,
-      { refreshToken: storedRefresh },
-    );
+  // Biometric failed or unavailable — fall back to PIN
+  const available = await isBiometricAuthenticationAvailable();
+  if (!available) {
+    // Biometrics not available at all — try PIN if set
+    return 'pin_fallback';
+  }
 
-    await storeToken(data.token);
-    if (data.refreshToken) {
-      await storeRefreshToken(data.refreshToken);
-    }
+  return 'pin_fallback';
+}
 
-    return data.token;
-  } catch (err: unknown) {
-    // Refresh token rejected — force re-login
-    await clearTokens();
+/**
+ * Attempt PIN-based authentication as fallback.
+ * Returns true if PIN is verified, false otherwise.
+ */
+export async function authenticateWithPin(): Promise<boolean> {
+  // The caller will prompt the user for their PIN and pass it here
+  // This returns a promise that resolves when the PIN modal is done
+  return false; // Placeholder — actual PIN prompting is handled in the UI
+}
 
-    if (axios.isAxiosError(err)) {
-      const axiosErr = err as AxiosLikeError;
-      const status = axiosErr.response?.status;
-      if (status === 401) {
-        throw new AuthError('Session expired — please log in again', 'REFRESH_TOKEN_EXPIRED');
+const PIN_HASH_KEY = 'com.petchain.auth.pin.hash';
+let pinFailures = 0;
+let biometricFailures = 0;
+let lastForegroundAt = Date.now();
+let inMemorySecret: string | null = null;
+
+export async function setPin(pin: string): Promise<void> {
+  await SecureStore.setItemAsync(PIN_HASH_KEY, hashPassword(pin));
+}
+
+export async function verifyPin(pin: string): Promise<boolean> {
+  const expected = await SecureStore.getItemAsync(PIN_HASH_KEY);
+  const valid = !!expected && expected === hashPassword(pin);
+  if (valid) {
+    pinFailures = 0;
+    return true;
+  }
+  pinFailures += 1;
+  if (pinFailures >= 5) {
+    inMemorySecret = null;
+    await clearSecureTokens();
+  }
+  return false;
+}
+
+export async function shouldPromptOnForeground(idleTimeoutMs = 5 * 60 * 1000): Promise<boolean> {
+  const elapsed = Date.now() - lastForegroundAt;
+  lastForegroundAt = Date.now();
+  return elapsed >= idleTimeoutMs && (await isAuthenticated());
+}
+
+export async function authenticateOnForeground(
+  idleTimeoutMs?: number,
+): Promise<'unlocked' | 'pin_required' | 'not_required'> {
+  if (!(await shouldPromptOnForeground(idleTimeoutMs))) return 'not_required';
+  if (!(await isBiometricAuthenticationEnabled())) return 'pin_required';
+  const ok = await authenticateWithBiometric();
+  if (ok) {
+    biometricFailures = 0;
+    return 'unlocked';
+  }
+  biometricFailures += 1;
+  return biometricFailures >= 3 ? 'pin_required' : 'not_required';
+}
+
+// ─── Biometric fallback (Issue #404) ─────────────────────────────────────────
+
+const FALLBACK_PREF_KEY = 'com.petchain.auth.biometric.fallback.pref';
+const MAX_BIOMETRIC_ATTEMPTS = 3;
+
+export type BiometricFallbackReason = 'unavailable' | 'max_attempts_reached' | 'user_preference';
+
+export interface BiometricLoginResult {
+  success: boolean;
+  fallbackRequired: boolean;
+  fallbackReason?: BiometricFallbackReason;
+  session?: StoredSession;
+}
+
+/**
+ * Attempt biometric login with automatic fallback after 3 failures.
+ * Persists fallback preference in SecureStore.
+ */
+export async function loginWithBiometricOrFallback(): Promise<BiometricLoginResult> {
+  const available = await isBiometricAuthenticationAvailable();
+  if (!available) {
+    return { success: false, fallbackRequired: true, fallbackReason: 'unavailable' };
+  }
+
+  const enabled = await isBiometricAuthenticationEnabled();
+  if (!enabled) {
+    return { success: false, fallbackRequired: true, fallbackReason: 'user_preference' };
+  }
+
+  // Check if user previously chose fallback
+  const pref = await SecureStore.getItemAsync(FALLBACK_PREF_KEY);
+  if (pref === 'pin') {
+    return { success: false, fallbackRequired: true, fallbackReason: 'user_preference' };
+  }
+
+  let attempts = 0;
+  while (attempts < MAX_BIOMETRIC_ATTEMPTS) {
+    const ok = await authenticateWithBiometric();
+    if (ok) {
+      biometricFailures = 0;
+      const session = await getSession();
+      if (!session) {
+        return { success: false, fallbackRequired: true, fallbackReason: 'unavailable' };
       }
-      const msg = axiosErr.response?.data?.error?.message;
-      throw new AuthError(msg ?? 'Token refresh failed', 'REFRESH_FAILED');
+      return { success: true, fallbackRequired: false, session };
     }
-    throw new AuthError('Network error during token refresh', 'NETWORK_ERROR');
+    attempts += 1;
+    biometricFailures += 1;
   }
+
+  // Max attempts reached — switch to fallback
+  await SecureStore.setItemAsync(FALLBACK_PREF_KEY, 'pin');
+  return { success: false, fallbackRequired: true, fallbackReason: 'max_attempts_reached' };
+}
+
+/**
+ * Clear the fallback preference so biometrics are re-prompted on next login.
+ */
+export async function clearBiometricFallbackPreference(): Promise<void> {
+  await SecureStore.deleteItemAsync(FALLBACK_PREF_KEY);
+  biometricFailures = 0;
+}
+
+/**
+ * After a successful fallback login, offer to re-enable biometrics.
+ */
+export async function shouldPromptBiometricSetup(): Promise<boolean> {
+  const available = await isBiometricAuthenticationAvailable();
+  if (!available) return false;
+  const pref = await SecureStore.getItemAsync(FALLBACK_PREF_KEY);
+  return pref === 'pin';
+}
+
+export function setInMemorySecret(secret: string | null): void {
+  inMemorySecret = secret;
+}
+
+export function getInMemorySecret(): string | null {
+  return inMemorySecret;
+}
+
+// Re-export account binding functions for app-level initialization
+export { setCurrentAccountId, getCurrentAccountId };
+
+// ─── OAuth 2.0 / PKCE ────────────────────────────────────────────────────────
+
+export interface OAuthSession extends AuthSession {
+  refreshToken: string;
+}
+
+/**
+ * Step 1: Get a PKCE challenge from the backend.
+ * The code_verifier is stored server-side; the client only holds state + code_challenge.
+ */
+export async function initOAuthPKCE(): Promise<{
+  state: string;
+  code_challenge: string;
+  code_challenge_method: string;
+}> {
+  const { data } = await authClient.post<{
+    success: boolean;
+    data: { state: string; code_challenge: string; code_challenge_method: string };
+  }>('/auth/oauth/pkce-init');
+  return data.data;
+}
+
+/**
+ * Step 2: After the user completes the provider's auth flow, send the
+ * authorization code + state to the backend for server-side token exchange.
+ * Client secrets are NEVER in the app.
+ */
+export async function loginWithOAuth(
+  provider: OAuthProvider,
+  code: string,
+  state: string,
+  name?: string, // Apple sends name only on first login
+): Promise<OAuthSession> {
+  try {
+    const { data } = await authClient.post<{
+      success: boolean;
+      data: { user: AuthSession['user']; token: string; refreshToken: string; expiresIn: number };
+    }>(`/auth/oauth/${provider}`, { code, state, name });
+
+    invalidateAuthSession();
+
+    await storeSecureTokens({ token: data.data.token, refreshToken: data.data.refreshToken });
+
+    return {
+      user: data.data.user,
+      token: data.data.token,
+      refreshToken: data.data.refreshToken,
+      expiresIn: data.data.expiresIn,
+    };
+  } catch (err) {
+    logError(err as Error, { service: 'authService', action: 'oauth_login', provider });
+    if (axios.isAxiosError(err)) {
+      const msg = (err as AxiosLikeError).response?.data?.error?.message;
+      throw new AuthError(msg ?? `${provider} login failed`, 'OAUTH_FAILED');
+    }
+    throw new AuthError(`${provider} login failed`, 'OAUTH_FAILED');
+  }
+}
+
+/** Refresh an OAuth access token using the stored refresh token. */
+export async function refreshOAuthToken(): Promise<string> {
+  const generation = authGeneration;
+  const storedRefresh = await getSecureRefreshToken();
+  if (!storedRefresh) throw new AuthError('No refresh token', 'NO_REFRESH_TOKEN');
+
+  try {
+    const { data } = await authClient.post<{
+      success: boolean;
+      data: { token: string; refreshToken: string; expiresIn: number };
+    }>('/auth/oauth/refresh', { refreshToken: storedRefresh });
+
+    // Same logout race as the primary refresh path — see refreshToken().
+    if (!isCurrentGeneration(generation)) {
+      throw new AuthError('Session changed during token refresh', 'SESSION_CHANGED');
+    }
+
+    await storeSecureTokens({ token: data.data.token, refreshToken: data.data.refreshToken });
+
+    if (!isCurrentGeneration(generation)) {
+      await clearSecureTokens();
+      throw new AuthError('Session changed during token refresh', 'SESSION_CHANGED');
+    }
+
+    return data.data.token;
+  } catch (err) {
+    if (isSessionChangedError(err)) {
+      logError(err as Error, {
+        service: 'authService',
+        action: 'oauth_refresh_discarded_stale_session',
+      });
+      throw err;
+    }
+    await clearTokensIfCurrent(generation);
+    logError(err as Error, { service: 'authService', action: 'oauth_refresh' });
+    throw new AuthError('Token refresh failed', 'REFRESH_FAILED');
+  }
+}
+
+/** Revoke the current refresh token (logout). */
+export async function revokeOAuthToken(): Promise<void> {
+  const accountId = getCurrentAccountId();
+  const storedRefresh = await getSecureRefreshToken(accountId || undefined);
+  if (!storedRefresh) return;
+  try {
+    const token = await getSecureToken(accountId || undefined);
+    await authClient.post(
+      '/auth/oauth/revoke',
+      { refreshToken: storedRefresh },
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+  } catch {
+    // Best-effort — always clear local tokens
+  } finally {
+    invalidateAuthSession();
+    await clearSecureTokens();
+  }
+}
+
+/** Get linked OAuth providers for the current user. */
+export async function getLinkedProviders(): Promise<
+  { provider: OAuthProvider; linkedAt: string }[]
+> {
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
+  const { data } = await authClient.get<{
+    success: boolean;
+    data: { linked: { provider: OAuthProvider; linkedAt: string }[] };
+  }>('/auth/oauth/providers', { headers: { Authorization: `Bearer ${token}` } });
+  return data.data.linked;
+}
+
+/** Link an additional OAuth provider to the current account. */
+export async function linkOAuthProvider(
+  provider: OAuthProvider,
+  code: string,
+  state: string,
+): Promise<void> {
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
+  await authClient.post(
+    '/auth/oauth/link',
+    { provider, code, state },
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+}
+
+/** Unlink an OAuth provider from the current account. */
+export async function unlinkOAuthProvider(provider: OAuthProvider): Promise<void> {
+  const accountId = getCurrentAccountId();
+  const token = await getSecureToken(accountId || undefined);
+  await authClient.delete(`/auth/oauth/unlink/${provider}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
 }

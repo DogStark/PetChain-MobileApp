@@ -1,0 +1,575 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ExpoSQLite from 'expo-sqlite';
+import { AppState, type AppStateStatus } from 'react-native';
+
+import apiClient from './apiClient';
+import { executeSql } from './localDB';
+import { networkMonitor, type NetworkStatus } from '../utils/networkMonitor';
+
+export type SyncEntityType =
+  | 'pet'
+  | 'appointment'
+  | 'medication'
+  | 'medicalRecord'
+  | 'streak'
+  | 'badge';
+export type SyncAction = 'create' | 'update' | 'delete';
+export type ConflictResolutionStrategy = 'last-write-wins' | 'server-wins' | 'client-wins';
+export type SyncEventType = 'queued' | 'started' | 'progress' | 'completed' | 'failed' | 'conflict';
+
+export interface DirtyRecord {
+  id: string;
+  entityType: SyncEntityType;
+  entityId: string;
+  action: SyncAction;
+  payload: Record<string, unknown>;
+  updatedAt: string;
+  syncVersion: number;
+  attempts: number;
+  lastError: string | null;
+}
+
+/**
+ * Privacy-safe view of a queued record that needs a retry.
+ *
+ * Deliberately excludes `payload`: retry details must never expose pet names,
+ * notes, or medical contents.
+ */
+export interface SyncRetryRecord {
+  id: string;
+  entityType: SyncEntityType;
+  entityId: string;
+  action: SyncAction;
+  updatedAt: string;
+  syncVersion: number;
+  attempts: number;
+  lastError: string | null;
+}
+
+/** Snapshot used to detect a record changing between viewing and retrying it. */
+export interface SyncRetryExpectedState {
+  attempts: number;
+  syncVersion: number;
+}
+
+export type SyncRetryOutcome =
+  | { type: 'completed' }
+  | { type: 'stale'; current: SyncRetryRecord | null }
+  | { type: 'offline' }
+  | { type: 'permission-denied'; current: SyncRetryRecord | null; message: string }
+  | { type: 'failed'; current: SyncRetryRecord | null; message: string };
+
+export interface SyncProgressEvent {
+  type: SyncEventType;
+  total: number;
+  completed: number;
+  failed: number;
+  message?: string;
+  retryAt?: number;
+  retryDelayMs?: number;
+  record?: DirtyRecord;
+}
+
+export interface SyncEngineOptions {
+  batchSize?: number;
+  maxRetries?: number;
+  strategy?: ConflictResolutionStrategy;
+  pauseOnExpensiveNetwork?: boolean;
+}
+
+type SyncListener = (event: SyncProgressEvent) => void;
+
+const DEFAULT_OPTIONS: Required<SyncEngineOptions> = {
+  batchSize: 25,
+  maxRetries: 5,
+  strategy: 'last-write-wins',
+  pauseOnExpensiveNetwork: false,
+};
+
+// ── Exponential backoff constants ─────────────────────────────────────────────
+
+/** Backoff steps in ms: 30s → 60s → 120s → 300s → 600s */
+const BACKOFF_STEPS_MS = [30_000, 60_000, 120_000, 300_000, 600_000];
+const MAX_JITTER_RATIO = 0.25;
+
+/** Non-retryable HTTP status codes — surface immediately, no backoff */
+const NON_RETRYABLE_STATUSES = new Set([401, 403, 422]);
+
+const BACKOFF_STORAGE_KEY = '@sync_engine:backoff';
+
+interface BackoffState {
+  /** Current step index into BACKOFF_STEPS_MS */
+  stepIndex: number;
+  /** Timestamp when the next retry is allowed */
+  nextRetryAt: number;
+}
+
+/** Raw row shape for a queued mutation, including its private payload. */
+type DirtyRecordRow = {
+  id: string;
+  entity_type: SyncEntityType;
+  entity_id: string;
+  action: SyncAction;
+  payload: string;
+  updated_at: string;
+  sync_version: number;
+  attempts: number;
+  last_error?: string | null;
+};
+
+/** Row shape for retry metadata — payload is never selected. */
+type SyncRetryRow = Omit<DirtyRecordRow, 'payload'>;
+
+export class SyncEngine {
+  private listeners = new Set<SyncListener>();
+  private isRunning = false;
+  private readonly options: Required<SyncEngineOptions>;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private appStateSubscription: { remove: () => void } | null = null;
+  private networkSubscription: (() => void) | null = null;
+  private lastNetworkStatus: NetworkStatus | null = null;
+
+  constructor(options: SyncEngineOptions = {}) {
+    this.options = { ...DEFAULT_OPTIONS, ...options };
+    this._subscribeAppState();
+    this.networkSubscription = networkMonitor.onStatusChange((status) => {
+      const previous = this.lastNetworkStatus;
+      this.lastNetworkStatus = status;
+      const wasEligible = this.isNetworkEligible(previous);
+      if (this.isNetworkEligible(status) && !wasEligible) this.syncNow().catch(() => {});
+    });
+  }
+
+  // ── Backoff helpers ───────────────────────────────────────────────────────
+
+  private async _getBackoffState(): Promise<BackoffState> {
+    try {
+      const raw = await AsyncStorage.getItem(BACKOFF_STORAGE_KEY);
+      if (raw) return JSON.parse(raw) as BackoffState;
+    } catch {
+      /* ignore */
+    }
+    return { stepIndex: 0, nextRetryAt: 0 };
+  }
+
+  private async _advanceBackoff(): Promise<void> {
+    const state = await this._getBackoffState();
+    const stepIndex = Math.min(state.stepIndex, BACKOFF_STEPS_MS.length - 1);
+    const baseDelay = BACKOFF_STEPS_MS[stepIndex];
+    const jitter = (Math.random() * 2 - 1) * MAX_JITTER_RATIO;
+    const delay = Math.min(
+      BACKOFF_STEPS_MS[BACKOFF_STEPS_MS.length - 1],
+      Math.max(1, Math.round(baseDelay * (1 + jitter))),
+    );
+    const nextStep = Math.min(stepIndex + 1, BACKOFF_STEPS_MS.length - 1);
+    const next: BackoffState = { stepIndex: nextStep, nextRetryAt: Date.now() + delay };
+    await AsyncStorage.setItem(BACKOFF_STORAGE_KEY, JSON.stringify(next));
+    this._scheduleRetry(delay);
+  }
+
+  private async _resetBackoff(): Promise<void> {
+    await AsyncStorage.removeItem(BACKOFF_STORAGE_KEY);
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  private _scheduleRetry(delayMs: number): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => {
+      this.syncNow().catch(() => {});
+    }, delayMs);
+  }
+
+  private isNetworkEligible(status: NetworkStatus | null): boolean {
+    return Boolean(
+      status?.isOnline && !(this.options.pauseOnExpensiveNetwork && status.isConnectionExpensive),
+    );
+  }
+
+  private _subscribeAppState(): void {
+    this.appStateSubscription = AppState.addEventListener('change', (state: AppStateStatus) => {
+      // On foreground, attempt one sync immediately regardless of backoff
+      if (state === 'active') {
+        this.syncNow().catch(() => {});
+      }
+    });
+  }
+
+  /** Release resources (call on teardown) */
+  destroy(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.appStateSubscription?.remove();
+    this.networkSubscription?.();
+  }
+
+  async initialize(): Promise<void> {
+    await executeSql(
+      `CREATE TABLE IF NOT EXISTS dirty_records (
+        id TEXT PRIMARY KEY NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_version INTEGER NOT NULL DEFAULT 1,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT
+      )`,
+    );
+    await executeSql(
+      `CREATE INDEX IF NOT EXISTS idx_dirty_records_updated_at ON dirty_records(updated_at ASC)`,
+    );
+  }
+
+  onProgress(listener: SyncListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** Maximum automatic attempts allowed for a queued record. */
+  getRetryLimit(): number {
+    return this.options.maxRetries;
+  }
+
+  async markDirty(
+    entityType: SyncEntityType,
+    entityId: string,
+    action: SyncAction,
+    payload: Record<string, unknown>,
+  ): Promise<DirtyRecord> {
+    await this.initialize();
+    const updatedAt = new Date().toISOString();
+    const id = `${entityType}:${entityId}`;
+    const existing = await this.getDirtyRecord(id);
+    const record: DirtyRecord = {
+      id,
+      entityType,
+      entityId,
+      action,
+      payload: { ...payload, id: entityId, updated_at: updatedAt, updatedAt },
+      updatedAt,
+      syncVersion: (existing?.syncVersion ?? 0) + 1,
+      attempts: existing?.attempts ?? 0,
+      // A new local edit has not been attempted against the server yet.
+      lastError: null,
+    };
+
+    await executeSql(
+      `INSERT OR REPLACE INTO dirty_records
+        (id, entity_type, entity_id, action, payload, updated_at, sync_version, attempts, last_error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        record.id,
+        record.entityType,
+        record.entityId,
+        record.action,
+        JSON.stringify(record.payload),
+        record.updatedAt,
+        record.syncVersion,
+        record.attempts,
+        record.lastError,
+      ],
+    );
+    this.emit({ type: 'queued', total: 1, completed: 0, failed: 0, record });
+    return record;
+  }
+
+  async syncNow(): Promise<SyncProgressEvent> {
+    await this.initialize();
+    if (this.isRunning) return { type: 'started', total: 0, completed: 0, failed: 0 };
+    const networkStatus = await networkMonitor.getStatus();
+    this.lastNetworkStatus = networkStatus;
+    if (!networkStatus.isOnline) {
+      return { type: 'failed', total: 0, completed: 0, failed: 0, message: 'Device is offline' };
+    }
+    if (this.options.pauseOnExpensiveNetwork && networkStatus.isConnectionExpensive) {
+      return {
+        type: 'failed',
+        total: 0,
+        completed: 0,
+        failed: 0,
+        message: 'Sync paused on an expensive network',
+      };
+    }
+
+    this.isRunning = true;
+    const batch = await this.getBatch();
+    const total = batch.length;
+    let completed = 0;
+    let failed = 0;
+    this.emit({ type: 'started', total, completed, failed });
+
+    for (const record of batch) {
+      if (!this.isRunning) break;
+      try {
+        await this.pushRecord(record);
+        await this.clearRecord(record.id);
+        completed += 1;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown sync failure';
+        const status = (error as { response?: { status?: number } })?.response?.status;
+
+        if (status != null && NON_RETRYABLE_STATUSES.has(status)) {
+          // Non-retryable: surface immediately, do not schedule backoff retry
+          await this.clearRecord(record.id);
+          this.emit({
+            type: 'failed',
+            total,
+            completed,
+            failed: failed + 1,
+            message: `Non-retryable error ${status}: ${message}`,
+            record,
+          });
+        } else {
+          await this.recordFailure(record, message);
+        }
+        failed += 1;
+      }
+      this.emit({ type: 'progress', total, completed, failed, record });
+    }
+
+    this.isRunning = false;
+    const event: SyncProgressEvent = {
+      type: failed > 0 ? 'failed' : 'completed',
+      total,
+      completed,
+      failed,
+    };
+    if (failed > 0 && batch.some((record) => record.attempts + 1 < this.options.maxRetries)) {
+      await this._advanceBackoff();
+      const backoff = await this._getBackoffState();
+      event.retryAt = backoff.nextRetryAt;
+      event.retryDelayMs = Math.max(0, backoff.nextRetryAt - Date.now());
+      event.message = `Retry scheduled in ${Math.ceil(event.retryDelayMs / 1000)} seconds`;
+    } else {
+      await this._resetBackoff();
+    }
+
+    this.emit(event);
+    return event;
+  }
+
+  resolveConflict(
+    localData: Record<string, unknown>,
+    serverData: Record<string, unknown>,
+    strategy: ConflictResolutionStrategy = this.options.strategy,
+  ): Record<string, unknown> {
+    if (strategy === 'server-wins') return serverData;
+    if (strategy === 'client-wins') return localData;
+
+    const localUpdatedAt = Date.parse(String(localData.updated_at ?? localData.updatedAt ?? 0));
+    const serverUpdatedAt = Date.parse(String(serverData.updated_at ?? serverData.updatedAt ?? 0));
+    const base = serverUpdatedAt >= localUpdatedAt ? serverData : localData;
+    const merged: Record<string, unknown> = { ...base };
+    const keys = new Set([...Object.keys(localData), ...Object.keys(serverData)]);
+
+    for (const key of keys) {
+      const localValue = localData[key];
+      const serverValue = serverData[key];
+      if (localValue === undefined) merged[key] = serverValue;
+      else if (serverValue === undefined) merged[key] = localValue;
+      else merged[key] = serverUpdatedAt >= localUpdatedAt ? serverValue : localValue;
+    }
+
+    return merged;
+  }
+
+  // ── Retry details ─────────────────────────────────────────────────────────
+
+  /**
+   * Lists records that need a retry without reading their payloads.
+   *
+   * Only sanitized metadata is selected from SQLite so private pet data can
+   * never leak into a retry detail view, log, or accessibility announcement.
+   */
+  async listRetryRecords(): Promise<SyncRetryRecord[]> {
+    await this.initialize();
+    const conn = ExpoSQLite.openDatabaseSync('petchain.db');
+    const rows = (await conn.getAllAsync(
+      `SELECT id, entity_type, entity_id, action, updated_at, sync_version, attempts, last_error
+       FROM dirty_records
+       WHERE attempts > 0 OR last_error IS NOT NULL
+       ORDER BY updated_at ASC`,
+    )) as SyncRetryRow[];
+
+    return rows
+      .map((row) => this.toRetryRecord(row))
+      // Keep the JS filter in sync with the SQL predicate so mocked database
+      // adapters (and future SQLite versions) behave identically.
+      .filter((record) => record.attempts > 0 || record.lastError !== null);
+  }
+
+  /** Reads one record's retry metadata, never its payload. */
+  async getRetryRecord(id: string): Promise<SyncRetryRecord | null> {
+    await this.initialize();
+    const conn = ExpoSQLite.openDatabaseSync('petchain.db');
+    const row = (await conn.getFirstAsync(
+      `SELECT id, entity_type, entity_id, action, updated_at, sync_version, attempts, last_error
+       FROM dirty_records WHERE id = ? LIMIT 1`,
+      [id],
+    )) as SyncRetryRow | null;
+
+    return row ? this.toRetryRecord(row) : null;
+  }
+
+  /**
+   * Retries a single queued record on explicit user request.
+   *
+   * Safety rules:
+   *  - refuses to run offline (the record stays queued);
+   *  - detects a stale view when the record changed or disappeared;
+   *  - keeps the record on every failure, including 401/403 — authorization
+   *    is confirmed by the server and never inferred locally;
+   *  - reuses the record's versioned idempotency key, so a repeated tap cannot
+   *    create duplicate server records.
+   */
+  async retryRecord(
+    id: string,
+    expected?: SyncRetryExpectedState,
+  ): Promise<SyncRetryOutcome> {
+    await this.initialize();
+    const current = await this.getRetryRecord(id);
+
+    if (!current) return { type: 'stale', current: null };
+    if (
+      expected &&
+      (current.attempts !== expected.attempts || current.syncVersion !== expected.syncVersion)
+    ) {
+      return { type: 'stale', current };
+    }
+
+    const networkStatus = await networkMonitor.getStatus();
+    this.lastNetworkStatus = networkStatus;
+    if (!networkStatus.isOnline) return { type: 'offline' };
+    if (this.options.pauseOnExpensiveNetwork && networkStatus.isConnectionExpensive) {
+      return { type: 'offline' };
+    }
+
+    // Payload is read only to perform the push; it is never returned to callers.
+    const record = await this.getDirtyRecord(id);
+    if (!record) return { type: 'stale', current: null };
+
+    try {
+      await this.pushRecord(record);
+      await this.clearRecord(record.id);
+      this.emit({ type: 'completed', total: 1, completed: 1, failed: 0 });
+      return { type: 'completed' };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown sync failure';
+      const status = (error as { response?: { status?: number } })?.response?.status;
+
+      await this.recordFailure(record, message);
+      const updated = await this.getRetryRecord(id);
+
+      if (status === 401 || status === 403) {
+        // Server-confirmed denial. Keep the queued change rather than silently
+        // discarding it; access may be restored after re-authentication.
+        this.emit({
+          type: 'failed',
+          total: 1,
+          completed: 0,
+          failed: 1,
+          message: 'Permission denied',
+          record,
+        });
+        return { type: 'permission-denied', current: updated, message };
+      }
+
+      this.emit({ type: 'failed', total: 1, completed: 0, failed: 1, message, record });
+      return { type: 'failed', current: updated, message };
+    }
+  }
+
+  private async getDirtyRecord(id: string): Promise<DirtyRecord | null> {
+    const conn = ExpoSQLite.openDatabaseSync('petchain.db');
+    const row = (await conn.getFirstAsync(`SELECT * FROM dirty_records WHERE id = ? LIMIT 1`, [
+      id,
+    ])) as DirtyRecordRow | null;
+
+    if (!row) return null;
+    return this.fromRow(row);
+  }
+
+  private async getBatch(): Promise<DirtyRecord[]> {
+    const conn = ExpoSQLite.openDatabaseSync('petchain.db');
+    const rows = (await conn.getAllAsync(
+      `SELECT * FROM dirty_records WHERE attempts < ? ORDER BY updated_at ASC LIMIT ?`,
+      [this.options.maxRetries, this.options.batchSize],
+    )) as DirtyRecordRow[];
+    return rows.map((row) => this.fromRow(row));
+  }
+
+  private async pushRecord(record: DirtyRecord): Promise<void> {
+    const response = await apiClient.post('/sync/push', {
+      records: [record],
+      strategy: this.options.strategy,
+    }, {
+      headers: { 'Idempotency-Key': `sync-${record.id}-${record.syncVersion}` },
+    });
+    const result = response.data as {
+      results?: Array<{ status: string; serverRecord?: Record<string, unknown> }>;
+    };
+    const first = result.results?.[0];
+    if (!first || first.status === 'failed') throw new Error('Server rejected sync record');
+    if (first.status === 'conflict' && first.serverRecord) {
+      this.emit({ type: 'conflict', total: 1, completed: 0, failed: 0, record });
+    }
+  }
+
+  private async clearRecord(id: string): Promise<void> {
+    await executeSql(`DELETE FROM dirty_records WHERE id = ?`, [id]);
+  }
+
+  private async recordFailure(record: DirtyRecord, message: string): Promise<void> {
+    await executeSql(
+      `UPDATE dirty_records SET attempts = attempts + 1, last_error = ? WHERE id = ?`,
+      [message, record.id],
+    );
+  }
+
+  private fromRow(row: DirtyRecordRow): DirtyRecord {
+    return {
+      id: row.id,
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      action: row.action,
+      payload: JSON.parse(row.payload) as Record<string, unknown>,
+      updatedAt: row.updated_at,
+      syncVersion: row.sync_version,
+      attempts: row.attempts,
+      lastError: row.last_error ?? null,
+    };
+  }
+
+  private toRetryRecord(row: SyncRetryRow): SyncRetryRecord {
+    return {
+      id: row.id,
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      action: row.action,
+      updatedAt: row.updated_at,
+      syncVersion: row.sync_version,
+      attempts: row.attempts,
+      lastError: row.last_error ?? null,
+    };
+  }
+
+  private emit(event: SyncProgressEvent): void {
+    this.listeners.forEach((listener) => listener(event));
+  }
+
+  async clearAll(): Promise<void> {
+    this.isRunning = false;
+    await this._resetBackoff();
+    try {
+      await executeSql(`DELETE FROM dirty_records`);
+    } catch {
+      // Ignored if table doesn't exist yet
+    }
+  }
+}
+
+export const syncEngine = new SyncEngine();
+export default syncEngine;

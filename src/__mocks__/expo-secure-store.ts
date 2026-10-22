@@ -1,0 +1,10 @@
+export const getItemAsync = jest.fn();
+export const setItemAsync = jest.fn();
+export const deleteItemAsync = jest.fn();
+export const isAvailableAsync = jest.fn().mockResolvedValue(true);
+export const ALWAYS = 'ALWAYS';
+export const WHEN_UNLOCKED = 'WHEN_UNLOCKED';
+export const AFTER_FIRST_UNLOCK = 'AFTER_FIRST_UNLOCK';
+export const WHEN_PASSCODE_SET_THIS_DEVICE_ONLY = 'WHEN_PASSCODE_SET_THIS_DEVICE_ONLY';
+export const WHEN_UNLOCKED_THIS_DEVICE_ONLY = 'WHEN_UNLOCKED_THIS_DEVICE_ONLY';
+export const AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY = 'AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY';

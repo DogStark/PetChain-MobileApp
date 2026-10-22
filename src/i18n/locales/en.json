@@ -1,0 +1,125 @@
+{
+  "common": {
+    "loading": "Loading...",
+    "retry": "Retry",
+    "cancel": "Cancel",
+    "save": "Save",
+    "delete": "Delete",
+    "confirm": "Confirm",
+    "back": "Back",
+    "next": "Next",
+    "done": "Done",
+    "error": "Error",
+    "success": "Success",
+    "unknown_error": "An unexpected error occurred.",
+    "network_error": "Network error. Check your connection.",
+    "timeout_error": "Request timed out. Please try again."
+  },
+  "auth": {
+    "login_title": "Welcome back",
+    "login_subtitle": "Sign in to your account",
+    "register_title": "Create account",
+    "email_label": "Email",
+    "email_placeholder": "you@example.com",
+    "password_label": "Password",
+    "password_placeholder": "At least 8 characters",
+    "name_label": "Full name",
+    "name_placeholder": "Your name",
+    "login_button": "Sign in",
+    "register_button": "Create account",
+    "logout_button": "Sign out",
+    "no_account": "Don't have an account?",
+    "have_account": "Already have an account?",
+    "forgot_password": "Forgot password?",
+    "validation": {
+      "email_required": "Email is required.",
+      "email_invalid": "Please enter a valid email address.",
+      "password_required": "Password is required.",
+      "password_weak": "Password must be at least 8 characters, include 1 uppercase letter and 1 number.",
+      "name_required": "Name is required."
+    }
+  },
+  "home": {
+    "title": "My Pets",
+    "add_pet": "Add pet",
+    "no_pets": "No pets yet. Add your first pet!",
+    "greeting": "Hello, {{name}}"
+  },
+  "pet": {
+    "profile_title": "Pet Profile",
+    "name_label": "Name",
+    "species_label": "Species",
+    "breed_label": "Breed",
+    "dob_label": "Date of birth",
+    "weight_label": "Weight",
+    "edit_button": "Edit profile",
+    "delete_button": "Remove pet",
+    "delete_confirm": "Are you sure you want to remove {{name}}?",
+    "validation": {
+      "name_required": "Pet name is required.",
+      "dob_invalid": "Please enter a valid date of birth."
+    }
+  },
+  "medical": {
+    "title": "Medical Records",
+    "add_record": "Add record",
+    "no_records": "No medical records found.",
+    "record_date": "Date",
+    "record_type": "Type",
+    "record_notes": "Notes",
+    "vaccination": "Vaccination",
+    "checkup": "Check-up",
+    "surgery": "Surgery",
+    "other": "Other"
+  },
+  "appointments": {
+    "title": "Appointments",
+    "add_appointment": "Schedule appointment",
+    "no_appointments": "No upcoming appointments.",
+    "date_label": "Date",
+    "time_label": "Time",
+    "vet_label": "Veterinarian",
+    "notes_label": "Notes",
+    "upcoming": "Upcoming",
+    "past": "Past",
+    "cancel_confirm": "Cancel this appointment?"
+  },
+  "medication": {
+    "title": "Medications",
+    "add_medication": "Add medication",
+    "no_medications": "No medications recorded.",
+    "name_label": "Medication name",
+    "dosage_label": "Dosage",
+    "frequency_label": "Frequency",
+    "start_date_label": "Start date",
+    "end_date_label": "End date",
+    "reminder": "Reminder set"
+  },
+  "qr": {
+    "title": "QR Scanner",
+    "scan_prompt": "Point the camera at a QR code",
+    "scan_success": "QR code scanned successfully",
+    "scan_error": "Could not read QR code. Try again.",
+    "permission_denied": "Camera permission is required to scan QR codes."
+  },
+  "emergency": {
+    "title": "Emergency",
+    "call_vet": "Call emergency vet",
+    "nearest_clinic": "Find nearest clinic",
+    "first_aid": "First aid guide",
+    "alert_sent": "Emergency alert sent"
+  },
+  "error_boundary": {
+    "title": "Something went wrong",
+    "subtitle": "An unexpected error occurred on the {{screen}} screen. Our team has been notified.",
+    "report_retry": "Report & Retry"
+  },
+  "accessibility": {
+    "close_button": "Close",
+    "menu_button": "Open menu",
+    "back_button": "Go back",
+    "loading_indicator": "Loading",
+    "error_screen": "Error screen",
+    "pet_image": "Photo of {{name}}"
+  }
+}

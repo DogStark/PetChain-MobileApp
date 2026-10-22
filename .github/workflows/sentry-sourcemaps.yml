@@ -1,0 +1,81 @@
+name: Sentry — Source Map Upload
+
+# Runs after a production EAS build completes.
+# Uploads source maps so stack traces resolve correctly in the Sentry dashboard.
+# Only runs for production/release builds; skipped for dev/preview.
+
+on:
+  workflow_run:
+    workflows: ["Deploy — EAS Build & Submit to Stores"]
+    types: [completed]
+    branches: [main, master]
+
+jobs:
+  upload-source-maps:
+    name: Upload Source Maps to Sentry
+    runs-on: ubuntu-latest
+    # Only run when the triggering deploy workflow succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Sentry CLI
+        run: npm install --no-save @sentry/cli
+
+      - name: Build JS bundle (production)
+        run: |
+          npx expo export \
+            --platform all \
+            --output-dir dist \
+            --no-minify
+        env:
+          APP_ENV: production
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      - name: Upload source maps to Sentry
+        # continue-on-error prevents CI failure if Sentry is temporarily unavailable
+        continue-on-error: true
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          GIT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-8)
+          BUILD_NUMBER="${{ github.run_number }}"
+          RELEASE="petchain-mobile@${VERSION}+${BUILD_NUMBER}.${GIT_SHA}"
+
+          npx sentry-cli releases new "$RELEASE" \
+            --org "$SENTRY_ORG" \
+            --project "$SENTRY_PROJECT"
+
+          npx sentry-cli releases set-commits "$RELEASE" \
+            --auto \
+            --org "$SENTRY_ORG" \
+            --project "$SENTRY_PROJECT" || true
+
+          npx sentry-cli releases files "$RELEASE" upload-sourcemaps dist \
+            --org "$SENTRY_ORG" \
+            --project "$SENTRY_PROJECT" \
+            --rewrite \
+            --strip-prefix dist/
+
+          npx sentry-cli releases finalize "$RELEASE" \
+            --org "$SENTRY_ORG" \
+            --project "$SENTRY_PROJECT"
+
+          npx sentry-cli releases deploys "$RELEASE" new \
+            --env production \
+            --org "$SENTRY_ORG" \
+            --project "$SENTRY_PROJECT"
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}

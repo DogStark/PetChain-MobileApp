@@ -1,0 +1,282 @@
+scalar DateTime
+
+# ── Enums ──────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  owner
+  vet
+  admin
+}
+
+enum Species {
+  dog
+  cat
+  bird
+  rabbit
+  other
+}
+
+enum MedicalRecordType {
+  checkup
+  vaccination
+  surgery
+  treatment
+  other
+}
+
+enum MedicationFrequency {
+  once_daily
+  twice_daily
+  three_times_daily
+  every_other_day
+  weekly
+  as_needed
+}
+
+enum MedicationStatus {
+  active
+  paused
+  completed
+  discontinued
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+  RESCHEDULED
+}
+
+enum AppointmentType {
+  ROUTINE_CHECKUP
+  VACCINATION
+  SURGERY
+  DENTAL
+  GROOMING
+  EMERGENCY
+  FOLLOW_UP
+  DIAGNOSTIC
+  SPECIALIST_REFERRAL
+  NUTRITION_CONSULTATION
+}
+
+# ── Types ──────────────────────────────────────────────────────────────────────
+
+type User {
+  id: ID!
+  email: String!
+  name: String!
+  phone: String
+  role: UserRole!
+  pets: [Pet!]!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  isEmailVerified: Boolean!
+  lastLoginAt: DateTime
+}
+
+type Pet {
+  id: ID!
+  name: String!
+  species: Species!
+  breed: String
+  dateOfBirth: DateTime
+  microchipId: String
+  photoUrl: String
+  ownerId: ID!
+  owner: User
+  medicalRecords: [MedicalRecord!]!
+  medications: [Medication!]!
+  appointments: [Appointment!]!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+type MedicalRecord {
+  id: ID!
+  petId: ID!
+  vetId: ID!
+  pet: Pet
+  vet: User
+  type: MedicalRecordType!
+  diagnosis: String
+  treatment: String
+  notes: String
+  visitDate: DateTime!
+  nextVisitDate: DateTime
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+type Medication {
+  id: ID!
+  petId: ID!
+  pet: Pet
+  name: String!
+  dosage: String!
+  frequency: MedicationFrequency!
+  durationDays: Int!
+  startDate: DateTime!
+  endDate: DateTime
+  status: MedicationStatus!
+  instructions: String
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+type Appointment {
+  id: ID!
+  petId: ID!
+  vetId: ID!
+  pet: Pet
+  vet: User
+  date: String!
+  time: String!
+  durationMinutes: Int
+  type: AppointmentType!
+  status: AppointmentStatus!
+  notes: String
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+# ── Subscription payloads ──────────────────────────────────────────────────────
+
+type SosAlert {
+  id: ID!
+  userId: ID!
+  petId: ID
+  latitude: Float
+  longitude: Float
+  message: String!
+  triggeredAt: DateTime!
+}
+
+type SyncStatus {
+  userId: ID!
+  status: String!
+  updatedAt: DateTime!
+}
+
+# ── Inputs ─────────────────────────────────────────────────────────────────────
+
+input CreatePetInput {
+  name: String!
+  species: Species!
+  breed: String
+  dateOfBirth: DateTime
+  microchipId: String
+  photoUrl: String
+}
+
+input UpdatePetInput {
+  name: String
+  species: Species
+  breed: String
+  dateOfBirth: DateTime
+  microchipId: String
+  photoUrl: String
+}
+
+input CreateMedicalRecordInput {
+  petId: ID!
+  vetId: ID!
+  type: MedicalRecordType!
+  diagnosis: String
+  treatment: String
+  notes: String
+  visitDate: DateTime!
+  nextVisitDate: DateTime
+}
+
+input CreateMedicationInput {
+  petId: ID!
+  name: String!
+  dosage: String!
+  frequency: MedicationFrequency!
+  durationDays: Int!
+  startDate: DateTime!
+  endDate: DateTime
+  instructions: String
+}
+
+input UpdateMedicationInput {
+  name: String
+  dosage: String
+  frequency: MedicationFrequency
+  durationDays: Int
+  startDate: DateTime
+  endDate: DateTime
+  status: MedicationStatus
+  instructions: String
+}
+
+input CreateAppointmentInput {
+  petId: ID!
+  vetId: ID!
+  date: String!
+  time: String!
+  durationMinutes: Int
+  type: AppointmentType!
+  notes: String
+}
+
+input UpdateAppointmentInput {
+  date: String
+  time: String
+  durationMinutes: Int
+  type: AppointmentType
+  status: AppointmentStatus
+  notes: String
+}
+
+input TriggerSosInput {
+  petId: ID
+  latitude: Float
+  longitude: Float
+  message: String!
+}
+
+# ── Root types ─────────────────────────────────────────────────────────────────
+
+type Query {
+  me: User!
+  user(id: ID!): User
+  users: [User!]!
+
+  pet(id: ID!): Pet
+  myPets: [Pet!]!
+
+  medicalRecord(id: ID!): MedicalRecord
+  petMedicalRecords(petId: ID!): [MedicalRecord!]!
+
+  medication(id: ID!): Medication
+  petMedications(petId: ID!): [Medication!]!
+
+  appointment(id: ID!): Appointment
+  petAppointments(petId: ID!): [Appointment!]!
+  myAppointments: [Appointment!]!
+}
+
+type Mutation {
+  createPet(input: CreatePetInput!): Pet!
+  updatePet(id: ID!, input: UpdatePetInput!): Pet!
+  deletePet(id: ID!): Boolean!
+
+  createMedicalRecord(input: CreateMedicalRecordInput!): MedicalRecord!
+
+  createMedication(input: CreateMedicationInput!): Medication!
+  updateMedication(id: ID!, input: UpdateMedicationInput!): Medication!
+
+  createAppointment(input: CreateAppointmentInput!): Appointment!
+  updateAppointment(id: ID!, input: UpdateAppointmentInput!): Appointment!
+
+  triggerSos(input: TriggerSosInput!): SosAlert!
+}
+
+type Subscription {
+  sosAlert: SosAlert!
+  syncStatus: SyncStatus!
+}

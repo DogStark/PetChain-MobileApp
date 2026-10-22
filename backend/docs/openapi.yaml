@@ -1,0 +1,249 @@
+openapi: 3.1.0
+info:
+  title: PetChain API
+  version: 2.0.0
+  description: |
+    PetChain REST API.
+
+    **v1** (`/api/v1`) is deprecated and will be removed on 2026-12-01.
+    Migrate to **v2** (`/api/v2`) — see [migration guide](./migration-v1-to-v2.md).
+
+servers:
+  - url: /api/v2
+    description: v2 (current)
+  - url: /api/v1
+    description: v1 (deprecated — Sunset 2026-12-01)
+
+tags:
+  - name: pets
+  - name: users
+  - name: medical-records
+  - name: appointments
+  - name: medications
+  - name: analytics
+
+# ── Shared components ──────────────────────────────────────────────────────────
+components:
+  schemas:
+    # v1 Pet
+    PetV1:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        species: { type: string }
+        breed: { type: string, nullable: true }
+        dateOfBirth: { type: string, format: date, nullable: true }
+        microchipId: { type: string, nullable: true }
+        photoUrl: { type: string, nullable: true }
+        ownerId: { type: string }
+        owner:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string }
+            name: { type: string }
+            email: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    # v2 Pet — breaking changes: birthDate, ownerInfo
+    PetV2:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        species: { type: string }
+        breed: { type: string, nullable: true }
+        birthDate: { type: string, format: date, nullable: true }
+        microchipId: { type: string, nullable: true }
+        photoUrl: { type: string, nullable: true }
+        ownerId: { type: string }
+        ownerInfo:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string }
+            name: { type: string }
+            email: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    PetV2List:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/PetV2' }
+        total: { type: integer }
+        page: { type: integer }
+        limit: { type: integer }
+
+    ApiSuccess:
+      type: object
+      properties:
+        success: { type: boolean, enum: [true] }
+        data: {}
+        message: { type: string }
+        timestamp: { type: string, format: date-time }
+
+    ApiError:
+      type: object
+      properties:
+        success: { type: boolean, enum: [false] }
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+        timestamp: { type: string, format: date-time }
+
+  headers:
+    Deprecation:
+      description: Signals the endpoint is deprecated (RFC 8594)
+      schema: { type: string, enum: ['true'] }
+    Sunset:
+      description: Date after which the endpoint will be removed
+      schema: { type: string }
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+
+# ── v2 Paths ───────────────────────────────────────────────────────────────────
+paths:
+  /health:
+    get:
+      summary: Health check
+      tags: [pets]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  version: { type: string }
+                  timestamp: { type: string }
+
+  /pets:
+    get:
+      summary: List pets (v2 — paginated)
+      tags: [pets]
+      parameters:
+        - in: query
+          name: ownerId
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: Paginated pet list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PetV2List' }
+    post:
+      summary: Create pet (v2 — uses birthDate)
+      tags: [pets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, species, ownerId]
+              properties:
+                name: { type: string }
+                species: { type: string }
+                breed: { type: string }
+                birthDate: { type: string, format: date }
+                microchipId: { type: string }
+                photoUrl: { type: string }
+                ownerId: { type: string }
+      responses:
+        '201':
+          description: Pet created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PetV2' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /pets/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get pet by ID (v2)
+      tags: [pets]
+      responses:
+        '200':
+          description: Pet
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PetV2' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      summary: Update pet (v2 — uses birthDate)
+      tags: [pets]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                species: { type: string }
+                breed: { type: string }
+                birthDate: { type: string, format: date }
+                microchipId: { type: string }
+                photoUrl: { type: string }
+      responses:
+        '200':
+          description: Updated pet
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PetV2' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      summary: Delete pet (v2 — returns 204)
+      tags: [pets]
+      responses:
+        '204':
+          description: Deleted (no content)
+        '404': { $ref: '#/components/responses/NotFound' }

@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android Auto Backup Rules (API 23 – 30)
+  ========================================
+  Referenced by AndroidManifest.xml: android:fullBackupContent="@xml/backup_rules"
+
+  Policy: Exclude ALL sensitive local data from Android Auto Backup.
+  Data that is encrypted at rest (AES-256) is still excluded because the
+  backup transport may export the ciphertext to an untrusted cloud surface,
+  and the encryption key is stored only in expo-secure-store (Keystore),
+  which is not backed up. Restoring only the ciphertext without the key
+  would be useless AND could expose metadata about the user's activity.
+
+  Excluded paths
+  ──────────────
+  databases/petchain.db
+    expo-sqlite local database: stores medications, dose logs, appointments,
+    health metrics, SOAP note drafts, and the kv_store containing auth
+    tokens, pet data, notification prefs, emergency contacts, and pet photos.
+    All rows are AES-256 encrypted, but the file itself must not be exported.
+
+  shared_prefs/RNCAsyncStorage.xml  (and the RNCAsyncStorage/ directory)
+    AsyncStorage values: @auth/access_token, @auth/refresh_token, @auth/session,
+    @pets/list, @pets/detail:*, @sync/pending_queue, @sync/backoff,
+    @user_profile, @notification_preferences, @notification_map,
+    @emergency_contacts, @emergency_favorites, @pet_photos, @pet_* keys.
+    Values are encrypted via encryptedAsyncStorage wrapper, but the file
+    must not leave the device.
+
+  shared_prefs/*.xml
+    All SharedPreferences files are excluded as a blanket rule to prevent
+    any credential or session state leaking through preferences we may add
+    in future SDK upgrades without a corresponding backup-rules update.
+
+  files/
+    Expo file-system documents directory: may contain PDF exports of medical
+    records, QR code images, travel certificates, and photo cache files.
+
+  NOTE: The Keychain/Keystore entries written by expo-secure-store are NEVER
+  included in Auto Backup regardless of these rules — this file does not need
+  to exclude them explicitly.
+-->
+<full-backup-content>
+
+  <!-- ── SQLite database (medications, health records, kv_store tokens) ──── -->
+  <exclude domain="database" path="petchain.db" />
+
+  <!-- ── AsyncStorage (SharedPreferences) ─────────────────────────────── -->
+  <!-- RNCAsyncStorage writes to a sub-directory on newer versions -->
+  <exclude domain="sharedpref" path="RNCAsyncStorage" />
+  <!-- Older RN versions use a single flat file -->
+  <exclude domain="sharedpref" path="RNCAsyncStorage.xml" />
+  <!-- Blanket: exclude ALL SharedPreferences files -->
+  <exclude domain="sharedpref" path="." />
+
+  <!-- ── Expo file-system documents (PDFs, medical exports, photos) ─────── -->
+  <exclude domain="file" path="." />
+
+  <!-- ── Expo updates cache (bundle artefacts — no personal data, but
+       reduces backup size and avoids stale bundle restoration issues) ─── -->
+  <exclude domain="cache" path="." />
+
+  <!-- ── External storage (if used by any SDK component) ──────────────── -->
+  <exclude domain="external" path="." />
+
+</full-backup-content>
