@@ -1,4 +1,4 @@
-export type PermissionType = 'camera' | 'notifications' | 'location';
+export type PermissionType = 'camera' | 'notifications' | 'location' | 'calendar';
 
 export interface PermissionRationale {
   title: string;
@@ -47,5 +47,18 @@ export const PERMISSION_RATIONALES: Record<PermissionType, PermissionRationale> 
     ],
     deniedMessage:
       'Location access is required to find nearby clinics. Please enable it in your device settings.',
+  },
+  calendar: {
+    title: 'Calendar Access',
+    description:
+      'PetChain uses your calendar only when you choose to export appointments, so vet visits show up alongside the rest of your day.',
+    icon: '📅',
+    benefits: [
+      'Vet visits appear in your own calendar app',
+      'Reminders before each appointment',
+      'Remove or revoke any synced entry at any time',
+    ],
+    deniedMessage:
+      'Calendar access is off, so appointments cannot be exported. You can enable it in your device settings.',
   },
 };
