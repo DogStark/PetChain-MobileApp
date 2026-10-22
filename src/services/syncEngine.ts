@@ -26,7 +26,38 @@ export interface DirtyRecord {
   updatedAt: string;
   syncVersion: number;
   attempts: number;
+  lastError: string | null;
 }
+
+/**
+ * Privacy-safe view of a queued record that needs a retry.
+ *
+ * Deliberately excludes `payload`: retry details must never expose pet names,
+ * notes, or medical contents.
+ */
+export interface SyncRetryRecord {
+  id: string;
+  entityType: SyncEntityType;
+  entityId: string;
+  action: SyncAction;
+  updatedAt: string;
+  syncVersion: number;
+  attempts: number;
+  lastError: string | null;
+}
+
+/** Snapshot used to detect a record changing between viewing and retrying it. */
+export interface SyncRetryExpectedState {
+  attempts: number;
+  syncVersion: number;
+}
+
+export type SyncRetryOutcome =
+  | { type: 'completed' }
+  | { type: 'stale'; current: SyncRetryRecord | null }
+  | { type: 'offline' }
+  | { type: 'permission-denied'; current: SyncRetryRecord | null; message: string }
+  | { type: 'failed'; current: SyncRetryRecord | null; message: string };
 
 export interface SyncProgressEvent {
   type: SyncEventType;
@@ -72,6 +103,22 @@ interface BackoffState {
   /** Timestamp when the next retry is allowed */
   nextRetryAt: number;
 }
+
+/** Raw row shape for a queued mutation, including its private payload. */
+type DirtyRecordRow = {
+  id: string;
+  entity_type: SyncEntityType;
+  entity_id: string;
+  action: SyncAction;
+  payload: string;
+  updated_at: string;
+  sync_version: number;
+  attempts: number;
+  last_error?: string | null;
+};
+
+/** Row shape for retry metadata — payload is never selected. */
+type SyncRetryRow = Omit<DirtyRecordRow, 'payload'>;
 
 export class SyncEngine {
   private listeners = new Set<SyncListener>();
@@ -181,6 +228,11 @@ export class SyncEngine {
     return () => this.listeners.delete(listener);
   }
 
+  /** Maximum automatic attempts allowed for a queued record. */
+  getRetryLimit(): number {
+    return this.options.maxRetries;
+  }
+
   async markDirty(
     entityType: SyncEntityType,
     entityId: string,
@@ -200,12 +252,14 @@ export class SyncEngine {
       updatedAt,
       syncVersion: (existing?.syncVersion ?? 0) + 1,
       attempts: existing?.attempts ?? 0,
+      // A new local edit has not been attempted against the server yet.
+      lastError: null,
     };
 
     await executeSql(
       `INSERT OR REPLACE INTO dirty_records
-        (id, entity_type, entity_id, action, payload, updated_at, sync_version, attempts)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, entity_type, entity_id, action, payload, updated_at, sync_version, attempts, last_error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.id,
         record.entityType,
@@ -215,6 +269,7 @@ export class SyncEngine {
         record.updatedAt,
         record.syncVersion,
         record.attempts,
+        record.lastError,
       ],
     );
     this.emit({ type: 'queued', total: 1, completed: 0, failed: 0, record });
@@ -321,20 +376,117 @@ export class SyncEngine {
     return merged;
   }
 
+  // ── Retry details ─────────────────────────────────────────────────────────
+
+  /**
+   * Lists records that need a retry without reading their payloads.
+   *
+   * Only sanitized metadata is selected from SQLite so private pet data can
+   * never leak into a retry detail view, log, or accessibility announcement.
+   */
+  async listRetryRecords(): Promise<SyncRetryRecord[]> {
+    await this.initialize();
+    const conn = ExpoSQLite.openDatabaseSync('petchain.db');
+    const rows = (await conn.getAllAsync(
+      `SELECT id, entity_type, entity_id, action, updated_at, sync_version, attempts, last_error
+       FROM dirty_records
+       WHERE attempts > 0 OR last_error IS NOT NULL
+       ORDER BY updated_at ASC`,
+    )) as SyncRetryRow[];
+
+    return rows
+      .map((row) => this.toRetryRecord(row))
+      // Keep the JS filter in sync with the SQL predicate so mocked database
+      // adapters (and future SQLite versions) behave identically.
+      .filter((record) => record.attempts > 0 || record.lastError !== null);
+  }
+
+  /** Reads one record's retry metadata, never its payload. */
+  async getRetryRecord(id: string): Promise<SyncRetryRecord | null> {
+    await this.initialize();
+    const conn = ExpoSQLite.openDatabaseSync('petchain.db');
+    const row = (await conn.getFirstAsync(
+      `SELECT id, entity_type, entity_id, action, updated_at, sync_version, attempts, last_error
+       FROM dirty_records WHERE id = ? LIMIT 1`,
+      [id],
+    )) as SyncRetryRow | null;
+
+    return row ? this.toRetryRecord(row) : null;
+  }
+
+  /**
+   * Retries a single queued record on explicit user request.
+   *
+   * Safety rules:
+   *  - refuses to run offline (the record stays queued);
+   *  - detects a stale view when the record changed or disappeared;
+   *  - keeps the record on every failure, including 401/403 — authorization
+   *    is confirmed by the server and never inferred locally;
+   *  - reuses the record's versioned idempotency key, so a repeated tap cannot
+   *    create duplicate server records.
+   */
+  async retryRecord(
+    id: string,
+    expected?: SyncRetryExpectedState,
+  ): Promise<SyncRetryOutcome> {
+    await this.initialize();
+    const current = await this.getRetryRecord(id);
+
+    if (!current) return { type: 'stale', current: null };
+    if (
+      expected &&
+      (current.attempts !== expected.attempts || current.syncVersion !== expected.syncVersion)
+    ) {
+      return { type: 'stale', current };
+    }
+
+    const networkStatus = await networkMonitor.getStatus();
+    this.lastNetworkStatus = networkStatus;
+    if (!networkStatus.isOnline) return { type: 'offline' };
+    if (this.options.pauseOnExpensiveNetwork && networkStatus.isConnectionExpensive) {
+      return { type: 'offline' };
+    }
+
+    // Payload is read only to perform the push; it is never returned to callers.
+    const record = await this.getDirtyRecord(id);
+    if (!record) return { type: 'stale', current: null };
+
+    try {
+      await this.pushRecord(record);
+      await this.clearRecord(record.id);
+      this.emit({ type: 'completed', total: 1, completed: 1, failed: 0 });
+      return { type: 'completed' };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown sync failure';
+      const status = (error as { response?: { status?: number } })?.response?.status;
+
+      await this.recordFailure(record, message);
+      const updated = await this.getRetryRecord(id);
+
+      if (status === 401 || status === 403) {
+        // Server-confirmed denial. Keep the queued change rather than silently
+        // discarding it; access may be restored after re-authentication.
+        this.emit({
+          type: 'failed',
+          total: 1,
+          completed: 0,
+          failed: 1,
+          message: 'Permission denied',
+          record,
+        });
+        return { type: 'permission-denied', current: updated, message };
+      }
+
+      this.emit({ type: 'failed', total: 1, completed: 0, failed: 1, message, record });
+      return { type: 'failed', current: updated, message };
+    }
+  }
+
   private async getDirtyRecord(id: string): Promise<DirtyRecord | null> {
     const conn = ExpoSQLite.openDatabaseSync('petchain.db');
     const row = (await conn.getFirstAsync(`SELECT * FROM dirty_records WHERE id = ? LIMIT 1`, [
       id,
-    ])) as {
-      id: string;
-      entity_type: SyncEntityType;
-      entity_id: string;
-      action: SyncAction;
-      payload: string;
-      updated_at: string;
-      sync_version: number;
-      attempts: number;
-    } | null;
+    ])) as DirtyRecordRow | null;
 
     if (!row) return null;
     return this.fromRow(row);
@@ -345,16 +497,7 @@ export class SyncEngine {
     const rows = (await conn.getAllAsync(
       `SELECT * FROM dirty_records WHERE attempts < ? ORDER BY updated_at ASC LIMIT ?`,
       [this.options.maxRetries, this.options.batchSize],
-    )) as Array<{
-      id: string;
-      entity_type: SyncEntityType;
-      entity_id: string;
-      action: SyncAction;
-      payload: string;
-      updated_at: string;
-      sync_version: number;
-      attempts: number;
-    }>;
+    )) as DirtyRecordRow[];
     return rows.map((row) => this.fromRow(row));
   }
 
@@ -386,16 +529,7 @@ export class SyncEngine {
     );
   }
 
-  private fromRow(row: {
-    id: string;
-    entity_type: SyncEntityType;
-    entity_id: string;
-    action: SyncAction;
-    payload: string;
-    updated_at: string;
-    sync_version: number;
-    attempts: number;
-  }): DirtyRecord {
+  private fromRow(row: DirtyRecordRow): DirtyRecord {
     return {
       id: row.id,
       entityType: row.entity_type,
@@ -405,6 +539,20 @@ export class SyncEngine {
       updatedAt: row.updated_at,
       syncVersion: row.sync_version,
       attempts: row.attempts,
+      lastError: row.last_error ?? null,
+    };
+  }
+
+  private toRetryRecord(row: SyncRetryRow): SyncRetryRecord {
+    return {
+      id: row.id,
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      action: row.action,
+      updatedAt: row.updated_at,
+      syncVersion: row.sync_version,
+      attempts: row.attempts,
+      lastError: row.last_error ?? null,
     };
   }
 

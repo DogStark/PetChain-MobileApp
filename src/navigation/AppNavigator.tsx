@@ -65,6 +65,7 @@ const ReconciliationScreen = React.lazy(() => import('../screens/ReconciliationS
 const ReferralScreen = React.lazy(() => import('../screens/ReferralScreen'));
 const RoutineStreakScreen = React.lazy(() => import('../screens/RoutineStreakScreen'));
 const SecuritySessionsScreen = React.lazy(() => import('../screens/SecuritySessionsScreen'));
+const SyncRetryDetailScreen = React.lazy(() => import('../screens/SyncRetryDetailScreen'));
 const TelemedicineScreen = React.lazy(() => import('../screens/TelemedicineScreen'));
 const TravelCertificateScreen = React.lazy(() => import('../screens/TravelCertificateScreen'));
 const TravelPackingChecklistScreen = React.lazy(
@@ -380,6 +381,16 @@ function PetNavigator() {
         {({ navigation }) => (
           <LazyScreen screenName="SecuritySessions">
             <SecuritySessionsScreen onBack={() => navigation.goBack()} />
+          </LazyScreen>
+        )}
+      </PetStack.Screen>
+      <PetStack.Screen name="SyncRetryDetail" options={{ title: 'Sync retry details' }}>
+        {({ route, navigation }) => (
+          <LazyScreen screenName="SyncRetryDetail">
+            <SyncRetryDetailScreen
+              recordId={route.params?.recordId}
+              onBack={() => navigation.goBack()}
+            />
           </LazyScreen>
         )}
       </PetStack.Screen>

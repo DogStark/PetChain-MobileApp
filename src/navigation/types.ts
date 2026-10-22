@@ -81,6 +81,7 @@ export type PetStackParamList = {
   VetDirectory: undefined;
   PrivacyDashboard: undefined;
   SecuritySessions: undefined;
+  SyncRetryDetail: { recordId?: string } | undefined;
   Insurance: undefined;
   Search: undefined;
   NotificationPreferences: undefined;
