@@ -15,6 +15,7 @@ export type RootStackParamList = {
   Main: undefined;
   Forum: undefined;
   LostFound: undefined;
+  DoseConfirmation: { petId: string; medicationId: string };
   // Modals
   QRScanner: { onScanSuccess?: (data: string) => void };
   ManualEntry: undefined;

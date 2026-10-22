@@ -4,7 +4,8 @@ import { getSession } from '../services/authService';
 export type ParsedDeepLink =
   | { route: 'PetDetail'; params: { petId: string } }
   | { route: 'Appointments'; params: { appointmentId: string } }
-  | { route: 'Emergency'; params: { sosId: string } };
+  | { route: 'Emergency'; params: { sosId: string } }
+  | { route: 'DoseConfirmation'; params: { petId: string; medicationId: string } };
 
 const TRUSTED_HTTPS_HOST = 'petchain.app';
 const APP_SCHEMES = new Set(['petchain', 'petchainapp']);
@@ -47,6 +48,17 @@ export function parseDeepLink(url: string): ParsedDeepLink | null {
   }
   if (segments.length === 2 && segments[0] === 'sos' && SAFE_ID.test(segments[1])) {
     return { route: 'Emergency', params: { sosId: segments[1] } };
+  }
+  if (
+    segments.length === 3 &&
+    segments[0] === 'doses' &&
+    SAFE_ID.test(segments[1]) &&
+    SAFE_ID.test(segments[2])
+  ) {
+    return {
+      route: 'DoseConfirmation',
+      params: { petId: segments[1], medicationId: segments[2] },
+    };
   }
 
   return null;
