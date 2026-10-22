@@ -24,6 +24,12 @@ export const storageKeys = {
     /** Last server-confirmed feature availability snapshot (feature → status only). */
     featureAvailability: '@cache/feature_availability',
   },
+  calendar: {
+    /** appointmentId → calendar sync record (event id, content revision, opt-ins). */
+    eventRecords: '@calendar/event_records',
+    /** Calendar export opt-ins: `syncEnabled` and `includePetDetails`. */
+    exportPreferences: '@calendar/export_preferences',
+  },
   sync: {
     /** Pending sync queue state. */
     pendingQueue: '@sync/pending_queue',

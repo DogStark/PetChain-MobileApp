@@ -30,7 +30,10 @@
         "BGTaskSchedulerPermittedIdentifiers": [
           "app.petchain.mobile.refresh",
           "app.petchain.mobile.processing"
-        ]
+        ],
+        "NSCalendarsUsageDescription": "PetChain writes to your calendar only the appointments you choose to export, so vet visits appear alongside your other events.",
+        "NSCalendarsFullAccessUsageDescription": "PetChain writes to your calendar only the appointments you choose to export, so vet visits appear alongside your other events.",
+        "NSRemindersUsageDescription": "PetChain adds reminders to exported appointment events so you do not miss a vet visit."
       },
       "privacyManifests": {
         "NSPrivacyTracking": false,
@@ -135,7 +138,9 @@
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "ACTIVITY_RECOGNITION",
-        "POST_NOTIFICATIONS"
+        "POST_NOTIFICATIONS",
+        "READ_CALENDAR",
+        "WRITE_CALENDAR"
       ]
     },
     "web": {

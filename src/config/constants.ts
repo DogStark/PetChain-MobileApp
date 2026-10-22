@@ -107,6 +107,8 @@ export const FEATURE_FLAGS = {
   stellarPayments: flag('FEATURE_STELLAR_PAYMENTS', !config.isDev),
   /** Referral and invite programme. */
   referrals: flag('FEATURE_REFERRALS', true),
+  /** Exporting appointments to the device calendar (issue #1186). */
+  calendarExport: flag('FEATURE_CALENDAR_EXPORT', true),
   /** Verbose in-app debug tooling — development builds only by default. */
   debugMenu: flag('FEATURE_DEBUG_MENU', config.isDev),
 } as const;

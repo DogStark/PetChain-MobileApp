@@ -2,12 +2,14 @@
  * Permission Utility Helpers — Issue #813
  *
  * Unified interface to check and request device permissions (camera,
- * location, notifications) on both iOS and Android.
+ * location, notifications, calendar) on both iOS and Android.
  *
  * Uses the Expo permission modules already present in package.json:
  *   - expo-camera        → camera
  *   - expo-location      → location
  *   - expo-notifications → notifications
+ *   - expo-calendar      → calendar (imported on demand: the native module is
+ *     optional, and only appointment export needs it)
  *
  * The `PermissionStatus` type mirrors the Expo permission result so callers
  * get a consistent shape regardless of which permission was requested.
@@ -25,6 +27,8 @@ export enum PermissionType {
   CAMERA = 'CAMERA',
   LOCATION = 'LOCATION',
   NOTIFICATIONS = 'NOTIFICATIONS',
+  /** Device calendar, used by appointment export (issue #1186). */
+  CALENDAR = 'CALENDAR',
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,6 +96,14 @@ export async function checkPermission(type: PermissionType): Promise<PermissionS
       return mapStatus(status);
     }
 
+    case PermissionType.CALENDAR: {
+      // Dynamic import keeps expo-calendar optional for callers that never
+      // touch the calendar flow, and for the Jest suites that map it to a mock.
+      const Calendar = await import('expo-calendar');
+      const { status } = await Calendar.getCalendarPermissionsAsync();
+      return mapStatus(status);
+    }
+
     default: {
       // Exhaustive check — TypeScript will surface this if a new enum value
       // is added without updating this switch.
@@ -135,6 +147,12 @@ export async function requestPermission(type: PermissionType): Promise<Permissio
           allowSound: true,
         },
       });
+      return mapStatus(status);
+    }
+
+    case PermissionType.CALENDAR: {
+      const Calendar = await import('expo-calendar');
+      const { status } = await Calendar.requestCalendarPermissionsAsync();
       return mapStatus(status);
     }
 
@@ -278,6 +296,111 @@ export function describeNotificationDeliveryState(
       return 'Your notification settings have not been confirmed by the server yet. Care reminders may be delayed.';
     case 'reminders-disabled':
       return 'Care reminders are turned off in your account settings.';
+    default:
+      return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Server-confirmed calendar export permission (Issue #1186)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Server-confirmed availability for exporting appointments to the device
+ * calendar, taken from the feature-availability snapshot (the same mechanism
+ * #1146 uses for notification settings). `confirmed` is only `true` once the
+ * server has acknowledged that this account may export.
+ */
+export interface ServerCalendarExportSettings {
+  /** Whether the server has confirmed calendar export for this account. */
+  confirmed: boolean;
+  /** Server-side status, when known. `maintenance` is retryable, `disabled` is not. */
+  status?: 'enabled' | 'disabled' | 'maintenance';
+}
+
+/**
+ * Why an export can or cannot run right now.
+ *
+ * The OS states and the server states are deliberately separate so the UI can
+ * point at the right fix: a denial needs Settings, an unconfirmed account needs
+ * a connection, and neither is presented as an empty list.
+ */
+export type CalendarExportState =
+  | 'available'
+  | 'os-denied'
+  | 'os-restricted'
+  | 'os-undetermined'
+  | 'server-unconfirmed'
+  | 'server-maintenance';
+
+export interface CalendarExportPermissionResult {
+  osStatus: PermissionStatus;
+  serverConfirmed: boolean;
+  canExport: boolean;
+  reason: CalendarExportState;
+}
+
+/**
+ * Combines the OS calendar permission with the server-confirmed availability.
+ *
+ * Never throws: an unavailable native module reads as `undetermined`, so the UI
+ * still renders an explanation instead of crashing the appointments screen.
+ *
+ * @param serverSettings - Server-confirmed availability, or `null`/`undefined`
+ *                         when it has not been fetched yet.
+ */
+export async function getCalendarExportPermissionState(
+  serverSettings?: ServerCalendarExportSettings | null,
+): Promise<CalendarExportPermissionResult> {
+  let osStatus: PermissionStatus = 'undetermined';
+  try {
+    osStatus = await checkPermission(PermissionType.CALENDAR);
+  } catch {
+    osStatus = 'undetermined';
+  }
+
+  const serverConfirmed = serverSettings?.confirmed === true;
+
+  let reason: CalendarExportState;
+  if (osStatus === 'denied') {
+    reason = 'os-denied';
+  } else if (osStatus === 'restricted') {
+    reason = 'os-restricted';
+  } else if (osStatus !== 'granted') {
+    reason = 'os-undetermined';
+  } else if (!serverConfirmed) {
+    reason =
+      serverSettings?.status === 'maintenance' ? 'server-maintenance' : 'server-unconfirmed';
+  } else {
+    reason = 'available';
+  }
+
+  return {
+    osStatus,
+    serverConfirmed,
+    canExport: reason === 'available',
+    reason,
+  };
+}
+
+/**
+ * Human-readable explanation for a non-exportable calendar state.
+ * Returns `null` when an export can run.
+ */
+export function describeCalendarExportState(reason: CalendarExportState): string | null {
+  switch (reason) {
+    case 'available':
+      return null;
+    case 'os-denied':
+      return 'Calendar access is turned off for PetChain. Appointments cannot be exported until you allow calendar access in Settings.';
+    case 'os-restricted':
+      return 'Calendar access is restricted on this device, so appointments cannot be exported. Contact your device administrator to lift the restriction.';
+    case 'os-undetermined':
+      return 'PetChain has not been allowed to access your calendar yet. Allow access to export appointments.';
+    case 'server-unconfirmed':
+      return 'Your account has not confirmed calendar export yet. Connect to the internet so we can check, then try again.';
+    case 'server-maintenance':
+      return 'Calendar export is temporarily unavailable while we make improvements. Please check back shortly.';
     default:
       return null;
   }

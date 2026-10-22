@@ -18,6 +18,7 @@ import {
 import Swipeable from 'react-native-gesture-handler/Swipeable';
 import { v4 as uuid } from 'uuid';
 
+import CalendarExportSheet from '../components/CalendarExportSheet';
 import { EmptyState } from '../components/EmptyState';
 import MultiStepFormHeader from '../components/MultiStepFormHeader';
 import { SkeletonCard } from '../components/SkeletonCard';
@@ -116,6 +117,9 @@ const AppointmentScreen: React.FC = () => {
   const [pastExpanded, setPastExpanded] = useState(false);
   const [undoSnackbar, setUndoSnackbar] = useState<{ id: string } | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Issue #1186 — appointment → device calendar export sheet.
+  const [calendarSheetVisible, setCalendarSheetVisible] = useState(false);
+  const calendarSheetTriggerRef = useRef<View>(null);
 
   // ── Conflict modal state ────────────────────────────────────────────────────
   const [conflictResult, setConflictResult] = useState<ConflictDetectionResult | null>(null);
@@ -614,9 +618,22 @@ const AppointmentScreen: React.FC = () => {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Appointments</Text>
-        <TouchableOpacity style={styles.addBtn} onPress={openBookingModal}>
-          <Text style={styles.addBtnText}>+ Book</Text>
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          {/* Issue #1186: export is opt-in and selected appointment by appointment. */}
+          <View ref={calendarSheetTriggerRef}>
+            <TouchableOpacity
+              style={styles.calendarBtn}
+              onPress={() => setCalendarSheetVisible(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Export appointments to your calendar"
+            >
+              <Text style={styles.calendarBtnText}>Export</Text>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity style={styles.addBtn} onPress={openBookingModal}>
+            <Text style={styles.addBtnText}>+ Book</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Tabs */}
@@ -1036,6 +1053,14 @@ const AppointmentScreen: React.FC = () => {
           </Modal>
         </Modal>
       )}
+
+      {/* ── Calendar export sheet (#1186) ── */}
+      <CalendarExportSheet
+        visible={calendarSheetVisible}
+        onClose={() => setCalendarSheetVisible(false)}
+        appointments={appointments}
+        returnFocusRef={calendarSheetTriggerRef}
+      />
     </View>
   );
 };
@@ -1062,6 +1087,17 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
   },
   headerTitle: { color: '#fff', fontSize: 20, fontWeight: '700' },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  calendarBtn: {
+    borderWidth: 1,
+    borderColor: '#10B981',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  calendarBtnText: { color: '#10B981', fontWeight: '600', fontSize: 14 },
   addBtn: {
     backgroundColor: '#10B981',
     paddingHorizontal: 14,
