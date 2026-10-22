@@ -50,6 +50,8 @@ const PRIVACY_URL = 'https://petchain.app/privacy';
 interface Props {
   /** Called after a successful logout so the parent can redirect to auth. */
   onLogout: () => void;
+  /** Opens the privacy-safe sync retry detail view. */
+  onOpenSyncRetryDetail?: () => void;
 }
 
 // ─── Change Password Modal ────────────────────────────────────────────────────
@@ -123,7 +125,7 @@ const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ visible, emai
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
-const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
+const SettingsScreen: React.FC<Props> = ({ onLogout, onOpenSyncRetryDetail }) => {
   const { t } = useTranslation();
   const { mode: themeMode, setMode: setThemeMode } = useTheme();
   const colors = useAppTheme();
@@ -798,6 +800,23 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
             <ActivityIndicator size="small" color={colors.primary} />
           </View>
         )}
+        {onOpenSyncRetryDetail ? (
+          <>
+            <RowSeparator />
+            <TouchableOpacity
+              style={styles.syncRow}
+              onPress={onOpenSyncRetryDetail}
+              accessibilityRole="button"
+              accessibilityLabel="View sync retry details"
+              accessibilityHint="Shows failed changes, retry counts, and a safe retry action"
+            >
+              <Text style={[styles.rowLabel, { color: colors.text }]}>
+                {t('settings.syncRetryDetails', 'Retry details')}
+              </Text>
+              <Text style={[styles.chevron, { color: colors.placeholder }]}>›</Text>
+            </TouchableOpacity>
+          </>
+        ) : null}
       </View>
 
       {/* ── App Information ── */}
