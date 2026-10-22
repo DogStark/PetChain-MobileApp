@@ -24,18 +24,23 @@ import lostFoundService, {
 } from '../services/lostFoundService';
 import mapService, { type Location } from '../services/mapService';
 import petService, { type Pet } from '../services/petService';
+import {
+  approximateLocation,
+  CONTACT_PREFERENCE_OPTIONS,
+  createEmptyFoundPetDraft,
+  FOUND_TIME_OPTIONS,
+  foundAtFromHoursAgo,
+  toFoundPetReportPayload,
+  validateFoundPetDraft,
+} from '../utils/foundPetReport';
 import { pickImage } from '../utils/imageUtils';
 
 const DEFAULT_RADIUS_KM = 25;
 
-const EMPTY_FORM = {
+const createEmptyForm = () => ({
   type: 'lost' as LostFoundType,
-  title: '',
-  description: '',
-  species: '',
-  breed: '',
-  photoUrl: undefined as string | undefined,
-};
+  ...createEmptyFoundPetDraft(),
+});
 
 const LostFoundScreen: React.FC = () => {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
@@ -53,6 +58,15 @@ const LostFoundScreen: React.FC = () => {
   const [searchRadiusKm, setSearchRadiusKm] = useState<number>(DEFAULT_RADIUS_KM);
   const [searchCenter, setSearchCenter] = useState<Location | null>(null);
   const [searchAreaModalVisible, setSearchAreaModalVisible] = useState(false);
+  const [hasSavedDraft, setHasSavedDraft] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    lostFoundService
+      .loadFoundPetDraft()
+      .then((draft) => setHasSavedDraft(draft !== null))
+      .catch(() => setHasSavedDraft(false));
+  }, []);
 
   const loadReports = useCallback(async () => {
     setLoading(true);
@@ -105,7 +119,89 @@ const LostFoundScreen: React.FC = () => {
     void loadReports();
   }, [loadReports]);
 
+  const closeCreateModal = () => {
+    setCreateModalVisible(false);
+    setForm(createEmptyForm());
+  };
+
+  const handleSaveFoundDraft = async () => {
+    try {
+      await lostFoundService.saveFoundPetDraft(form);
+      setHasSavedDraft(true);
+      closeCreateModal();
+      Alert.alert('Draft saved', 'Nothing has been published. Resume it when you are ready.');
+    } catch (err) {
+      console.warn('[LostFound] Draft save failed', err);
+      Alert.alert('Unable to save draft', 'Please try again.');
+    }
+  };
+
+  const handleResumeFoundDraft = async () => {
+    try {
+      const draft = await lostFoundService.loadFoundPetDraft();
+      if (!draft) {
+        setHasSavedDraft(false);
+        Alert.alert('Draft expired', 'Saved drafts are kept for 7 days. Start a new report.');
+        return;
+      }
+      // Consent is never carried over from a draft; the finder reviews it again
+      setForm({ ...draft, type: 'found', consentToPublish: false });
+      setCreateModalVisible(true);
+    } catch (err) {
+      console.warn('[LostFound] Draft load failed', err);
+      Alert.alert('Unable to open draft', 'Please try again.');
+    }
+  };
+
+  const handlePublishFoundReport = async () => {
+    const [firstError] = Object.values(validateFoundPetDraft(form, 'publish'));
+    if (firstError) {
+      Alert.alert('Almost there', firstError);
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      let current: Location;
+      try {
+        // Read the device location at publish time so nothing stale is published
+        current = await mapService.getCurrentLocation();
+      } catch {
+        await lostFoundService.saveFoundPetDraft(form);
+        setHasSavedDraft(true);
+        Alert.alert(
+          'Location required',
+          'Allow location access to publish. Your draft has been saved.',
+        );
+        return;
+      }
+
+      // The server response is the source of truth: the report only counts once it returns an id
+      const created = await lostFoundService.createLostFoundReport(
+        toFoundPetReportPayload(form, current),
+      );
+      await geofenceService.notifyOwnersByFoundReport(created.id, approximateLocation(current));
+      await lostFoundService.clearFoundPetDraft();
+      setHasSavedDraft(false);
+      closeCreateModal();
+      await loadReports();
+    } catch (err) {
+      console.warn('[LostFound] Publish error', err);
+      // Keep the draft so the finder can retry once the connection is back
+      await lostFoundService.saveFoundPetDraft(form).catch(() => undefined);
+      setHasSavedDraft(true);
+      Alert.alert('Unable to publish', 'Your draft has been saved. Try again when you are online.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleSubmitReport = async () => {
+    if (form.type === 'found') {
+      await handlePublishFoundReport();
+      return;
+    }
+
     if (!form.title.trim() || !form.species.trim()) {
       Alert.alert('Validation error', 'Title and species are required.');
       return;
@@ -127,24 +223,16 @@ const LostFoundScreen: React.FC = () => {
       });
 
       // Register a 5 km geofence alert when a pet is marked as lost
-      if (form.type === 'lost') {
-        await geofenceService.registerGeofenceAlert({
-          reportId: created.id,
-          petName: form.title.trim(),
-          ownerId: created.ownerId,
-          center: location,
-          radiusKm: 5,
-          createdAt: created.createdAt,
-        });
-      }
+      await geofenceService.registerGeofenceAlert({
+        reportId: created.id,
+        petName: form.title.trim(),
+        ownerId: created.ownerId,
+        center: location,
+        radiusKm: 5,
+        createdAt: created.createdAt,
+      });
 
-      // If a found report is filed, notify nearby lost-pet owners via backend
-      if (form.type === 'found') {
-        await geofenceService.notifyOwnersByFoundReport(created.id, location);
-      }
-
-      setCreateModalVisible(false);
-      setForm(EMPTY_FORM);
+      closeCreateModal();
       await loadReports();
     } catch (err) {
       console.warn('[LostFound] Create report error', err);
@@ -273,6 +361,17 @@ const LostFoundScreen: React.FC = () => {
       <View style={styles.reportSummary}>
         <Text style={styles.summaryText}>{displayedReports.length} reports nearby</Text>
         <View style={styles.summaryActions}>
+          {hasSavedDraft ? (
+            <TouchableOpacity
+              style={styles.draftButton}
+              accessibilityRole="button"
+              accessibilityLabel="Resume saved found-pet draft"
+              onPress={handleResumeFoundDraft}
+            >
+              <Text style={styles.draftButtonText}>Resume draft</Text>
+            </TouchableOpacity>
+          ) : null}
+
           <TouchableOpacity
             style={styles.searchAreaButton}
             onPress={() => setSearchAreaModalVisible(true)}
@@ -315,7 +414,7 @@ const LostFoundScreen: React.FC = () => {
 
       <Modal visible={createModalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+          <ScrollView style={[styles.modalContent, styles.modalContentScrollable]}>
             <Text style={styles.modalTitle}>Create a report</Text>
             <View style={styles.typeSwitchRow}>
               {(['lost', 'found'] as LostFoundType[]).map((type) => (
@@ -362,23 +461,111 @@ const LostFoundScreen: React.FC = () => {
               <Text style={styles.photoButtonText}>Add photo</Text>
             </TouchableOpacity>
             {form.photoUrl ? (
-              <Image source={{ uri: form.photoUrl }} style={styles.uploadPreview} />
+              <Image
+                source={{ uri: form.photoUrl }}
+                style={styles.uploadPreview}
+                accessibilityLabel="Selected pet photo"
+              />
             ) : null}
+
+            {form.type === 'found' ? (
+              <>
+                <Text style={styles.sectionLabel}>When was it found?</Text>
+                <View style={styles.chipRow}>
+                  {FOUND_TIME_OPTIONS.map((option) => (
+                    <TouchableOpacity
+                      key={option.key}
+                      style={styles.chip}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Found ${option.label.toLowerCase()}`}
+                      onPress={() =>
+                        setForm((prev) => ({
+                          ...prev,
+                          foundAt: foundAtFromHoursAgo(option.hoursAgo),
+                        }))
+                      }
+                    >
+                      <Text style={styles.chipText}>{option.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={styles.helpText}>
+                  Found at {new Date(form.foundAt).toLocaleString()}
+                </Text>
+
+                <Text style={styles.sectionLabel}>How may owners contact you?</Text>
+                <View style={styles.chipRow}>
+                  {CONTACT_PREFERENCE_OPTIONS.map((option) => {
+                    const selected = form.contactPreference === option.value;
+                    return (
+                      <TouchableOpacity
+                        key={option.value}
+                        style={[styles.chip, selected && styles.chipActive]}
+                        accessibilityRole="radio"
+                        accessibilityState={{ selected }}
+                        accessibilityLabel={option.label}
+                        onPress={() =>
+                          setForm((prev) => ({ ...prev, contactPreference: option.value }))
+                        }
+                      >
+                        <Text style={[styles.chipText, selected && styles.chipTextActive]}>
+                          {option.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                <TouchableOpacity
+                  style={styles.consentRow}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: form.consentToPublish }}
+                  accessibilityLabel="I agree to publish this report. It will share the photo, title, an approximate area of about 1 km, and the time found."
+                  onPress={() =>
+                    setForm((prev) => ({ ...prev, consentToPublish: !prev.consentToPublish }))
+                  }
+                >
+                  <Text style={styles.consentBox}>{form.consentToPublish ? '☑' : '☐'}</Text>
+                  <Text style={styles.consentText}>
+                    I agree to publish this report. It shares the photo, title, an approximate area
+                    of about 1 km, and the time found. Nothing is published until I confirm.
+                  </Text>
+                </TouchableOpacity>
+              </>
+            ) : null}
+
             <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={styles.cancelButton}
-                onPress={() => {
-                  setCreateModalVisible(false);
-                  setForm(EMPTY_FORM);
-                }}
-              >
+              <TouchableOpacity style={styles.cancelButton} onPress={closeCreateModal}>
                 <Text style={styles.cancelButtonText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.submitButton} onPress={handleSubmitReport}>
-                <Text style={styles.submitButtonText}>Submit</Text>
-              </TouchableOpacity>
+              {form.type === 'found' ? (
+                <>
+                  <TouchableOpacity
+                    style={styles.draftSaveButton}
+                    accessibilityRole="button"
+                    onPress={handleSaveFoundDraft}
+                  >
+                    <Text style={styles.draftSaveButtonText}>Save draft</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.submitButton, submitting && styles.submitButtonDisabled]}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: submitting, busy: submitting }}
+                    disabled={submitting}
+                    onPress={handleSubmitReport}
+                  >
+                    <Text style={styles.submitButtonText}>
+                      {submitting ? 'Publishing…' : 'Publish'}
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <TouchableOpacity style={styles.submitButton} onPress={handleSubmitReport}>
+                  <Text style={styles.submitButtonText}>Submit</Text>
+                </TouchableOpacity>
+              )}
             </View>
-          </View>
+          </ScrollView>
         </View>
       </Modal>
 
@@ -594,7 +781,51 @@ const styles = StyleSheet.create({
   },
   photoButtonText: { color: '#111827', fontWeight: '600' },
   uploadPreview: { width: '100%', height: 140, borderRadius: 12, marginBottom: 12 },
-  modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
+  modalContentScrollable: { maxHeight: '90%' },
+  modalActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginTop: 6,
+  },
+  sectionLabel: { fontSize: 14, fontWeight: '700', color: '#111827', marginBottom: 8 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+  chip: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    backgroundColor: '#fff',
+  },
+  chipActive: { backgroundColor: '#111827', borderColor: '#111827' },
+  chipText: { color: '#374151', fontWeight: '600' },
+  chipTextActive: { color: '#fff' },
+  consentRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginBottom: 12,
+  },
+  consentBox: { fontSize: 20, color: '#111827' },
+  consentText: { flex: 1, color: '#374151', fontSize: 13 },
+  summaryActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  draftButton: {
+    backgroundColor: '#fef9c3',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  draftButtonText: { color: '#854d0e', fontWeight: '600' },
+  draftSaveButton: {
+    backgroundColor: '#f3f4f6',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+  },
+  draftSaveButtonText: { color: '#111827', fontWeight: '700' },
+  submitButtonDisabled: { opacity: 0.6 },
   cancelButton: {
     backgroundColor: '#e5e7eb',
     paddingVertical: 12,
