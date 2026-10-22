@@ -16,6 +16,7 @@ import { useToast } from '../context/ToastContext';
 import { useMinimumLoadingTime } from '../hooks/useMinimumLoadingTime';
 import petService, { type Pet } from '../services/petService';
 import subscriptionService, { type SubscriptionStatus } from '../services/subscriptionService';
+import { evaluateFreshness } from '../utils/freshness';
 import { useRetry } from '../utils/useRetry';
 
 interface Props {
@@ -26,6 +27,7 @@ interface Props {
 
 const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) => {
   const [pets, setPets] = useState<Pet[]>([]);
+  const [cachedAt, setCachedAt] = useState<number | null>(null);
   const offlineStatus = useOfflineStatus();
   const { refreshPets } = usePetContext();
   const { colors } = useTheme();
@@ -41,6 +43,9 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
   const loadPets = useCallback(async () => {
     const data = await petService.getAllPets();
     setPets(data);
+    // Cache timestamp only moves on a server-confirmed fetch, so a fallback to
+    // cached data keeps the older time and the row below can flag it as stale.
+    setCachedAt(await petService.getPetsCachedAt().catch(() => null));
     return data;
   }, []);
 
@@ -66,6 +71,10 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
   }, []);
 
   const hasData = pets.length > 0;
+
+  const freshness = evaluateFreshness({ lastVerifiedAt: cachedAt });
+  const freshnessText =
+    freshness.state === 'fresh' ? freshness.label : `${freshness.label} · may be outdated`;
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
@@ -179,6 +188,30 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
         </View>
       ) : null}
 
+      {hasData ? (
+        <View style={styles.freshnessRow}>
+          <Text
+            style={styles.freshnessText}
+            accessibilityLiveRegion="polite"
+            testID="pet-list-freshness"
+          >
+            {freshnessText}
+          </Text>
+          <TouchableOpacity
+            onPress={() => void handleRefresh()}
+            disabled={isRefreshing}
+            style={styles.refreshBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Refresh pet list"
+            accessibilityHint="Fetches the latest pet records from the server"
+            accessibilityState={{ disabled: isRefreshing, busy: isRefreshing }}
+            testID="pet-list-refresh"
+          >
+            <Text style={styles.refreshBtnText}>{isRefreshing ? 'Refreshing…' : 'Refresh'}</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
       {/* Aggregate view — Issue #151/#82 */}
       <PetAggregateView onSelectPet={onSelectPet} />
 
@@ -282,6 +315,22 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   cachedBannerText: { color: '#a54900', fontSize: 12, fontWeight: '600' },
+  freshnessRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  freshnessText: { flex: 1, color: '#666', fontSize: 12 },
+  refreshBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minHeight: 32,
+    justifyContent: 'center',
+  },
+  refreshBtnText: { color: '#12372a', fontSize: 13, fontWeight: '600' },
   card: {
     flexDirection: 'row',
     alignItems: 'center',
