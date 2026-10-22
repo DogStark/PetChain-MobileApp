@@ -15,11 +15,12 @@
 import * as Notifications from 'expo-notifications';
 import { AppState, NativeModules, Platform } from 'react-native';
 
+import apiClient from './apiClient';
 import { getUpcomingAppointments } from './appointmentService';
 import { getHealthMetrics } from './healthMetricService';
 import { getItem, setItem } from './localDB';
-import { getMedications } from './medicationService';
-import petService from './petService';
+import { getDoseLogs, getMedications, type DoseLog } from './medicationService';
+import petService, { getPetById } from './petService';
 import type { Appointment } from '../models/Appointment';
 import type { HealthMetricEntry } from '../models/HealthMetric';
 import type { Medication } from '../models/Medication';
@@ -58,10 +59,32 @@ export interface PetHealthScore {
   lastUpdated: string;
 }
 
+export interface CareAgendaTask {
+  id: string;
+  petId: string;
+  type: 'medication' | 'appointment';
+  title: string;
+  detail?: string;
+  scheduledAt: string;
+}
+
+export interface WidgetPreferences {
+  selectedPetId: string | null;
+  hideDetailsOnLockScreen: boolean;
+}
+
+export const DEFAULT_WIDGET_PREFERENCES: WidgetPreferences = {
+  selectedPetId: null,
+  hideDetailsOnLockScreen: true,
+};
+
 export interface WidgetData {
   medications: MedicationScheduleItem[];
   appointments: UpcomingAppointmentItem[];
   healthScores: PetHealthScore[];
+  agenda?: CareAgendaTask[];
+  selectedPetId?: string | null;
+  hideDetailsOnLockScreen?: boolean;
   lastUpdated: string;
   timestamp: number; // milliseconds since epoch
 }
@@ -79,6 +102,127 @@ const PetChainWidgetModule = Platform.select({
   android: () => NativeModules.PetChainWidgetModule || {},
   default: () => ({}),
 })();
+
+export async function getWidgetPreferences(): Promise<WidgetPreferences> {
+  try {
+    const raw = await getItem(WIDGET_PREFS_KEY);
+    if (!raw) return { ...DEFAULT_WIDGET_PREFERENCES };
+    const stored = JSON.parse(raw) as Partial<WidgetPreferences>;
+    return {
+      selectedPetId:
+        typeof stored.selectedPetId === 'string' ? stored.selectedPetId : null,
+      hideDetailsOnLockScreen:
+        typeof stored.hideDetailsOnLockScreen === 'boolean'
+          ? stored.hideDetailsOnLockScreen
+          : DEFAULT_WIDGET_PREFERENCES.hideDetailsOnLockScreen,
+    };
+  } catch {
+    return { ...DEFAULT_WIDGET_PREFERENCES };
+  }
+}
+
+export async function saveWidgetPreferences(
+  patch: Partial<WidgetPreferences>,
+): Promise<WidgetPreferences> {
+  const preferences = { ...(await getWidgetPreferences()), ...patch };
+  await setItem(WIDGET_PREFS_KEY, JSON.stringify(preferences));
+  return preferences;
+}
+
+export type WidgetPetAccess = 'granted' | 'denied' | 'unavailable';
+
+/** Use the owner-protected pet endpoint as the server authority for widget access. */
+export async function checkWidgetPetAccess(petId: string): Promise<WidgetPetAccess> {
+  if (!petId.trim()) return 'denied';
+  try {
+    const response = await apiClient.get(`/pets/${encodeURIComponent(petId)}`);
+    if (response.status >= 200 && response.status < 300) return 'granted';
+    if (response.status === 401 || response.status === 403 || response.status === 404) {
+      return 'denied';
+    }
+    return 'unavailable';
+  } catch (error) {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status === 401 || status === 403 || status === 404) return 'denied';
+    return 'unavailable';
+  }
+}
+
+export function buildCareAgenda(
+  petId: string,
+  petName: string,
+  medications: Medication[],
+  appointments: Appointment[],
+  now: Date = new Date(),
+  limit = 5,
+  doseLogs: DoseLog[] = [],
+): CareAgendaTask[] {
+  const tasks: CareAgendaTask[] = [];
+
+  for (const medication of medications) {
+    if (
+      medication.petId !== petId ||
+      medication.status === 'discontinued' ||
+      medication.status === 'completed' ||
+      medication.status === 'paused'
+    ) {
+      continue;
+    }
+    const startedAt = new Date(medication.startDate);
+    const intervalMs = medication.frequency * 60 * 60 * 1000;
+    if (Number.isNaN(startedAt.getTime()) || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+      continue;
+    }
+    const latestTakenAt = doseLogs
+      .filter(
+        (log) =>
+          log.medicationId === medication.id &&
+          !log.skipped &&
+          (log.state === undefined || log.state === 'taken'),
+      )
+      .map((log) => new Date(log.scheduledFor ?? log.takenAt))
+      .filter((date) => !Number.isNaN(date.getTime()))
+      .sort((first, second) => second.getTime() - first.getTime())[0];
+    const scheduleAnchor = latestTakenAt ?? startedAt;
+    const elapsedIntervals = Math.max(
+      0,
+      Math.ceil((now.getTime() - scheduleAnchor.getTime()) / intervalMs),
+    );
+    const nextInterval = latestTakenAt && scheduleAnchor <= now ? Math.max(1, elapsedIntervals) : elapsedIntervals;
+    const scheduledAt = new Date(scheduleAnchor.getTime() + nextInterval * intervalMs);
+    if (medication.endDate && scheduledAt > new Date(medication.endDate)) continue;
+
+    tasks.push({
+      id: `medication:${medication.id}`,
+      petId,
+      type: 'medication',
+      title: medication.name,
+      detail: `${petName} · ${medication.dosage}`,
+      scheduledAt: scheduledAt.toISOString(),
+    });
+  }
+
+  for (const appointment of appointments) {
+    if (appointment.petId !== petId) continue;
+    const appointmentDate = appointment.date.includes('T')
+      ? appointment.date
+      : `${appointment.date}T${appointment.time || '00:00'}`;
+    const scheduledAt = new Date(appointmentDate);
+    if (Number.isNaN(scheduledAt.getTime()) || scheduledAt < now) continue;
+    tasks.push({
+      id: `appointment:${appointment.id}`,
+      petId,
+      type: 'appointment',
+      title: appointment.title || 'Appointment',
+      detail: petName,
+      scheduledAt: scheduledAt.toISOString(),
+    });
+  }
+
+  return tasks
+    .sort((first, second) => first.scheduledAt.localeCompare(second.scheduledAt))
+    .slice(0, Math.max(0, limit));
+}
 
 // ─── Health Score Calculation ────────────────────────────────────────────────
 
@@ -132,10 +276,11 @@ async function calculatePetHealthScore(petId: string): Promise<number> {
 
 // ─── Get Today's Medications ────────────────────────────────────────────────
 
-async function getTodaysMedicationSchedule(): Promise<MedicationScheduleItem[]> {
+async function getTodaysMedicationSchedule(selectedPetId?: string): Promise<MedicationScheduleItem[]> {
   try {
     const medications = await getMedications();
     const pets = await petService.getAllPets();
+    const doseLogs = await getDoseLogs();
 
     if (!medications.length) return [];
 
@@ -145,11 +290,18 @@ async function getTodaysMedicationSchedule(): Promise<MedicationScheduleItem[]> 
     const scheduleItems: MedicationScheduleItem[] = [];
 
     for (const med of medications) {
+      if (selectedPetId && med.petId !== selectedPetId) continue;
       // Check if medication is active today
       const startDate = new Date(med.startDate);
       const endDate = med.endDate ? new Date(med.endDate) : null;
 
-      if (startDate > today || (endDate && endDate < today)) {
+      if (
+        startDate > today ||
+        (endDate && endDate < today) ||
+        med.status === 'discontinued' ||
+        med.status === 'completed' ||
+        med.status === 'paused'
+      ) {
         continue;
       }
 
@@ -158,9 +310,13 @@ async function getTodaysMedicationSchedule(): Promise<MedicationScheduleItem[]> 
       if (!pet) continue;
 
       // Get dose logs for today to check if taken
-      const doseLogsRaw = await getItem(`dose_logs_${med.id}`);
-      const doseLogs = JSON.parse(doseLogsRaw ?? '[]') as { scheduledFor?: string }[];
-      const takenToday = doseLogs.some((log) => log.scheduledFor?.startsWith(todayString));
+      const takenToday = doseLogs.some(
+        (log) =>
+          log.medicationId === med.id &&
+          (log.scheduledFor ?? log.takenAt)?.startsWith(todayString) &&
+          !log.skipped &&
+          (log.state === undefined || log.state === 'taken'),
+      );
 
       scheduleItems.push({
         id: `${med.id}_today`,
@@ -183,9 +339,14 @@ async function getTodaysMedicationSchedule(): Promise<MedicationScheduleItem[]> 
 
 // ─── Get Upcoming Appointments ──────────────────────────────────────────────
 
-async function getUpcomingAppointmentsForWidget(): Promise<UpcomingAppointmentItem[]> {
+async function getUpcomingAppointmentsForWidget(
+  selectedPetId?: string,
+  suppliedPets?: Pet[],
+): Promise<UpcomingAppointmentItem[]> {
   try {
-    const pets = await petService.getAllPets();
+    const pets = (suppliedPets ?? (await petService.getAllPets())).filter(
+      (pet) => !selectedPetId || pet.id === selectedPetId,
+    );
     const appointments: UpcomingAppointmentItem[] = [];
 
     for (const pet of pets) {
@@ -224,9 +385,11 @@ async function getUpcomingAppointmentsForWidget(): Promise<UpcomingAppointmentIt
 
 // ─── Get All Pets Health Scores ─────────────────────────────────────────────
 
-async function getAllPetsHealthScores(): Promise<PetHealthScore[]> {
+async function getAllPetsHealthScores(selectedPetId?: string): Promise<PetHealthScore[]> {
   try {
-    const pets = await petService.getAllPets();
+    const pets = (await petService.getAllPets()).filter(
+      (pet) => !selectedPetId || pet.id === selectedPetId,
+    );
     const healthScores: PetHealthScore[] = [];
 
     for (const pet of pets) {
@@ -249,33 +412,95 @@ async function getAllPetsHealthScores(): Promise<PetHealthScore[]> {
 
 // ─── Main Widget Data Fetch ────────────────────────────────────────────────
 
-async function fetchWidgetData(): Promise<WidgetData> {
+export async function fetchWidgetData(): Promise<WidgetData> {
+  const preferences = await getWidgetPreferences();
+  let pets: Pet[] = [];
   try {
-    const [medications, appointments, healthScores] = await Promise.all([
-      getTodaysMedicationSchedule(),
-      getUpcomingAppointmentsForWidget(),
-      getAllPetsHealthScores(),
-    ]);
-
-    const widgetData: WidgetData = {
-      medications,
-      appointments,
-      healthScores,
-      lastUpdated: new Date().toISOString(),
-      timestamp: Date.now(),
-    };
-
-    return widgetData;
+    pets = await petService.getAllPets();
   } catch (error) {
-    console.error('[WidgetService] Error fetching widget data:', error);
-    return {
-      medications: [],
-      appointments: [],
-      healthScores: [],
-      lastUpdated: new Date().toISOString(),
-      timestamp: Date.now(),
-    };
+    console.error('[WidgetService] Error fetching pets:', error);
   }
+
+  let selectedPet = preferences.selectedPetId
+    ? pets.find((pet) => pet.id === preferences.selectedPetId)
+    : undefined;
+  let selectedPetId = preferences.selectedPetId;
+
+  if (!selectedPetId) return createEmptyWidgetData(preferences, null);
+
+  if (!selectedPet && selectedPetId) {
+    const access = await checkWidgetPetAccess(selectedPetId);
+    if (access === 'denied') {
+      await saveWidgetPreferences({ selectedPetId: null });
+      return createEmptyWidgetData(preferences, null);
+    }
+    try {
+      selectedPet = await getPetById(selectedPetId);
+      pets = [...pets.filter((pet) => pet.id !== selectedPetId), selectedPet];
+    } catch {
+      return createEmptyWidgetData(preferences, selectedPetId);
+    }
+  }
+
+  if (!selectedPet) return createEmptyWidgetData(preferences, selectedPetId);
+
+  const access = await checkWidgetPetAccess(selectedPet.id);
+  if (access === 'denied') {
+    await saveWidgetPreferences({ selectedPetId: null });
+    return createEmptyWidgetData(preferences, null);
+  }
+
+  const [medications, appointments, healthScores, allMedications, doseLogs] = await Promise.all([
+    getTodaysMedicationSchedule(selectedPet.id),
+    getUpcomingAppointmentsForWidget(selectedPet.id, pets),
+    getAllPetsHealthScores(selectedPet.id),
+    getMedications(),
+    getDoseLogs(),
+  ]);
+  const petMedications = allMedications.filter((medication) => medication.petId === selectedPet?.id);
+  const petAppointments = appointments
+    .map((appointment) => ({
+      id: appointment.id,
+      petId: appointment.petId,
+      title: appointment.title,
+      date: appointment.date,
+      time: appointment.time,
+    })) as Appointment[];
+
+  return {
+    medications,
+    appointments,
+    healthScores,
+    agenda: buildCareAgenda(
+      selectedPet.id,
+      selectedPet.name,
+      petMedications,
+      petAppointments,
+      new Date(),
+      5,
+      doseLogs,
+    ),
+    selectedPetId: selectedPet.id,
+    hideDetailsOnLockScreen: preferences.hideDetailsOnLockScreen,
+    lastUpdated: new Date().toISOString(),
+    timestamp: Date.now(),
+  };
+}
+
+function createEmptyWidgetData(
+  preferences: WidgetPreferences,
+  selectedPetId: string | null = preferences.selectedPetId,
+): WidgetData {
+  return {
+    medications: [],
+    appointments: [],
+    healthScores: [],
+    agenda: [],
+    selectedPetId,
+    hideDetailsOnLockScreen: preferences.hideDetailsOnLockScreen,
+    lastUpdated: new Date().toISOString(),
+    timestamp: Date.now(),
+  };
 }
 
 // ─── Update Widget Display ─────────────────────────────────────────────────
@@ -421,6 +646,9 @@ export async function clearWidgetData(): Promise<void> {
       medications: [],
       appointments: [],
       healthScores: [],
+      agenda: [],
+      selectedPetId: null,
+      hideDetailsOnLockScreen: true,
       lastUpdated: new Date().toISOString(),
       timestamp: Date.now(),
     };
