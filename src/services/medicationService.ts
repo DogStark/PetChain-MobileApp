@@ -336,7 +336,13 @@ export async function scheduleDoseReminder(
     content: {
       title: 'Medication reminder',
       body: `Time to take ${medicationName}`,
-      data: { medicationId, scheduledDoseId: doseId, scheduledFor: scheduledIso },
+      data: {
+        type: 'medication',
+        medicationId,
+        scheduledDoseId: doseId,
+        scheduledFor: scheduledIso,
+      },
+      categoryIdentifier: 'medication',
     },
     trigger: { type: 'date', date: triggerDate } as Notifications.DateTriggerInput,
   });
