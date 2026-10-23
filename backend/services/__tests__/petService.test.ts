@@ -74,4 +74,27 @@ describe('backend petService', () => {
       expect(response.success).toBe(true);
     });
   });
+
+  describe('permission and stale-data handling', () => {
+    it('should return error when access is denied (403)', async () => {
+      mockedApiClient.get.mockRejectedValue(new Error('Forbidden'));
+      const response = await getPetById('pet-123');
+      expect(response.success).toBe(false);
+      expect(response.error).toBe('Forbidden');
+    });
+
+    it('should not return cached or stale data when the server request fails', async () => {
+      mockedApiClient.get.mockRejectedValueOnce(new Error('Network error'));
+      const response = await getAllPets('owner-123');
+      expect(response.success).toBe(false);
+      expect(response.data).toBeUndefined();
+    });
+
+    it('should handle empty pet list boundary case', async () => {
+      mockedApiClient.get.mockResolvedValue({ data: [] });
+      const response = await getAllPets('owner-123');
+      expect(response.success).toBe(true);
+      expect(response.data).toHaveLength(0);
+    });
+  });
 });
