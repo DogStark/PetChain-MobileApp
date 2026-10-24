@@ -11,18 +11,22 @@ import {
   View,
 } from 'react-native';
 
+import AttachmentReviewState from '../components/AttachmentReviewState';
 import { EmptyState } from '../components/EmptyState';
 import api from '../services/api';
 import {
   type DocumentCategory,
   type DocumentMeta,
   type QuotaInfo,
+  DocumentReviewError,
   captureDocumentPhoto,
+  cleanupTempFile,
   deleteDocument,
   getDocumentVersions,
   listDocuments,
   pickDocument,
   restoreDocument,
+  reviewDocument,
   saveDocumentLocally,
   uploadDocument,
 } from '../services/documentService';
@@ -55,6 +59,7 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
   const [documents, setDocuments] = useState<DocumentMeta[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [reviewingDocumentId, setReviewingDocumentId] = useState<string | null>(null);
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [filterCategory, setFilterCategory] = useState<DocumentCategory | ''>('');
   const [quota, setQuota] = useState<QuotaInfo | null>(null);
@@ -147,6 +152,7 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
     try {
       const file = await pickDocument();
       if (!file) return;
+      setSelectedDoc(null);
       setPendingFile(file);
       setUploadName(file.name);
       setUploadModalVisible(true);
@@ -155,10 +161,49 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
     }
   };
 
+  const handleReview = async (
+    doc: DocumentMeta,
+    status: 'accepted' | 'rejected' | 'expired',
+  ) => {
+    setReviewingDocumentId(doc.id);
+    try {
+      const reviewed = await reviewDocument(doc.id, status);
+      setDocuments((current) =>
+        current.map((item) => (item.id === reviewed.id ? reviewed : item)),
+      );
+    } catch (err) {
+      setDocuments((current) =>
+        current.map((item) => (item.id === doc.id ? { ...item, canReview: false } : item)),
+      );
+      Alert.alert(
+        'Review not saved',
+        err instanceof Error ? err.message : 'The review could not be saved. Please retry.',
+      );
+      await loadDocuments();
+    } finally {
+      setReviewingDocumentId(null);
+    }
+  };
+
+  const handleRetryAttachment = async (doc: DocumentMeta) => {
+    try {
+      const file = await pickDocument();
+      if (!file) return;
+      setSelectedDoc(doc);
+      setPendingFile(file);
+      setUploadName(doc.name);
+      setUploadCategory(doc.category);
+      setUploadModalVisible(true);
+    } catch (err) {
+      Alert.alert('Error', err instanceof Error ? err.message : 'Failed to select a replacement');
+    }
+  };
+
   const handleCapturePhoto = async () => {
     try {
       const file = await captureDocumentPhoto();
       if (!file) return;
+      setSelectedDoc(null);
       setPendingFile(file);
       setUploadName(file.name);
       setUploadModalVisible(true);
@@ -167,7 +212,7 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
     }
   };
 
-  const handleUpload = async (parentId?: string) => {
+  const handleUpload = async (parentId?: string, retryOfId?: string) => {
     if (!pendingFile || !uploadName.trim() || !petId.trim()) return;
     setUploading(true);
     try {
@@ -178,16 +223,35 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
         uri: pendingFile.uri,
         mimeType: pendingFile.mimeType,
         parentId,
+        retryOfId,
       });
       setUploadModalVisible(false);
       setPendingFile(null);
       setUploadName('');
+      setSelectedDoc(null);
       await loadDocuments();
     } catch (err) {
-      Alert.alert('Upload Failed', err instanceof Error ? err.message : 'Upload failed');
+      if (err instanceof DocumentReviewError) {
+        setUploadModalVisible(false);
+        setPendingFile(null);
+        setSelectedDoc(null);
+        if (pendingFile) void cleanupTempFile(pendingFile.uri);
+        Alert.alert('Attachment changed', err.message);
+        await loadDocuments();
+      } else {
+        Alert.alert('Upload Failed', err instanceof Error ? err.message : 'Upload failed');
+      }
     } finally {
       setUploading(false);
     }
+  };
+
+  const handleCloseUploadModal = () => {
+    if (uploading) return;
+    setUploadModalVisible(false);
+    if (pendingFile) void cleanupTempFile(pendingFile.uri);
+    setPendingFile(null);
+    setSelectedDoc(null);
   };
 
   const handleDownload = async (doc: DocumentMeta) => {
@@ -296,58 +360,91 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
 
   const renderDocument = ({ item }: { item: DocumentMeta }) => (
     <View style={[styles.docCard, item.deletedAt ? styles.deletedCard : null]}>
-      <View style={styles.docInfo}>
-        <Text style={styles.docName} numberOfLines={1}>
-          {item.name}
-        </Text>
-        <Text style={styles.docMeta}>
-          {item.category} · v{item.version} · {formatBytes(item.sizeBytes)}
-        </Text>
-        <Text style={styles.docDate}>{new Date(item.createdAt).toLocaleDateString()}</Text>
-        {item.deletedAt && <Text style={styles.deletedLabel}>Deleted</Text>}
+      <View style={styles.docMainRow}>
+        <View style={styles.docInfo}>
+          <Text style={styles.docName} numberOfLines={1}>
+            {item.name}
+          </Text>
+          <Text style={styles.docMeta}>
+            {item.category} · v{item.version} · {formatBytes(item.sizeBytes)}
+          </Text>
+          <Text style={styles.docDate}>{new Date(item.createdAt).toLocaleDateString()}</Text>
+          <AttachmentReviewState status={item.reviewStatus} />
+          {item.deletedAt && <Text style={styles.deletedLabel}>Deleted</Text>}
+        </View>
+        <View style={styles.docActions}>
+          {!item.deletedAt ? (
+            <>
+              <TouchableOpacity
+                style={styles.actionBtn}
+                onPress={() => handleDownload(item)}
+                accessibilityLabel={`Download ${item.name}`}
+              >
+                <Text style={styles.actionText}>↓</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.actionBtn}
+                onPress={() => handleShare(item)}
+                accessibilityLabel={`Share ${item.name} securely`}
+              >
+                <Text style={styles.actionText}>↗</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.actionBtn}
+                onPress={() => handleViewVersions(item)}
+                accessibilityLabel={`View versions of ${item.name}`}
+              >
+                <Text style={styles.actionText}>⏱</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionBtn, styles.deleteBtn]}
+                onPress={() => handleDelete(item)}
+                accessibilityLabel={`Delete ${item.name}`}
+              >
+                <Text style={styles.actionText}>🗑</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <TouchableOpacity
+              style={[styles.actionBtn, styles.restoreBtn]}
+              onPress={() => handleRestore(item)}
+              accessibilityLabel={`Restore ${item.name}`}
+            >
+              <Text style={styles.actionText}>↩</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
-      <View style={styles.docActions}>
-        {!item.deletedAt ? (
-          <>
+      {!item.deletedAt && item.canReview && item.reviewStatus === 'pending_review' ? (
+        <View style={styles.reviewActions}>
+          {(['accepted', 'rejected', 'expired'] as const).map((status) => (
             <TouchableOpacity
-              style={styles.actionBtn}
-              onPress={() => handleDownload(item)}
-              accessibilityLabel={`Download ${item.name}`}
+              key={status}
+              style={styles.reviewButton}
+              onPress={() => handleReview(item, status)}
+              disabled={reviewingDocumentId === item.id}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: reviewingDocumentId === item.id }}
+              accessibilityLabel={`${status === 'accepted' ? 'Accept' : status === 'rejected' ? 'Reject' : 'Mark expired'} attachment`}
             >
-              <Text style={styles.actionText}>↓</Text>
+              <Text style={styles.reviewButtonText}>
+                {reviewingDocumentId === item.id ? 'Saving…' : status}
+              </Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.actionBtn}
-              onPress={() => handleShare(item)}
-              accessibilityLabel={`Share ${item.name} securely`}
-            >
-              <Text style={styles.actionText}>↗</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.actionBtn}
-              onPress={() => handleViewVersions(item)}
-              accessibilityLabel={`View versions of ${item.name}`}
-            >
-              <Text style={styles.actionText}>⏱</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.actionBtn, styles.deleteBtn]}
-              onPress={() => handleDelete(item)}
-              accessibilityLabel={`Delete ${item.name}`}
-            >
-              <Text style={styles.actionText}>🗑</Text>
-            </TouchableOpacity>
-          </>
-        ) : (
-          <TouchableOpacity
-            style={[styles.actionBtn, styles.restoreBtn]}
-            onPress={() => handleRestore(item)}
-            accessibilityLabel={`Restore ${item.name}`}
-          >
-            <Text style={styles.actionText}>↩</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+          ))}
+        </View>
+      ) : null}
+      {!item.deletedAt && item.canRetry ? (
+        <TouchableOpacity
+          style={styles.retryButton}
+          onPress={() => handleRetryAttachment(item)}
+          accessibilityRole="button"
+          accessibilityLabel="Replace rejected or expired attachment"
+          accessibilityHint="Selects a new file and submits it for clinician review"
+        >
+          <Text style={styles.retryButtonText}>Replace and retry</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 
@@ -498,7 +595,7 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
         visible={uploadModalVisible}
         animationType="slide"
         transparent
-        onRequestClose={() => setUploadModalVisible(false)}
+        onRequestClose={handleCloseUploadModal}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -530,19 +627,28 @@ const DocumentVaultScreen: React.FC<DocumentVaultScreenProps> = ({
                 {pendingFile.name} ({formatBytes(pendingFile.size)})
               </Text>
             )}
+            {uploading ? <AttachmentReviewState status="uploading" /> : null}
             <View style={styles.modalActions}>
               <TouchableOpacity
                 style={styles.cancelBtn}
-                onPress={() => {
-                  setUploadModalVisible(false);
-                  setPendingFile(null);
-                }}
+                onPress={handleCloseUploadModal}
+                disabled={uploading}
+                accessibilityState={{ disabled: uploading }}
               >
                 <Text style={styles.cancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.confirmBtn, uploading && styles.disabledBtn]}
-                onPress={() => handleUpload(selectedDoc?.id)}
+                onPress={() =>
+                  handleUpload(
+                    selectedDoc?.id,
+                    selectedDoc &&
+                      (selectedDoc.reviewStatus === 'rejected' ||
+                        selectedDoc.reviewStatus === 'expired')
+                      ? selectedDoc.id
+                      : undefined,
+                  )
+                }
                 disabled={uploading}
                 accessibilityLabel="Confirm upload"
               >
@@ -648,7 +754,7 @@ const styles = StyleSheet.create({
   listContent: { paddingBottom: 80 },
   emptyText: { textAlign: 'center', color: '#999', marginTop: 40, fontSize: 14 },
   docCard: {
-    flexDirection: 'row',
+    flexDirection: 'column',
     backgroundColor: '#fff',
     borderRadius: 10,
     padding: 12,
@@ -659,12 +765,32 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   deletedCard: { opacity: 0.6, borderLeftWidth: 3, borderLeftColor: '#e74c3c' },
+  docMainRow: { flexDirection: 'row' },
   docInfo: { flex: 1 },
   docName: { fontSize: 14, fontWeight: '600', color: '#222' },
   docMeta: { fontSize: 12, color: '#666', marginTop: 2 },
   docDate: { fontSize: 11, color: '#999', marginTop: 2 },
   deletedLabel: { fontSize: 11, color: '#e74c3c', marginTop: 2 },
   docActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  reviewActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  reviewButton: {
+    minHeight: 36,
+    paddingHorizontal: 10,
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: '#e0e7ff',
+  },
+  reviewButtonText: { color: '#1e3a8a', fontSize: 12, fontWeight: '600' },
+  retryButton: {
+    minHeight: 36,
+    alignSelf: 'flex-start',
+    justifyContent: 'center',
+    marginTop: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#fff7ed',
+  },
+  retryButtonText: { color: '#9a3412', fontSize: 12, fontWeight: '600' },
   actionBtn: {
     width: 32,
     height: 32,
