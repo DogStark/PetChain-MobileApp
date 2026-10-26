@@ -83,7 +83,7 @@ async function toPetResponse(p: StoredPet | DBPet) {
   };
 }
 
-function mapMobileRecordType(t: string): 'vaccination' |'treatment' | 'diagnosis' {
+function mapMobileRecordType(t: string): 'vaccination' | 'treatment' | 'diagnosis' {
   if (t === 'vaccination') return 'vaccination';
   if (t === 'treatment') return 'treatment';
   return 'diagnosis';

@@ -109,6 +109,25 @@ describe('EmergencyDirectoryScreen', () => {
     });
   });
 
+  it('exposes an accessible summary and data table for screen readers', async () => {
+    mockedService.fetchDirectory.mockResolvedValue(freshDirectory);
+
+    const { findByLabelText, getByLabelText } = render(<EmergencyDirectoryScreen />);
+
+    expect(await findByLabelText(/clinic summary/i)).toBeTruthy();
+    expect(getByLabelText(/Downtown Animal ER.*open now/i)).toBeTruthy();
+    expect(getByLabelText(/Uptown Vet.*closed/i)).toBeTruthy();
+  });
+
+  it('does not rely on color alone for open status', async () => {
+    mockedService.fetchDirectory.mockResolvedValue(freshDirectory);
+
+    const { findByText } = render(<EmergencyDirectoryScreen />);
+
+    expect(await findByText('Open now')).toBeTruthy();
+    expect(await findByText('Closed')).toBeTruthy();
+  });
+
   it('retries the directory fetch after a failure', async () => {
     mockedService.fetchDirectory
       .mockRejectedValueOnce(new Error('offline'))

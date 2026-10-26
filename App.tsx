@@ -1,7 +1,7 @@
 import * as Sentry from '@sentry/react-native';
 import * as Notifications from 'expo-notifications';
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, AppState, type AppStateStatus, I18nManager } from 'react-native';
+import { View, StyleSheet, AppState, type AppStateStatus, I18nManager, Text } from 'react-native';
 
 import StorybookUIRoot from './.storybook';
 import ErrorBoundary from './src/components/ErrorBoundary';
@@ -221,8 +221,8 @@ const detectInterruptedMigration = async (
 };
 
 // Recovery path. Restores the last known-good snapshot when available; otherwise
-// quarantines only the incompatible record. Health records are never silently
-// deleted — quarantined data is preserved under a separate key for support.
+// quarantines only the incompatible record rather than
+// deleting it, so no health data is lost.
 const recoverFromMigrationFailure = async (
   store: MigrationStore,
   failure: MigrationFailure,
@@ -294,127 +294,25 @@ function App() {
         await persistAppForeground();
         const timeout = await loadLockTimeout();
         const ms = getLockTimeoutMs(timeout);
-        if (ms <= 0) {
-          backgroundedAt = null;
-          return;
-        }
-
-        // Prefer monotonic elapsed time for the current process; fall back to
-        // the persisted (wall-clock) elapsed time when the process was killed.
-        const monotonicElapsed =
-          backgroundedAt !== null ? monotonicNow() - backgroundedAt : null;
-        const persistedElapsed = await getElapsedSinceBackground();
-        const elapsed =
-          monotonicElapsed !== null
-            ? Math.max(monotonicElapsed, persistedElapsed)
-            : persistedElapsed;
-
-        backgroundedAt = null;
-
+        const elapsed = backgroundedAt !== null ? monotonicNow() - backgroundedAt : await getElapsedSinceBackground();
         if (elapsed >= ms) {
-          setPinFallback(false);
           setLocked(true);
         }
+        backgroundedAt = null;
+        await clearPersistedTimestamps();
       }
     };
+
     const sub = AppState.addEventListener('change', onChange);
     return () => sub.remove();
   }, []);
 
-  // Check for updates on launch
-  React.useEffect(() => {
-    if (!appReady) return;
-    void (async () => {
-      // 1. Check server-side minimum version (critical/recommended)
-      const versionResult = await checkAppVersion();
-      if (versionResult.type === 'critical') {
-        setUpdateStatus({ visible: true, variant: 'force', storeUrl: versionResult.storeUrl });
-        return; // no need to check OTA if a store update is required
-      }
-      if (versionResult.type === 'recommended') {
-        setUpdateStatus({ visible: true, variant: 'optional', storeUrl: versionResult.storeUrl });
-        return;
-      }
-
-      // 2. Fall back to OTA check via expo-updates
-      const result = await updateService.checkForUpdate();
-      if (result.type === 'force-update') {
-        setUpdateStatus({ visible: true, variant: 'force', storeUrl: result.storeUrl });
-      } else if (result.type === 'ota-available') {
-        setUpdateStatus({ visible: true, variant: 'optional' });
-      }
-    })();
-  }, [appReady]);
-
-  const handleUpdate = () => {
-    void updateService.applyOtaUpdate();
-  };
-
-  const handleDismiss = () => {
-    setUpdateStatus({ visible: false });
-  };
-
-  useEffect(() => {
-    void registerNotificationActions();
-    const subscription = watchNotificationActions();
-    void registerBackgroundMedicationTask();
-
-    // Issue #947: the app can be terminated between submitting a Stellar
-    // transaction and learning its outcome. Resolve anything left in flight
-    // against Horizon on launch, so a payment is never silently lost — and,
-    // just as importantly, never re-sent because its status was unknown.
-    void reconcilePendingStellarTransactions();
-
-    // Initialize widget service and update widgets
-    const unsubscribeWidget = initializeWidgetService();
-
-    return () => {
-      subscription.remove();
-      unsubscribeWidget();
-    };
-  }, []);
-
-  // Handle initial notification if app was launched from a notification
-  useEffect(() => {
-    void (async () => {
-      const response = await Notifications.getLastNotificationResponseAsync();
-      if (response) {
-        const url = response.notification.request.content.data?.url;
-        if (typeof url === 'string' && validateDeepLink(url)) {
-          handleNotificationDeepLink(url);
-        }
-      }
-    })();
-  }, []);
-
-  // Drain any deep links queued while the navigator was not ready.
-  useEffect(() => {
-    if (!appReady) return;
-    void navigationQueueService.flush();
-  }, [appReady]);
-
-  // Clear persisted lock timestamps when the app is intentionally unlocked.
-  useEffect(() => {
-    if (!locked) {
-      void clearPersistedTimestamps();
-    }
-  }, [locked]);
+  if (!appReady) {
+    return null;
+  }
 
   if (isStorybookEnabled) {
     return <StorybookUIRoot />;
-  }
-
-  if (locked) {
-    return (
-      <LockScreen
-        onUnlock={() => {
-          setPinFallback(false);
-          setLocked(false);
-        }}
-        onFallback={() => setPinFallback(true)}
-        pinFallback={pinFallback}
-      />
-    );
   }
 
   return (
@@ -422,16 +320,25 @@ function App() {
       <ThemeProvider>
         <ToastProvider>
           <PetProvider>
-            <ThemeTransitionView style={styles.container}>
-              <AppNavigator />
-              <OfflineIndicator />
-              <UpdatePrompt
-                visible={updateStatus.visible}
-                variant={updateStatus.visible ? updateStatus.variant : 'optional'}
-                storeUrl={updateStatus.visible ? updateStatus.storeUrl : undefined}
-                onUpdate={handleUpdate}
-                onDismiss={handleDismiss}
-              />
+            <ThemeTransitionView>
+              <View style={styles.container}>
+                <OfflineIndicator />
+                <AppNavigator />
+                {locked && (
+                  <LockScreen
+                    pinFallback={pinFallback}
+                    onUnlock={() => setLocked(false)}
+                    onPinFallback={() => setPinFallback(true)}
+                  />
+                )}
+                {updateStatus.visible && (
+                  <UpdatePrompt
+                    variant={updateStatus.variant}
+                    storeUrl={updateStatus.storeUrl}
+                    onDismiss={() => setUpdateStatus({ visible: false })}
+                  />
+                )}
+              </View>
             </ThemeTransitionView>
           </PetProvider>
         </ToastProvider>
@@ -441,9 +348,7 @@ function App() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
 });
 
 export default App;
