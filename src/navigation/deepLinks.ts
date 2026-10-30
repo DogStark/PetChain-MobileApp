@@ -5,7 +5,8 @@ export type ParsedDeepLink =
   | { route: 'PetDetail'; params: { petId: string } }
   | { route: 'Appointments'; params: { appointmentId: string } }
   | { route: 'Emergency'; params: { sosId: string } }
-  | { route: 'DoseConfirmation'; params: { petId: string; medicationId: string } };
+  | { route: 'DoseConfirmation'; params: { petId: string; medicationId: string } }
+  | { route: 'PetCareTask'; params: { petId: string; taskId: string } };
 
 const TRUSTED_HTTPS_HOST = 'petchain.app';
 const APP_SCHEMES = new Set(['petchain', 'petchainapp']);
@@ -59,6 +60,16 @@ export function parseDeepLink(url: string): ParsedDeepLink | null {
       route: 'DoseConfirmation',
       params: { petId: segments[1], medicationId: segments[2] },
     };
+  }
+  // Issue #1192: petchain://pets/:petId/tasks/:taskId
+  if (
+    segments.length === 4 &&
+    segments[0] === 'pets' &&
+    segments[2] === 'tasks' &&
+    SAFE_ID.test(segments[1]) &&
+    SAFE_ID.test(segments[3])
+  ) {
+    return { route: 'PetCareTask', params: { petId: segments[1], taskId: segments[3] } };
   }
 
   return null;
