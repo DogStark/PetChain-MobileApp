@@ -82,6 +82,38 @@ export default {
     exportFailed: 'Error al solicitar la exportación de datos. Inténtalo de nuevo.',
     requestExport: 'Solicitar exportación',
     syncStatus: 'Estado de sincronización',
+    unsyncedWorkWarning:
+      'Tienes borradores locales o cambios sin sincronizar. Al cerrar sesión se eliminarán de este dispositivo.',
+    localDraftCount: 'Borradores de notas clínicas: {{count}}',
+    pendingChangeCount: 'Cambios sin sincronizar: {{count}}',
+    encryptedDraftExportAvailable:
+      'Puedes guardar una exportación cifrada antes de cerrar sesión. Elige una frase de contraseña que recuerdes; no se puede recuperar.',
+    draftExportDenied: 'El servidor denegó el permiso para exportar borradores.',
+    draftExportUnconfirmed:
+      'No se pudo confirmar el permiso de exportación. Puedes volver a intentarlo con conexión o cerrar sesión sin exportar.',
+    draftSharingUnavailable: 'El uso compartido cifrado no está disponible en este dispositivo.',
+    exportDraftsAndLogout: 'Exportar y cerrar sesión',
+    retryExportPermission: 'Reintentar permiso de exportación',
+    continueWithoutExport: 'Cerrar sesión sin exportar',
+    logoutDraftWarning:
+      'Al cerrar sesión se eliminarán los borradores locales y los cambios sin sincronizar de este dispositivo.',
+    exportReady: 'La exportación cifrada está lista para guardar.',
+    draftsChangedSinceExport:
+      'El trabajo local cambió después de crear la exportación. Exporta la copia más reciente o cierra sesión y elimínalo explícitamente.',
+    exportUpdatedDrafts: 'Exportar borradores recientes',
+    clearDraftsAndLogout: 'Cerrar sesión y eliminar borradores',
+    draftStatusFailed: 'No se pudieron comprobar los borradores locales.',
+    unknownDraftWarning:
+      'No se pudo comprobar el estado de los borradores locales. Al cerrar sesión podrían eliminarse cambios sin sincronizar.',
+    continueSignOut: 'Continuar para cerrar sesión',
+    draftPassphraseMismatch: 'Las frases de contraseña no coinciden.',
+    draftExportFailed: 'No se pudo crear la exportación cifrada de borradores.',
+    draftExportPasswordTitle: 'Cifrar borradores locales',
+    draftExportPasswordMessage:
+      'Elige una frase de contraseña de al menos 12 caracteres. La necesitarás para abrir la exportación; PetChain no puede recuperarla.',
+    draftExportPasswordPlaceholder: 'Frase de contraseña de exportación',
+    draftExportPasswordConfirmPlaceholder: 'Confirmar frase de contraseña',
+    createEncryptedExport: 'Crear exportación cifrada',
   },
   changePassword: {
     title: 'Cambiar contraseña',

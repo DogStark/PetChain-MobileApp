@@ -52,6 +52,37 @@ export default {
     build: 'البناء',
     termsOfService: 'شروط الخدمة',
     privacyPolicy: 'سياسة الخصوصية',
+    unsyncedWorkWarning:
+      'لديك مسودات محلية أو تغييرات لم تتم مزامنتها. سيؤدي تسجيل الخروج إلى حذفها من هذا الجهاز.',
+    localDraftCount: 'مسودات الملاحظات السريرية: {{count}}',
+    pendingChangeCount: 'التغييرات غير المتزامنة: {{count}}',
+    encryptedDraftExportAvailable:
+      'يمكنك حفظ نسخة مصدّرة مشفّرة قبل تسجيل الخروج. اختر عبارة مرور يمكنك تذكرها؛ لا يمكن استعادتها.',
+    draftExportDenied: 'رفض الخادم الإذن بتصدير المسودات.',
+    draftExportUnconfirmed:
+      'تعذّر تأكيد إذن التصدير. يمكنك إعادة المحاولة عند الاتصال أو تسجيل الخروج دون تصدير.',
+    draftSharingUnavailable: 'المشاركة المشفّرة غير متاحة على هذا الجهاز.',
+    exportDraftsAndLogout: 'تصدير وتسجيل الخروج',
+    retryExportPermission: 'إعادة محاولة إذن التصدير',
+    continueWithoutExport: 'تسجيل الخروج دون تصدير',
+    logoutDraftWarning: 'سيؤدي تسجيل الخروج إلى حذف المسودات المحلية والتغييرات غير المتزامنة من هذا الجهاز.',
+    exportReady: 'النسخة المصدّرة المشفّرة جاهزة للحفظ.',
+    draftsChangedSinceExport:
+      'تغيّرت البيانات المحلية بعد إنشاء النسخة المصدّرة. صدّر أحدث نسخة أو أكّد تسجيل الخروج وحذفها.',
+    exportUpdatedDrafts: 'تصدير أحدث المسودات',
+    clearDraftsAndLogout: 'تسجيل الخروج وحذف المسودات',
+    draftStatusFailed: 'تعذّر التحقق من المسودات المحلية.',
+    unknownDraftWarning:
+      'تعذّر التحقق من حالة المسودات المحلية. قد يؤدي تسجيل الخروج إلى حذف التغييرات غير المتزامنة.',
+    continueSignOut: 'المتابعة لتسجيل الخروج',
+    draftPassphraseMismatch: 'عبارتا المرور غير متطابقتين.',
+    draftExportFailed: 'تعذّر إنشاء نسخة المسودات المشفّرة.',
+    draftExportPasswordTitle: 'تشفير المسودات المحلية',
+    draftExportPasswordMessage:
+      'اختر عبارة مرور من 12 حرفًا على الأقل. ستحتاج إليها لفتح النسخة المصدّرة ولا يمكن لـ PetChain استعادتها.',
+    draftExportPasswordPlaceholder: 'عبارة مرور التصدير',
+    draftExportPasswordConfirmPlaceholder: 'تأكيد عبارة المرور',
+    createEncryptedExport: 'إنشاء نسخة مصدّرة مشفّرة',
   },
   changePassword: {
     title: 'تغيير كلمة المرور',

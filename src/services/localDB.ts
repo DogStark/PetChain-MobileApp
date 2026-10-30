@@ -881,6 +881,26 @@ export async function getSoapDraft(petId: string, vetId: string): Promise<SoapNo
   }
 }
 
+export async function getAllSoapDrafts(): Promise<SoapNoteDraft[]> {
+  const rows = await db.getAllAsync<{ data: string }>(
+    `SELECT data FROM soap_note_drafts ORDER BY updated_at ASC`,
+  );
+  const drafts: SoapNoteDraft[] = [];
+  for (const row of rows) {
+    const draft = await safeDecrypt<SoapNoteDraft>(row.data, 'localdb_soap_drafts', true);
+    if (
+      !draft ||
+      typeof draft.petId !== 'string' ||
+      typeof draft.vetId !== 'string' ||
+      typeof draft.savedAt !== 'string'
+    ) {
+      throw new Error('A saved clinical note draft could not be read');
+    }
+    drafts.push(draft);
+  }
+  return drafts;
+}
+
 export async function deleteSoapDraft(petId: string, vetId: string): Promise<void> {
   await deleteWithLocalAudit(
     `DELETE FROM soap_note_drafts WHERE pet_id = ? AND vet_id = ?`,
@@ -993,6 +1013,7 @@ export default {
   deleteHealthMetricById,
   upsertSoapDraft,
   getSoapDraft,
+  getAllSoapDrafts,
   deleteSoapDraft,
   getAllAppointmentsByPetId,
   getAllLocalAppointments,
