@@ -5,6 +5,7 @@ import express from 'express';
 
 import { logAuditTrail } from '../../middleware/auditLogger';
 import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
+import { AppointmentStatus } from '../../models/Appointment';
 import { UserRole } from '../../models/UserRole';
 import { ok, sendError } from '../../server/response';
 import { store } from '../../server/store';
@@ -16,6 +17,7 @@ router.use(authenticateJWT);
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type DocumentCategory = 'vaccination' | 'insurance' | 'vet_report' | 'other';
+export type DocumentReviewStatus = 'pending_review' | 'accepted' | 'rejected' | 'expired';
 
 export interface StoredDocument {
   id: string;
@@ -36,6 +38,9 @@ export interface StoredDocument {
   version: number;
   parentId?: string; // points to first version's id
   deletedAt?: string;
+  reviewStatus: DocumentReviewStatus;
+  reviewedBy?: string;
+  reviewedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -85,20 +90,61 @@ function ownerQuotaLimit(req: AuthenticatedRequest): number {
 
 function canAccess(doc: StoredDocument, req: AuthenticatedRequest): boolean {
   if (req.user!.role === UserRole.ADMIN) return true;
-  if (req.user!.role === UserRole.VET) {
-    // Vets can read any non-deleted doc for pets they have appointments with
-    const hasAppt = [...store.appointments.values()].some(
-      (a) => a.petId === doc.petId && a.vetId === req.user!.id,
-    );
-    return hasAppt;
-  }
+  if (req.user!.role === UserRole.VET) return hasAssignedAppointment(doc, req);
   return doc.ownerId === req.user!.id;
 }
 
-function safeDoc(d: StoredDocument) {
+function hasAssignedAppointment(doc: StoredDocument, req: AuthenticatedRequest): boolean {
+  return [...store.appointments.values()].some(
+    (appointment) =>
+      appointment.petId === doc.petId &&
+      appointment.vetId === req.user!.id &&
+      (appointment.status === AppointmentStatus.PENDING ||
+        appointment.status === AppointmentStatus.CONFIRMED ||
+        appointment.status === AppointmentStatus.COMPLETED),
+  );
+}
+
+function isLatestVersion(doc: StoredDocument): boolean {
+  const rootId = doc.parentId ?? doc.id;
+  return ![...docs().values()].some(
+    (candidate) =>
+      (candidate.parentId ?? candidate.id) === rootId && candidate.version > doc.version,
+  );
+}
+
+function isReviewerFor(doc: StoredDocument, req: AuthenticatedRequest): boolean {
+  if (req.user!.role === UserRole.ADMIN) return true;
+  if (req.user!.role !== UserRole.VET) return false;
+  return hasAssignedAppointment(doc, req);
+}
+
+function canReview(doc: StoredDocument, req: AuthenticatedRequest): boolean {
+  return (
+    !doc.deletedAt &&
+    isLatestVersion(doc) &&
+    doc.reviewStatus === 'pending_review' &&
+    isReviewerFor(doc, req)
+  );
+}
+
+function canRetry(doc: StoredDocument, req: AuthenticatedRequest): boolean {
+  return (
+    !doc.deletedAt &&
+    isLatestVersion(doc) &&
+    req.user!.role === UserRole.OWNER &&
+    doc.ownerId === req.user!.id &&
+    (doc.reviewStatus === 'rejected' || doc.reviewStatus === 'expired')
+  );
+}
+
+function safeDoc(d: StoredDocument, req?: AuthenticatedRequest) {
   // Never return encrypted content in list responses
-  const { encryptedContent: _c, encryptedThumbnail: _t, ...meta } = d;
-  return meta;
+  const { encryptedContent: _c, encryptedThumbnail: _t, reviewedBy: _reviewer, ...meta } = d;
+  return {
+    ...meta,
+    ...(req ? { canReview: canReview(d, req), canRetry: canRetry(d, req) } : {}),
+  };
 }
 
 // ─── GET /documents?petId=&category=&includeDeleted= ─────────────────────────
@@ -123,7 +169,7 @@ router.get('/', (req: AuthenticatedRequest, res) => {
   const result = [...latestByParent.values()]
     .filter((d) => canAccess(d, req))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map(safeDoc);
+    .map((document) => safeDoc(document, req));
 
   return res.json({ success: true, data: result, total: result.length });
 });
@@ -136,7 +182,14 @@ router.get('/:id', (req: AuthenticatedRequest, res) => {
   if (!canAccess(doc, req)) return sendError(res, 403, 'FORBIDDEN', 'Access denied');
 
   // Return full payload including encrypted content for download
-  return res.json({ success: true, data: doc });
+  return res.json({
+    success: true,
+    data: {
+      ...safeDoc(doc, req),
+      encryptedContent: doc.encryptedContent,
+      encryptedThumbnail: doc.encryptedThumbnail,
+    },
+  });
 });
 
 // ─── GET /documents/:id/versions ─────────────────────────────────────────────
@@ -150,7 +203,7 @@ router.get('/:id/versions', (req: AuthenticatedRequest, res) => {
   const versions = [...docs().values()]
     .filter((d) => (d.parentId ?? d.id) === rootId)
     .sort((a, b) => a.version - b.version)
-    .map(safeDoc);
+    .map((document) => safeDoc(document, req));
 
   return res.json({ success: true, data: versions });
 });
@@ -158,7 +211,7 @@ router.get('/:id/versions', (req: AuthenticatedRequest, res) => {
 // ─── POST /documents ──────────────────────────────────────────────────────────
 
 router.post('/', (req: AuthenticatedRequest, res) => {
-  const body = req.body as Partial<StoredDocument> & { parentId?: string };
+  const body = req.body as Partial<StoredDocument> & { parentId?: string; retryOfId?: string };
 
   // Validation
   if (!body.petId?.trim()) return sendError(res, 400, 'VALIDATION_ERROR', 'petId is required');
@@ -208,8 +261,27 @@ router.post('/', (req: AuthenticatedRequest, res) => {
   // Versioning: if parentId provided, find latest version
   let version = 1;
   let parentId: string | undefined;
-  if (body.parentId) {
-    const parent = docs().get(body.parentId);
+  const retrySource = body.retryOfId ? docs().get(body.retryOfId) : undefined;
+  if (body.retryOfId) {
+    if (!retrySource || retrySource.deletedAt || !canAccess(retrySource, req)) {
+      return sendError(res, 404, 'NOT_FOUND', 'Attachment not found');
+    }
+    if (retrySource.reviewStatus !== 'rejected' && retrySource.reviewStatus !== 'expired') {
+      return sendError(res, 409, 'STALE_ATTACHMENT', 'This attachment cannot be retried');
+    }
+    if (!isLatestVersion(retrySource)) {
+      return sendError(res, 409, 'STALE_ATTACHMENT', 'A newer attachment version already exists');
+    }
+    if (req.user!.role !== UserRole.OWNER || retrySource.ownerId !== req.user!.id) {
+      return sendError(res, 403, 'FORBIDDEN', 'Only the document owner can retry an attachment');
+    }
+    if (retrySource.petId !== body.petId.trim()) {
+      return sendError(res, 400, 'VALIDATION_ERROR', 'Retry attachment must belong to this pet');
+    }
+  }
+  const versionSourceId = retrySource?.id ?? body.parentId;
+  if (versionSourceId) {
+    const parent = docs().get(versionSourceId);
     if (!parent) return sendError(res, 400, 'VALIDATION_ERROR', 'parentId not found');
     if (!canAccess(parent, req)) return sendError(res, 403, 'FORBIDDEN', 'Access denied');
     parentId = parent.parentId ?? parent.id;
@@ -234,6 +306,7 @@ router.post('/', (req: AuthenticatedRequest, res) => {
     encryptedThumbnail: body.encryptedThumbnail,
     version,
     parentId,
+    reviewStatus: 'pending_review',
     createdAt: t,
     updatedAt: t,
   };
@@ -254,7 +327,47 @@ router.post('/', (req: AuthenticatedRequest, res) => {
     mimeType: doc.mimeType,
   });
 
-  return res.status(201).json({ success: true, data: safeDoc(doc) });
+  return res.status(201).json({ success: true, data: safeDoc(doc, req) });
+});
+
+// ─── POST /documents/:id/review ──────────────────────────────────────────────
+
+router.post('/:id/review', (req: AuthenticatedRequest, res) => {
+  const doc = docs().get(req.params.id);
+  if (!doc || doc.deletedAt) return sendError(res, 404, 'NOT_FOUND', 'Document not found');
+  if (!canAccess(doc, req)) return sendError(res, 403, 'FORBIDDEN', 'Access denied');
+  if (!isReviewerFor(doc, req)) {
+    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to review this attachment');
+  }
+  if (doc.reviewStatus !== 'pending_review' || !isLatestVersion(doc)) {
+    return sendError(res, 409, 'STALE_ATTACHMENT', 'Attachment is no longer awaiting review');
+  }
+
+  const status = (req.body as { status?: unknown }).status;
+  if (status !== 'accepted' && status !== 'rejected' && status !== 'expired') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'A valid review status is required');
+  }
+
+  const t = new Date().toISOString();
+  const reviewed: StoredDocument = {
+    ...doc,
+    reviewStatus: status,
+    reviewedBy: req.user!.id,
+    reviewedAt: t,
+    updatedAt: t,
+  };
+  docs().set(doc.id, reviewed);
+
+  void logAuditTrail({
+    req,
+    entityType: 'document',
+    entityId: doc.id,
+    action: 'UPDATE',
+    before: safeDoc(doc),
+    after: safeDoc(reviewed),
+  });
+
+  return res.json({ success: true, data: safeDoc(reviewed, req) });
 });
 
 // ─── DELETE /documents/:id (soft-delete) ─────────────────────────────────────
