@@ -467,16 +467,54 @@ router.delete('/pets/:petId/access/:userId', (req: AuthenticatedRequest, res) =>
 // ─── Activity Feed Routes ──────────────────────────────────────────────────────
 
 /**
- * GET /family-groups/:id/activity
- * Get family activity feed
+ * GET /family-sharing/:grantId/activity (also serves GET /family-sharing/:id/activity for family groups)
+ * Get paginated access log for a sharing grant or family group activity feed
  */
-router.get('/:id/activity', (req: AuthenticatedRequest, res) => {
+router.get('/:id/activity', async (req: AuthenticatedRequest, res) => {
+  const grant = familySharingService.getPetAccessById(req.params.id);
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+  const offset =
+    req.query.offset !== undefined
+      ? Math.max(0, Number(req.query.offset) || 0)
+      : (page - 1) * limit;
+
+  if (grant) {
+    const canManage = await familySharingService.canManagePetAccess(grant.petId, req.user!.id);
+    if (req.user!.id !== grant.grantedBy && req.user!.id !== grant.userId && !canManage) {
+      return sendError(
+        res,
+        403,
+        'FORBIDDEN',
+        'You do not have permission to view activity for this sharing grant',
+      );
+    }
+
+    const result = familySharingService.getGrantActivityFeed(req.params.id, {
+      page,
+      limit,
+      offset,
+    });
+    if (!result) {
+      return sendError(res, 404, 'NOT_FOUND', 'Sharing grant not found');
+    }
+
+    return res.json({
+      ...ok(result.items),
+      pagination: {
+        page: result.page,
+        limit: result.limit,
+        total: result.total,
+        totalPages: result.totalPages,
+        hasNext: result.hasNext,
+        hasPrev: result.hasPrev,
+      },
+    });
+  }
+
   if (!familySharingService.canUserAccessFamily(req.params.id, req.user!.id)) {
     return sendError(res, 403, 'FORBIDDEN', 'You do not have access to this family group');
   }
-
-  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
-  const offset = Math.max(0, Number(req.query.offset) || 0);
 
   const feed = familySharingService.getFamilyActivityFeed(req.params.id, limit, offset);
 

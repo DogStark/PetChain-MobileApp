@@ -15,7 +15,9 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 
+import MultiStepFormHeader from '../components/MultiStepFormHeader';
 import { OnboardingProvider, useOnboarding } from '../context/OnboardingContext';
+import onboardingService from '../services/onboardingService';
 import BiometricStep from './onboarding/BiometricStep';
 import BlockchainIntroStep from './onboarding/BlockchainIntroStep';
 import FirstRecordStep from './onboarding/FirstRecordStep';
@@ -96,6 +98,9 @@ function OnboardingFlow({ onComplete, onSkip }: OnboardingNavigatorProps) {
   const handleSkip = useCallback(() => {
     const sequencePosition = currentStep;
     const stepIndex = stepSequence[sequencePosition];
+    if (onboardingService.isMandatoryStep(stepIndex)) {
+      return;
+    }
     const isLast = sequencePosition >= totalSteps - 1;
 
     animateOut(async () => {
@@ -110,11 +115,16 @@ function OnboardingFlow({ onComplete, onSkip }: OnboardingNavigatorProps) {
   }, [currentStep, stepSequence, totalSteps, animateOut, skip, completeOnboarding, onComplete]);
 
   const handleGlobalSkip = useCallback(() => {
+    const sequencePosition = Math.min(currentStep, totalSteps - 1);
+    const stepIndex = stepSequence[sequencePosition];
+    if (onboardingService.isMandatoryStep(stepIndex)) {
+      return;
+    }
     animateOut(async () => {
       await completeOnboarding();
       onSkip();
     });
-  }, [animateOut, completeOnboarding, onSkip]);
+  }, [currentStep, totalSteps, stepSequence, animateOut, completeOnboarding, onSkip]);
 
   if (loading || !state) {
     return (
@@ -128,6 +138,13 @@ function OnboardingFlow({ onComplete, onSkip }: OnboardingNavigatorProps) {
   const stepIndex = stepSequence[sequencePosition];
   const StepComponent = STEP_COMPONENTS[stepIndex];
   const isLast = sequencePosition >= totalSteps - 1;
+  const isMandatory = onboardingService.isMandatoryStep(stepIndex);
+  const completedPositions = state.completedSteps
+    .map((s) => stepSequence.indexOf(s))
+    .filter((i) => i >= 0);
+  const skippedPositions = state.skippedSteps
+    .map((s) => stepSequence.indexOf(s))
+    .filter((i) => i >= 0);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -136,13 +153,25 @@ function OnboardingFlow({ onComplete, onSkip }: OnboardingNavigatorProps) {
         <Text style={styles.stepLabel}>
           {sequencePosition + 1} / {totalSteps}
         </Text>
-        <TouchableOpacity
-          onPress={handleGlobalSkip}
-          accessibilityRole="button"
-          accessibilityLabel="Skip onboarding"
-        >
-          <Text style={styles.skipAll}>Skip all</Text>
-        </TouchableOpacity>
+        {!isMandatory && (
+          <TouchableOpacity
+            onPress={handleGlobalSkip}
+            accessibilityRole="button"
+            accessibilityLabel="Skip onboarding"
+          >
+            <Text style={styles.skipAll}>Skip all</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <View style={styles.stepHeaderWrap}>
+        <MultiStepFormHeader
+          announcement={`Step ${sequencePosition + 1} of ${totalSteps}`}
+          currentStep={sequencePosition}
+          totalSteps={totalSteps}
+          completedSteps={completedPositions}
+          skippedSteps={skippedPositions}
+        />
       </View>
 
       {/* Progress bar */}
@@ -188,6 +217,7 @@ const styles = StyleSheet.create({
   },
   stepLabel: { fontSize: 13, color: '#9CA3AF', fontWeight: '500' },
   skipAll: { fontSize: 14, color: '#6B7280' },
+  stepHeaderWrap: { paddingHorizontal: 20, paddingTop: 4 },
   progressTrack: {
     height: 4,
     backgroundColor: '#E5E7EB',

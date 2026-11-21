@@ -745,3 +745,67 @@ describe('utility functions', () => {
     expect(svc.getUserFamilyRole(group.id, STRANGER)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Shared-access audit attribution & grant activity pagination (#1398)
+// ---------------------------------------------------------------------------
+
+describe('shared-access audit attribution and grant activity', () => {
+  it('records lastAccessedAt on access grants when accessed', async () => {
+    const svc = freshService();
+    const grant = svc.grantPetAccess('pet-1', OWNER, {
+      userId: MEMBER,
+      permissionLevel: PetAccessLevel.CAREGIVER,
+    });
+
+    expect(svc.getPetAccessById(grant.id)?.lastAccessedAt).toBeUndefined();
+
+    const accessed = svc.getPetAccess('pet-1', MEMBER);
+    expect(accessed?.lastAccessedAt).toBeTruthy();
+
+    await svc.checkPetAccess('pet-1', MEMBER);
+    expect(svc.getPetAccessById(grant.id)?.lastAccessedAt).toBeTruthy();
+  });
+
+  it('logs acting_user_id and on_behalf_of_user_id and paginates grant activity', () => {
+    const svc = freshService();
+    const grant = svc.grantPetAccess('pet-1', OWNER, {
+      userId: MEMBER,
+      permissionLevel: PetAccessLevel.CAREGIVER,
+    });
+
+    for (let i = 0; i < 4; i++) {
+      const entry = svc.recordSharedAccessAction({
+        grantId: grant.id,
+        actingUserId: MEMBER,
+        action: 'medical_record.updated',
+        resourceType: 'medical_record',
+        resourceId: `rec-${i}`,
+        description: `Updated record ${i}`,
+      });
+
+      expect(entry).not.toBeNull();
+      expect(entry!.actingUserId).toBe(MEMBER);
+      expect(entry!.acting_user_id).toBe(MEMBER);
+      expect(entry!.onBehalfOfUserId).toBe(OWNER);
+      expect(entry!.on_behalf_of_user_id).toBe(OWNER);
+      expect(entry!.grantId).toBe(grant.id);
+    }
+
+    expect(svc.getPetAccessById(grant.id)?.lastAccessedAt).toBeTruthy();
+
+    const page1 = svc.getGrantActivityFeed(grant.id, { page: 1, limit: 2 });
+    expect(page1).not.toBeNull();
+    expect(page1!.items).toHaveLength(2);
+    expect(page1!.total).toBe(5); // 1 grant creation + 4 shared actions
+    expect(page1!.page).toBe(1);
+    expect(page1!.totalPages).toBe(3);
+    expect(page1!.hasNext).toBe(true);
+    expect(page1!.hasPrev).toBe(false);
+
+    const page3 = svc.getGrantActivityFeed(grant.id, { page: 3, limit: 2 });
+    expect(page3!.items).toHaveLength(1);
+    expect(page3!.hasNext).toBe(false);
+    expect(page3!.hasPrev).toBe(true);
+  });
+});

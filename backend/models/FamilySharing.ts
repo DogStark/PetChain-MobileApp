@@ -82,6 +82,7 @@ export interface PetAccessPermission {
   grantedBy: string;
   grantedAt: string;
   expiresAt?: string;
+  lastAccessedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -111,6 +112,11 @@ export interface FamilyActivityFeed {
   id: string;
   familyGroupId: string;
   actorId: string;
+  actingUserId?: string;
+  onBehalfOfUserId?: string;
+  acting_user_id?: string;
+  on_behalf_of_user_id?: string;
+  grantId?: string;
   action: string;
   resourceType: string;
   resourceId?: string;
@@ -202,6 +208,19 @@ export interface ActivityFeedEntry extends FamilyActivityFeed {
     name: string;
     email: string;
   };
+}
+
+/**
+ * Paginated activity feed response for sharing grants
+ */
+export interface PaginatedActivityFeed {
+  items: FamilyActivityFeed[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
 }
 
 /**

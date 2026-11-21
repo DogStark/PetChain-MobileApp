@@ -54,7 +54,7 @@ function permissionCacheKey(userId: string, petId: string): string {
 setInterval(() => {
   const metrics = getCacheMetrics();
   console.warn('[familySharingService] cache hit-rate:', metrics.hitRate, metrics);
-}, 60_000);
+}, 60_000).unref();
 
 function now(): string {
   return new Date().toISOString();
@@ -327,8 +327,10 @@ export function getInvitationRecoveryState(
   }
 
   if (invitation.status === InvStatus.REVOKED) return { state: 'revoked' };
-  if (invitation.status === InvStatus.ACCEPTED) return { state: 'already_used', outcome: 'accepted' };
-  if (invitation.status === InvStatus.DECLINED) return { state: 'already_used', outcome: 'declined' };
+  if (invitation.status === InvStatus.ACCEPTED)
+    return { state: 'already_used', outcome: 'accepted' };
+  if (invitation.status === InvStatus.DECLINED)
+    return { state: 'already_used', outcome: 'declined' };
   if (invitation.status === InvStatus.EXPIRED) return { state: 'expired' };
 
   if (invitation.invitedEmail !== userEmail.toLowerCase()) return { state: 'wrong_account' };
@@ -476,9 +478,27 @@ export function grantPetAccess(
     'pet_access',
     id,
     `Granted ${input.permissionLevel} access to pet ${petId}`,
-    { petId, userId: input.userId },
+    { petId, userId: input.userId, grantId: id, onBehalfOfUserId: grantedBy },
   );
 
+  return permission;
+}
+
+function touchPetAccess(permission: PetAccessPermission): PetAccessPermission {
+  const updated: PetAccessPermission = {
+    ...permission,
+    lastAccessedAt: now(),
+  };
+  petAccessPermissions.set(permission.id, updated);
+  return updated;
+}
+
+export function getPetAccessById(grantId: string): PetAccessPermission | undefined {
+  const permission = petAccessPermissions.get(grantId);
+  if (!permission) return undefined;
+  if (permission.expiresAt && new Date(permission.expiresAt) < new Date()) {
+    return undefined;
+  }
   return permission;
 }
 
@@ -492,7 +512,7 @@ export function getPetAccess(petId: string, userId: string): PetAccessPermission
     return undefined;
   }
 
-  return permission;
+  return permission ? touchPetAccess(permission) : undefined;
 }
 
 export function getPetAccessList(petId: string): PetAccessPermission[] {
@@ -561,9 +581,9 @@ export async function checkPetAccess(
 ): Promise<PermissionCheckResult> {
   const key = permissionCacheKey(userId, petId);
   const cached = await cacheGet<PermissionCheckResult>(key);
+  const permission = getPetAccess(petId, userId);
   if (cached !== null) return cached;
 
-  const permission = getPetAccess(petId, userId);
   const result: PermissionCheckResult = permission
     ? { hasAccess: true, permissionLevel: permission.permissionLevel }
     : { hasAccess: false, reason: 'No access permission for this pet' };
@@ -637,13 +657,41 @@ function logActivity(
   resourceId: string,
   description: string,
   metadata?: Record<string, unknown>,
-): void {
+): FamilyActivityFeed {
   const id = randomUUID();
+  const petId = typeof metadata?.petId === 'string' ? metadata.petId : undefined;
+  const grantIdMeta = typeof metadata?.grantId === 'string' ? metadata.grantId : undefined;
+  const matchingGrant = grantIdMeta
+    ? petAccessPermissions.get(grantIdMeta)
+    : petId
+      ? [...petAccessPermissions.values()].find((p) => p.petId === petId && p.userId === actorId)
+      : undefined;
+  const actingUserId =
+    typeof metadata?.actingUserId === 'string'
+      ? metadata.actingUserId
+      : typeof metadata?.acting_user_id === 'string'
+        ? metadata.acting_user_id
+        : actorId;
+  const familyGroup = familyGroupId ? familyGroups.get(familyGroupId) : undefined;
+  const onBehalfOfUserId =
+    typeof metadata?.onBehalfOfUserId === 'string'
+      ? metadata.onBehalfOfUserId
+      : typeof metadata?.on_behalf_of_user_id === 'string'
+        ? metadata.on_behalf_of_user_id
+        : (matchingGrant?.grantedBy ?? familyGroup?.ownerId ?? actorId);
+  const grantId =
+    grantIdMeta ?? matchingGrant?.id ?? (resourceType === 'pet_access' ? resourceId : undefined);
 
   const entry: FamilyActivityFeed = {
     id,
     familyGroupId,
     actorId,
+    actingUserId,
+    onBehalfOfUserId,
+    acting_user_id: actingUserId,
+    on_behalf_of_user_id: onBehalfOfUserId,
+    grantId,
+    petId,
     action,
     resourceType,
     resourceId,
@@ -653,6 +701,96 @@ function logActivity(
   };
 
   activityFeed.set(id, entry);
+  return entry;
+}
+
+export function recordSharedAccessAction(params: {
+  grantId?: string;
+  petId?: string;
+  actingUserId: string;
+  onBehalfOfUserId?: string;
+  action: string;
+  resourceType?: string;
+  resourceId?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+}): FamilyActivityFeed | null {
+  const grant = params.grantId
+    ? getPetAccessById(params.grantId)
+    : params.petId
+      ? getPetAccess(params.petId, params.actingUserId)
+      : undefined;
+
+  if (!grant && !params.petId) {
+    return null;
+  }
+
+  if (grant) {
+    touchPetAccess(grant);
+  }
+
+  const petId = grant?.petId ?? params.petId;
+  const onBehalfOfUserId = params.onBehalfOfUserId ?? grant?.grantedBy ?? params.actingUserId;
+
+  return logActivity(
+    '',
+    params.actingUserId,
+    params.action,
+    params.resourceType ?? 'pet',
+    params.resourceId ?? petId ?? grant?.id ?? '',
+    params.description ?? `${params.action} on shared pet ${petId ?? ''}`.trim(),
+    {
+      ...(params.metadata ?? {}),
+      ...(petId ? { petId } : {}),
+      ...(grant ? { grantId: grant.id } : {}),
+      actingUserId: params.actingUserId,
+      onBehalfOfUserId,
+    },
+  );
+}
+
+export function getGrantActivityFeed(
+  grantId: string,
+  options: { page?: number; limit?: number; offset?: number } = {},
+): {
+  items: FamilyActivityFeed[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+} | null {
+  const grant = petAccessPermissions.get(grantId);
+  if (!grant) return null;
+
+  const matching = [...activityFeed.values()]
+    .filter(
+      (a) =>
+        a.grantId === grantId ||
+        a.resourceId === grantId ||
+        a.metadata?.grantId === grantId ||
+        (a.petId === grant.petId &&
+          (a.actorId === grant.userId || a.actingUserId === grant.userId)),
+    )
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  const limit = Math.min(100, Math.max(1, options.limit ?? 50));
+  const page = Math.max(1, options.page ?? 1);
+  const offset = options.offset !== undefined ? Math.max(0, options.offset) : (page - 1) * limit;
+  const total = matching.length;
+  const totalPages = Math.ceil(total / limit) || 1;
+  const items = matching.slice(offset, offset + limit);
+
+  return {
+    items,
+    total,
+    page,
+    limit,
+    totalPages,
+    hasNext: page < totalPages,
+    hasPrev: page > 1,
+  };
 }
 
 export function getFamilyActivityFeed(
@@ -730,6 +868,7 @@ export default {
   // Pet Access
   grantPetAccess,
   getPetAccess,
+  getPetAccessById,
   getPetAccessList,
   revokePetAccess,
   updatePetAccess,
@@ -747,6 +886,8 @@ export default {
   getFamilyActivityFeed,
   getPetActivityFeed,
   getActivityFeedEntry,
+  recordSharedAccessAction,
+  getGrantActivityFeed,
 
   // Utilities
   getFamilyGroupWithMembers,

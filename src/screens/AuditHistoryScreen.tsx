@@ -12,6 +12,35 @@ interface Props {
   onBack: () => void;
 }
 
+interface CoOwnerAttribution {
+  isCoOwnerAction: boolean;
+  actingUserId: string | null;
+  onBehalfOfUserId: string | null;
+}
+
+export function getCoOwnerAttribution(entry: AuditTrailEntry): CoOwnerAttribution {
+  const after = entry.afterData ?? undefined;
+  const actingUserId =
+    entry.actingUserId ??
+    entry.acting_user_id ??
+    (typeof after?.acting_user_id === 'string' ? after.acting_user_id : undefined) ??
+    (typeof after?.actingUserId === 'string' ? after.actingUserId : undefined) ??
+    entry.changedBy ??
+    null;
+  const onBehalfOfUserId =
+    entry.onBehalfOfUserId ??
+    entry.on_behalf_of_user_id ??
+    (typeof after?.on_behalf_of_user_id === 'string' ? after.on_behalf_of_user_id : undefined) ??
+    (typeof after?.onBehalfOfUserId === 'string' ? after.onBehalfOfUserId : undefined) ??
+    null;
+
+  return {
+    isCoOwnerAction: Boolean(actingUserId && onBehalfOfUserId && actingUserId !== onBehalfOfUserId),
+    actingUserId,
+    onBehalfOfUserId,
+  };
+}
+
 function prettyDiff(entry: AuditTrailEntry): string {
   const before = entry.beforeData ?? {};
   const after = entry.afterData ?? {};
@@ -90,18 +119,35 @@ const AuditHistoryScreen: React.FC<Props> = ({ entityType, entityId, title, onBa
           <Text style={styles.muted}>No audit history available yet.</Text>
         )}
 
-        {rows.map((r) => (
-          <View key={r.id} style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.action}>{r.action}</Text>
-              <Text style={styles.time}>{formatRelativeTime(r.createdAt)}</Text>
+        {rows.map((r) => {
+          const attribution = getCoOwnerAttribution(r);
+          return (
+            <View
+              key={r.id}
+              style={[styles.card, attribution.isCoOwnerAction && styles.coOwnerCard]}
+            >
+              <View style={styles.cardHeader}>
+                <View style={styles.cardHeaderLeft}>
+                  <Text style={styles.action}>{r.action}</Text>
+                  {attribution.isCoOwnerAction && (
+                    <View style={styles.coOwnerBadge} testID={`co-owner-badge-${r.id}`}>
+                      <Text style={styles.coOwnerBadgeText}>Co-owner Action</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.time}>{formatRelativeTime(r.createdAt)}</Text>
+              </View>
+              <Text style={styles.meta} testID={`audit-actor-${r.id}`}>
+                {attribution.isCoOwnerAction
+                  ? `Co-owner: ${attribution.actingUserId} (on behalf of ${attribution.onBehalfOfUserId})`
+                  : r.changedBy
+                    ? `User: ${r.changedBy}`
+                    : 'User: (system/unknown)'}
+              </Text>
+              <Text style={styles.diff}>{prettyDiff(r)}</Text>
             </View>
-            <Text style={styles.meta}>
-              {r.changedBy ? `User: ${r.changedBy}` : 'User: (system/unknown)'}
-            </Text>
-            <Text style={styles.diff}>{prettyDiff(r)}</Text>
-          </View>
-        ))}
+          );
+        })}
       </ScrollView>
     </View>
   );
@@ -141,6 +187,15 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  coOwnerCard: { borderLeftWidth: 4, borderLeftColor: '#1976D2' },
+  coOwnerBadge: {
+    backgroundColor: '#E3F2FD',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  coOwnerBadgeText: { fontSize: 11, fontWeight: '700', color: '#1565C0' },
   action: { fontWeight: '800', color: '#1a1a1a' },
   time: { color: '#666' },
   meta: { color: '#666', marginBottom: 10 },

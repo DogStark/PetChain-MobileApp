@@ -17,11 +17,28 @@ export interface OnboardingState {
 const STORAGE_KEY = 'onboarding_state';
 const TOTAL_STEPS = 6;
 
+// Mandatory onboarding steps (1 = PetSetupStep, 2 = NotificationsStep) cannot be skipped
+export const MANDATORY_STEPS: readonly number[] = [1, 2];
+
+export function isMandatoryStep(stepIndex: number): boolean {
+  return MANDATORY_STEPS.includes(stepIndex);
+}
+
 // A/B: variant A = standard order, variant B = blockchain intro earlier (step 3)
 export const STEP_SEQUENCES: Record<OnboardingVariant, number[]> = {
   A: [0, 1, 2, 3, 4, 5],
   B: [0, 1, 5, 2, 3, 4],
 };
+
+export function resolveResumeStep(state: OnboardingState): number {
+  if (state.completedSteps.length === 0 && state.skippedSteps.length === 0) {
+    return state.currentStep;
+  }
+  const sequence = STEP_SEQUENCES[state.variant ?? 'A'] ?? STEP_SEQUENCES.A;
+  const visited = new Set([...state.completedSteps, ...state.skippedSteps]);
+  const nextPos = sequence.findIndex((step) => !visited.has(step));
+  return nextPos === -1 ? TOTAL_STEPS : nextPos;
+}
 
 function assignVariant(): OnboardingVariant {
   return Math.random() < 0.5 ? 'A' : 'B';
@@ -46,7 +63,20 @@ async function save(state: OnboardingState): Promise<void> {
 
 async function init(): Promise<OnboardingState> {
   const existing = await load();
-  if (existing) return existing;
+  if (existing) {
+    if (
+      !existing.completed &&
+      (existing.completedSteps.length > 0 || existing.skippedSteps.length > 0)
+    ) {
+      const resumedStep = resolveResumeStep(existing);
+      if (resumedStep !== existing.currentStep) {
+        const updated: OnboardingState = { ...existing, currentStep: resumedStep };
+        await save(updated);
+        return updated;
+      }
+    }
+    return existing;
+  }
   const state: OnboardingState = {
     currentStep: 0,
     completedSteps: [],
@@ -61,10 +91,19 @@ async function init(): Promise<OnboardingState> {
 }
 
 async function advanceStep(state: OnboardingState, stepIndex: number): Promise<OnboardingState> {
+  const completedSteps = [...new Set([...state.completedSteps, stepIndex])];
+  const skippedSteps = state.skippedSteps.filter((s) => s !== stepIndex);
+  const sequence = STEP_SEQUENCES[state.variant ?? 'A'] ?? STEP_SEQUENCES.A;
+  const seqPos = sequence.indexOf(stepIndex);
+  const nextCurrentStep = Math.max(
+    seqPos >= 0 ? seqPos + 1 : stepIndex + 1,
+    resolveResumeStep({ ...state, completedSteps, skippedSteps }),
+  );
   const next: OnboardingState = {
     ...state,
-    completedSteps: [...new Set([...state.completedSteps, stepIndex])],
-    currentStep: stepIndex + 1,
+    completedSteps,
+    skippedSteps,
+    currentStep: nextCurrentStep,
   };
   await save(next);
   analyticsService.featureUsed('onboarding_step_complete', {
@@ -75,10 +114,20 @@ async function advanceStep(state: OnboardingState, stepIndex: number): Promise<O
 }
 
 async function skipStep(state: OnboardingState, stepIndex: number): Promise<OnboardingState> {
+  if (isMandatoryStep(stepIndex)) {
+    throw new Error(`Step ${stepIndex} is mandatory and cannot be skipped`);
+  }
+  const skippedSteps = [...new Set([...state.skippedSteps, stepIndex])];
+  const sequence = STEP_SEQUENCES[state.variant ?? 'A'] ?? STEP_SEQUENCES.A;
+  const seqPos = sequence.indexOf(stepIndex);
+  const nextCurrentStep = Math.max(
+    seqPos >= 0 ? seqPos + 1 : stepIndex + 1,
+    resolveResumeStep({ ...state, skippedSteps }),
+  );
   const next: OnboardingState = {
     ...state,
-    skippedSteps: [...new Set([...state.skippedSteps, stepIndex])],
-    currentStep: stepIndex + 1,
+    skippedSteps,
+    currentStep: nextCurrentStep,
   };
   await save(next);
   analyticsService.featureUsed('onboarding_step_skip', {
@@ -131,6 +180,9 @@ const onboardingService = {
   completionPercentage,
   saveLanguage,
   getSavedLanguage,
+  isMandatoryStep,
+  resolveResumeStep,
+  MANDATORY_STEPS,
   TOTAL_STEPS,
 };
 export default onboardingService;

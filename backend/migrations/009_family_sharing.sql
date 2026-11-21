@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS pet_access_permissions (
   granted_by UUID NOT NULL REFERENCES users(id),
   granted_at TIMESTAMPTZ DEFAULT NOW(),
   expires_at TIMESTAMPTZ,
+  last_accessed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(pet_id, user_id)
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS pet_access_permissions (
 CREATE INDEX IF NOT EXISTS idx_pet_access_permissions_pet_id ON pet_access_permissions(pet_id);
 CREATE INDEX IF NOT EXISTS idx_pet_access_permissions_user_id ON pet_access_permissions(user_id);
 CREATE INDEX IF NOT EXISTS idx_pet_access_permissions_expires_at ON pet_access_permissions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_pet_access_permissions_last_accessed_at ON pet_access_permissions(last_accessed_at);
 
 CREATE TRIGGER update_pet_access_permissions_updated_at
   BEFORE UPDATE ON pet_access_permissions
@@ -70,6 +72,9 @@ CREATE TABLE IF NOT EXISTS family_activity_feed (
   id UUID PRIMARY KEY,
   family_group_id UUID NOT NULL REFERENCES family_groups(id) ON DELETE CASCADE,
   actor_id UUID NOT NULL REFERENCES users(id),
+  acting_user_id UUID REFERENCES users(id),
+  on_behalf_of_user_id UUID REFERENCES users(id),
+  grant_id UUID REFERENCES pet_access_permissions(id) ON DELETE SET NULL,
   action TEXT NOT NULL,
   resource_type TEXT NOT NULL,
   resource_id UUID,
@@ -81,8 +86,24 @@ CREATE TABLE IF NOT EXISTS family_activity_feed (
 
 CREATE INDEX IF NOT EXISTS idx_family_activity_feed_family_group_id ON family_activity_feed(family_group_id);
 CREATE INDEX IF NOT EXISTS idx_family_activity_feed_actor_id ON family_activity_feed(actor_id);
+CREATE INDEX IF NOT EXISTS idx_family_activity_feed_acting_user_id ON family_activity_feed(acting_user_id);
+CREATE INDEX IF NOT EXISTS idx_family_activity_feed_on_behalf_of_user_id ON family_activity_feed(on_behalf_of_user_id);
+CREATE INDEX IF NOT EXISTS idx_family_activity_feed_grant_id ON family_activity_feed(grant_id);
 CREATE INDEX IF NOT EXISTS idx_family_activity_feed_created_at ON family_activity_feed(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_family_activity_feed_pet_id ON family_activity_feed(pet_id);
+
+-- Idempotent column upgrades for existing deployments
+ALTER TABLE IF EXISTS pet_access_permissions
+  ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ;
+
+ALTER TABLE IF EXISTS family_activity_feed
+  ADD COLUMN IF NOT EXISTS acting_user_id UUID REFERENCES users(id),
+  ADD COLUMN IF NOT EXISTS on_behalf_of_user_id UUID REFERENCES users(id),
+  ADD COLUMN IF NOT EXISTS grant_id UUID REFERENCES pet_access_permissions(id) ON DELETE SET NULL;
+
+ALTER TABLE IF EXISTS audit_trail
+  ADD COLUMN IF NOT EXISTS acting_user_id UUID,
+  ADD COLUMN IF NOT EXISTS on_behalf_of_user_id UUID;
 
 -- ─── family_invitations ───────────────────────────────────────────────────────
 -- Tracks pending invitations with secure tokens

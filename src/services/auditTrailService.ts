@@ -13,6 +13,10 @@ export interface AuditTrailEntry {
   beforeData: Record<string, unknown> | null;
   afterData: Record<string, unknown> | null;
   changedBy: string | null;
+  actingUserId?: string | null;
+  acting_user_id?: string | null;
+  onBehalfOfUserId?: string | null;
+  on_behalf_of_user_id?: string | null;
   ipAddress: string | null;
   userAgent: string | null;
   createdAt: string;

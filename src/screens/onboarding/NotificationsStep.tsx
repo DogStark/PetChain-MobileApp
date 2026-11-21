@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Switch, Platform, Alert } fro
 
 interface Props {
   onNext: () => void;
-  onSkip: () => void;
+  onSkip?: () => void;
 }
 
 const NOTIFICATION_TYPES = [
@@ -13,7 +13,7 @@ const NOTIFICATION_TYPES = [
   { key: 'emergency', label: 'Emergency alerts', emoji: '🚨' },
 ];
 
-const NotificationsStep: React.FC<Props> = ({ onNext, onSkip }) => {
+const NotificationsStep: React.FC<Props> = ({ onNext }) => {
   const [prefs, setPrefs] = useState<Record<string, boolean>>({
     medications: true,
     appointments: true,
@@ -56,9 +56,6 @@ const NotificationsStep: React.FC<Props> = ({ onNext, onSkip }) => {
       <TouchableOpacity style={styles.primary} onPress={handleEnable} accessibilityRole="button">
         <Text style={styles.primaryText}>Enable Notifications</Text>
       </TouchableOpacity>
-      <TouchableOpacity onPress={onSkip} accessibilityRole="button">
-        <Text style={styles.skip}>Not now</Text>
-      </TouchableOpacity>
     </View>
   );
 };
@@ -94,7 +91,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   primaryText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  skip: { color: '#6B7280', fontSize: 15 },
 });
 
 export default NotificationsStep;
