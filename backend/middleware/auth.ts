@@ -4,8 +4,43 @@ import type { ParsedQs } from 'qs';
 
 import config from '../config';
 import { UserRole } from '../models/UserRole';
-import { sendError } from '../server/response';
+import { errBody, sendError } from '../server/response';
 import { store } from '../server/store';
+import {
+  TWO_FACTOR_SETUP_REQUIRED,
+  evaluateVetTwoFactor,
+  isTwoFactorSetupPath,
+  logTwoFactorEnforcement,
+} from '../services/twoFactorPolicyService';
+
+/**
+ * Applies the vet 2FA policy (#1394). Returns true when the request was
+ * rejected because the grace period has ended and 2FA is still not set up.
+ */
+function rejectIfTwoFactorRequired(req: AuthenticatedRequest, res: Response): boolean {
+  const user = req.user;
+  if (!user || user.role !== UserRole.VET) return false;
+  const status = evaluateVetTwoFactor(user.id);
+  if (!status.required) return false;
+
+  const path = req.originalUrl ?? req.url ?? '';
+  if (!status.enforced || isTwoFactorSetupPath(path)) {
+    res.setHeader('X-2FA-Setup-Required', status.deadline);
+    return false;
+  }
+
+  logTwoFactorEnforcement(user, path);
+  res
+    .status(403)
+    .json(
+      errBody(
+        TWO_FACTOR_SETUP_REQUIRED,
+        'Two-factor authentication is required for vet accounts. Set it up to continue.',
+        { deadline: status.deadline, setupPath: '/api/auth/2fa/setup' },
+      ),
+    );
+  return true;
+}
 
 /**
  * Extended Request interface to include authenticated user information
@@ -92,6 +127,7 @@ export const authenticateJWT = (req: AuthenticatedRequest, res: Response, next: 
         email: user.email,
         role: user.role,
       };
+      if (rejectIfTwoFactorRequired(req, res)) return;
       return next();
     }
 
@@ -113,6 +149,7 @@ export const authenticateJWT = (req: AuthenticatedRequest, res: Response, next: 
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid or malformed authentication token.');
     }
 
+    if (rejectIfTwoFactorRequired(req, res)) return;
     next();
   } catch (error) {
     if (error instanceof jwt.TokenExpiredError) {
@@ -160,6 +197,7 @@ export const authenticateJwtOrGrant = (
           email: user.email,
           role: user.role,
         };
+        if (rejectIfTwoFactorRequired(req, res)) return;
         return next();
       }
 
@@ -174,6 +212,7 @@ export const authenticateJwtOrGrant = (
         email: payload.email,
         role: payload.role,
       };
+      if (rejectIfTwoFactorRequired(req, res)) return;
       return next();
     } catch (error) {
       if (error instanceof jwt.TokenExpiredError) {

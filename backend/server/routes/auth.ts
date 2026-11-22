@@ -6,6 +6,7 @@ import config from '../../config';
 import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
 import { UserRole } from '../../models/UserRole';
 import referralService from '../../services/referralService';
+import { evaluateVetTwoFactor } from '../../services/twoFactorPolicyService';
 import {
   generateBackupCodes,
   generateQRCodeDataURL,
@@ -110,10 +111,20 @@ router.post('/login', async (req, res) => {
 
   store.users.set(user.id, { ...user, lastLoginAt: new Date().toISOString() });
 
+  // Vets without 2FA are sent to 2FA setup on login (#1394).
+  const twoFactor = evaluateVetTwoFactor(user.id);
+
   return res.json({
     user: authUser(user),
     token: issueToken(user),
     expiresIn: 3600,
+    ...(twoFactor.required
+      ? {
+          twoFactorSetupRequired: true,
+          twoFactorDeadline: twoFactor.deadline,
+          twoFactorEnforced: twoFactor.enforced,
+        }
+      : {}),
   });
 });
 

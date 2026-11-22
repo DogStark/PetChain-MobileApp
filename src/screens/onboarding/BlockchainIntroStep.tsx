@@ -5,6 +5,8 @@ import { WebView } from 'react-native-webview';
 interface Props {
   onNext: () => void;
   onSkip: () => void;
+  /** Hidden for mandatory steps (#1393). */
+  canSkip?: boolean;
   isLast?: boolean;
 }
 
@@ -28,7 +30,7 @@ const SLIDES = [
   },
 ];
 
-const BlockchainIntroStep: React.FC<Props> = ({ onNext, onSkip, isLast = false }) => {
+const BlockchainIntroStep: React.FC<Props> = ({ onNext, onSkip, isLast = false, canSkip = true }) => {
   const [slideIndex, setSlideIndex] = useState(0);
   const [webviewVisible, setWebviewVisible] = useState(false);
 
@@ -69,9 +71,11 @@ const BlockchainIntroStep: React.FC<Props> = ({ onNext, onSkip, isLast = false }
         </Text>
       </TouchableOpacity>
 
-      <TouchableOpacity onPress={onSkip} accessibilityRole="button">
-        <Text style={styles.skip}>Skip</Text>
-      </TouchableOpacity>
+      {canSkip ? (
+        <TouchableOpacity onPress={onSkip} accessibilityRole="button">
+          <Text style={styles.skip}>Skip</Text>
+        </TouchableOpacity>
+      ) : null}
 
       <Modal
         visible={webviewVisible}

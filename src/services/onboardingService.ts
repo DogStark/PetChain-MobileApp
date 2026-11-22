@@ -24,6 +24,40 @@ export const STEP_SEQUENCES: Record<OnboardingVariant, number[]> = {
   B: [0, 1, 2, 6, 3, 4, 5],
 };
 
+/**
+ * Steps that cannot be skipped (#1393): pet setup (1) and notifications (2).
+ * Welcome, biometric setup, first record and blockchain intro are optional.
+ */
+export const MANDATORY_STEPS: ReadonlySet<number> = new Set([1, 2]);
+
+export function isStepSkippable(stepIndex: number): boolean {
+  return !MANDATORY_STEPS.has(stepIndex);
+}
+
+export type StepStatus = 'completed' | 'skipped' | 'pending';
+
+/** Status of each step in the variant's sequence, for progress indicators. */
+export function getStepStatuses(state: OnboardingState): StepStatus[] {
+  return STEP_SEQUENCES[state.variant].map((stepIndex) => {
+    if (state.completedSteps.includes(stepIndex)) return 'completed';
+    if (state.skippedSteps.includes(stepIndex)) return 'skipped';
+    return 'pending';
+  });
+}
+
+/**
+ * Position in the step sequence to resume from: the first step that is
+ * neither completed nor skipped. Lets onboarding resume after a crash.
+ */
+export function getResumePosition(state: OnboardingState): number {
+  const sequence = STEP_SEQUENCES[state.variant];
+  const position = sequence.findIndex(
+    (stepIndex) =>
+      !state.completedSteps.includes(stepIndex) && !state.skippedSteps.includes(stepIndex),
+  );
+  return position === -1 ? sequence.length - 1 : position;
+}
+
 function assignVariant(): OnboardingVariant {
   return Math.random() < 0.5 ? 'A' : 'B';
 }
@@ -62,11 +96,13 @@ async function init(): Promise<OnboardingState> {
 }
 
 async function advanceStep(state: OnboardingState, stepIndex: number): Promise<OnboardingState> {
-  const next: OnboardingState = {
+  const completed: OnboardingState = {
     ...state,
     completedSteps: [...new Set([...state.completedSteps, stepIndex])],
-    currentStep: stepIndex + 1,
+    skippedSteps: state.skippedSteps.filter((s) => s !== stepIndex),
   };
+  // currentStep is a position in the sequence, persisted so resume works (#1393).
+  const next: OnboardingState = { ...completed, currentStep: getResumePosition(completed) };
   await save(next);
   analyticsService.featureUsed('onboarding_step_complete', {
     step: stepIndex,
@@ -76,17 +112,41 @@ async function advanceStep(state: OnboardingState, stepIndex: number): Promise<O
 }
 
 async function skipStep(state: OnboardingState, stepIndex: number): Promise<OnboardingState> {
-  const next: OnboardingState = {
+  // Mandatory steps cannot be skipped (#1393).
+  if (!isStepSkippable(stepIndex)) return state;
+  const skipped: OnboardingState = {
     ...state,
     skippedSteps: [...new Set([...state.skippedSteps, stepIndex])],
-    currentStep: stepIndex + 1,
   };
+  const next: OnboardingState = { ...skipped, currentStep: getResumePosition(skipped) };
   await save(next);
   analyticsService.featureUsed('onboarding_step_skip', {
     step: stepIndex,
     variant: state.variant,
   });
   return next;
+}
+
+/**
+ * "Skip all": skips optional steps from the current position up to the next
+ * pending mandatory step. Returns whether onboarding can be completed now.
+ */
+async function skipToNextMandatory(
+  state: OnboardingState,
+): Promise<{ state: OnboardingState; canComplete: boolean }> {
+  const sequence = STEP_SEQUENCES[state.variant];
+  let next = state;
+  for (let pos = getResumePosition(state); pos < sequence.length; pos += 1) {
+    const stepIndex = sequence[pos];
+    if (next.completedSteps.includes(stepIndex) || next.skippedSteps.includes(stepIndex)) {
+      continue;
+    }
+    if (!isStepSkippable(stepIndex)) {
+      return { state: next, canComplete: false };
+    }
+    next = await skipStep(next, stepIndex);
+  }
+  return { state: next, canComplete: true };
 }
 
 async function complete(state: OnboardingState): Promise<OnboardingState> {
@@ -130,6 +190,10 @@ const onboardingService = {
   complete,
   reset,
   completionPercentage,
+  skipToNextMandatory,
+  getResumePosition,
+  getStepStatuses,
+  isStepSkippable,
   saveLanguage,
   getSavedLanguage,
   TOTAL_STEPS,

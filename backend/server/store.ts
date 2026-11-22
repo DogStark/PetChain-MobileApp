@@ -20,6 +20,8 @@ export interface StoredUser {
   passwordHash?: string;
   // 2FA fields
   twoFactorEnabled: boolean;
+  /** When the vet 2FA enforcement grace period started (#1394). */
+  twoFactorGraceStartedAt?: string;
   twoFactorSecret?: string; // encrypted TOTP secret (never exposed in API)
   twoFactorBackupCodes?: string[]; // bcrypt-hashed backup codes
   twoFactorPendingSecret?: string; // secret during setup (before confirmation)

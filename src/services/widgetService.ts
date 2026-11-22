@@ -35,9 +35,12 @@ export interface MedicationScheduleItem {
   dosage: string;
   petName: string;
   petId: string;
+  /** ISO time of the next dose (#1395). */
   scheduledTime?: string;
   frequency: number; // hours between doses
   taken: boolean;
+  /** Opens DoseConfirmationScreen for this dose (#1395). */
+  deepLink?: string;
 }
 
 export interface UpcomingAppointmentItem {
@@ -148,6 +151,56 @@ export async function checkWidgetPetAccess(petId: string): Promise<WidgetPetAcce
   }
 }
 
+/**
+ * Next scheduled dose for a medication, based on its start date, frequency and
+ * the latest taken dose. Returns null for inactive or ended medications.
+ */
+export function computeNextDoseAt(
+  medication: Medication,
+  doseLogs: DoseLog[] = [],
+  now: Date = new Date(),
+): Date | null {
+  if (
+    medication.status === 'discontinued' ||
+    medication.status === 'completed' ||
+    medication.status === 'paused'
+  ) {
+    return null;
+  }
+  const startedAt = new Date(medication.startDate);
+  const intervalMs = medication.frequency * 60 * 60 * 1000;
+  if (Number.isNaN(startedAt.getTime()) || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return null;
+  }
+  const latestTakenAt = doseLogs
+    .filter(
+      (log) =>
+        log.medicationId === medication.id &&
+        !log.skipped &&
+        (log.state === undefined || log.state === 'taken'),
+    )
+    .map((log) => new Date(log.scheduledFor ?? log.takenAt))
+    .filter((date) => !Number.isNaN(date.getTime()))
+    .sort((first, second) => second.getTime() - first.getTime())[0];
+  const scheduleAnchor = latestTakenAt ?? startedAt;
+  const elapsedIntervals = Math.max(
+    0,
+    Math.ceil((now.getTime() - scheduleAnchor.getTime()) / intervalMs),
+  );
+  const nextInterval = latestTakenAt && scheduleAnchor <= now ? Math.max(1, elapsedIntervals) : elapsedIntervals;
+  const scheduledAt = new Date(scheduleAnchor.getTime() + nextInterval * intervalMs);
+  if (medication.endDate && scheduledAt > new Date(medication.endDate)) return null;
+  return scheduledAt;
+}
+
+/**
+ * Deep link opened when the lock screen widget is tapped (#1395); handled by
+ * the DoseConfirmation route (petchain://doses/:petId/:medicationId).
+ */
+export function doseConfirmationDeepLink(petId: string, medicationId: string): string {
+  return `petchain://doses/${encodeURIComponent(petId)}/${encodeURIComponent(medicationId)}`;
+}
+
 export function buildCareAgenda(
   petId: string,
   petName: string,
@@ -160,37 +213,9 @@ export function buildCareAgenda(
   const tasks: CareAgendaTask[] = [];
 
   for (const medication of medications) {
-    if (
-      medication.petId !== petId ||
-      medication.status === 'discontinued' ||
-      medication.status === 'completed' ||
-      medication.status === 'paused'
-    ) {
-      continue;
-    }
-    const startedAt = new Date(medication.startDate);
-    const intervalMs = medication.frequency * 60 * 60 * 1000;
-    if (Number.isNaN(startedAt.getTime()) || !Number.isFinite(intervalMs) || intervalMs <= 0) {
-      continue;
-    }
-    const latestTakenAt = doseLogs
-      .filter(
-        (log) =>
-          log.medicationId === medication.id &&
-          !log.skipped &&
-          (log.state === undefined || log.state === 'taken'),
-      )
-      .map((log) => new Date(log.scheduledFor ?? log.takenAt))
-      .filter((date) => !Number.isNaN(date.getTime()))
-      .sort((first, second) => second.getTime() - first.getTime())[0];
-    const scheduleAnchor = latestTakenAt ?? startedAt;
-    const elapsedIntervals = Math.max(
-      0,
-      Math.ceil((now.getTime() - scheduleAnchor.getTime()) / intervalMs),
-    );
-    const nextInterval = latestTakenAt && scheduleAnchor <= now ? Math.max(1, elapsedIntervals) : elapsedIntervals;
-    const scheduledAt = new Date(scheduleAnchor.getTime() + nextInterval * intervalMs);
-    if (medication.endDate && scheduledAt > new Date(medication.endDate)) continue;
+    if (medication.petId !== petId) continue;
+    const scheduledAt = computeNextDoseAt(medication, doseLogs, now);
+    if (!scheduledAt) continue;
 
     tasks.push({
       id: `medication:${medication.id}`,
@@ -318,6 +343,8 @@ async function getTodaysMedicationSchedule(selectedPetId?: string): Promise<Medi
           (log.state === undefined || log.state === 'taken'),
       );
 
+      // Next dose time and tap target for the lock screen widget (#1395).
+      const nextDoseAt = computeNextDoseAt(med, doseLogs, today);
       scheduleItems.push({
         id: `${med.id}_today`,
         medicationId: med.id,
@@ -325,10 +352,18 @@ async function getTodaysMedicationSchedule(selectedPetId?: string): Promise<Medi
         dosage: med.dosage,
         petName: pet.name,
         petId: pet.id,
+        scheduledTime: nextDoseAt?.toISOString(),
         frequency: med.frequency,
         taken: takenToday,
+        deepLink: doseConfirmationDeepLink(pet.id, med.id),
       });
     }
+
+    // Soonest pending dose first, so the lock screen shows the next one.
+    scheduleItems.sort((a, b) => {
+      if (a.taken !== b.taken) return a.taken ? 1 : -1;
+      return (a.scheduledTime ?? '').localeCompare(b.scheduledTime ?? '');
+    });
 
     return scheduleItems;
   } catch (error) {

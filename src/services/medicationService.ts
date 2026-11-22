@@ -152,8 +152,23 @@ export async function getMedications(): Promise<Medication[]> {
   return getAllMedications<Medication>();
 }
 
+/**
+ * Refreshes home/lock screen widgets after a dose or medication change
+ * (#1395). Loaded lazily because widgetService depends on this module.
+ */
+function scheduleWidgetRefresh(): void {
+  if (process.env.NODE_ENV === 'test') return;
+  try {
+    const { refreshWidgetData } = require('./widgetService') as typeof import('./widgetService');
+    void refreshWidgetData();
+  } catch {
+    // Widget support is optional; never block medication updates.
+  }
+}
+
 export async function saveMedication(med: Medication): Promise<void> {
   await upsertMedication(med);
+  scheduleWidgetRefresh();
 }
 
 export async function deleteMedication(id: string): Promise<void> {
@@ -166,6 +181,7 @@ export async function getDoseLogs(): Promise<DoseLog[]> {
 
 export async function logDose(log: DoseLog): Promise<void> {
   await dbAddDoseLog(log);
+  scheduleWidgetRefresh();
 }
 
 // ── Idempotent dose logging (#958) ───────────────────────────────────────────
@@ -221,6 +237,7 @@ export async function logDoseIdempotent(
     return { log: match, duplicate: true };
   }
   await dbAddDoseLog(withId);
+  scheduleWidgetRefresh();
   return { log: withId, duplicate: false };
 }
 
@@ -310,6 +327,7 @@ export async function transitionDose(
   }
 
   await dbAddDoseLog(log);
+  scheduleWidgetRefresh();
   return { log, duplicate: false, state: next };
 }
 
