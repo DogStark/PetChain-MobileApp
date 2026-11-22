@@ -73,3 +73,16 @@ export interface KeyRotationRequest {
   newPublicKey: string;
   reason?: string;
 }
+
+/**
+ * A joint owner added to a pet via the owners API (#1388).
+ * Joint owners have the same edit rights on the pet as the primary owner.
+ */
+export interface PetJointOwner {
+  petId: string;
+  userId: string;
+  email: string;
+  name: string;
+  addedBy: string;
+  addedAt: string;
+}
