@@ -132,10 +132,34 @@ type StoredAllergyCorrection = {
 const allergyEntries = new Map<string, StoredAllergyEntry>();
 const allergyCorrections = new Map<string, StoredAllergyCorrection>();
 
+/** Joint owners of a pet (#1388). */
+function jointOwnersOf(petId: string) {
+  return [...store.petJointOwners.values()].filter((row) => row.petId === petId);
+}
+
+/** True when the user is the primary owner or a joint owner of the pet (#1388). */
+function isPetOwner(userId: string, pet: StoredPet): boolean {
+  return userId === pet.ownerId || store.petJointOwners.has(`${pet.id}:${userId}`);
+}
+
 function canAccessPet(user: AuthenticatedRequest['user'], pet: StoredPet): boolean {
   if (!user) return false;
   if (user.role === UserRole.ADMIN || user.role === UserRole.VET) return true;
-  return user.id === pet.ownerId;
+  return isPetOwner(user.id, pet);
+}
+
+async function findUserByEmail(email: string) {
+  const normalized = email.trim().toLowerCase();
+  const stored = [...store.users.values()].find(
+    (u) => !u.deletedAt && u.email.toLowerCase() === normalized,
+  );
+  if (stored) return { id: stored.id, name: stored.name, email: stored.email };
+  try {
+    const dbUser = await userRepository.findByEmail(normalized);
+    return dbUser ? { id: dbUser.id, name: dbUser.name, email: dbUser.email } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function canVerifyAllergy(user: AuthenticatedRequest['user']): boolean {
@@ -196,7 +220,7 @@ router.get('/owner/:ownerId', petsByOwnerCacheMiddleware(), (req: AuthenticatedR
   }
 
   const list = [...store.pets.values()]
-    .filter((p) => p.ownerId === req.params.ownerId)
+    .filter((p) => isPetOwner(req.params.ownerId, p))
     .map(toPetResponse);
   return res.json(ok(list));
 });
@@ -219,7 +243,7 @@ router.get('/qr/:qrCode', async (req, res) => {
 router.post('/:id/qr-identity', (req: AuthenticatedRequest, res) => {
   const pet = store.pets.get(req.params.id);
   if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
-  if (req.user!.role !== UserRole.ADMIN && req.user!.id !== pet.ownerId) {
+  if (req.user!.role !== UserRole.ADMIN && !isPetOwner(req.user!.id, pet)) {
     return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to generate this code');
   }
   const previous = activeQrForPet(pet.id);
@@ -246,7 +270,7 @@ router.get('/:petId/medical-records', (req: AuthenticatedRequest, res) => {
   if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
 
   // Only admin, vet, or the owner can see medical records
-  if (req.user!.role === UserRole.OWNER && req.user!.id !== pet.ownerId) {
+  if (req.user!.role === UserRole.OWNER && !isPetOwner(req.user!.id, pet)) {
     return sendError(
       res,
       403,
@@ -310,6 +334,106 @@ router.get('/:petId/allergies', (req: AuthenticatedRequest, res) => {
     totalPages,
     serverTime: new Date().toISOString(),
   });
+});
+
+// ── Joint ownership (#1388) ──────────────────────────────────────────────
+
+function ownersView(pet: StoredPet) {
+  return {
+    petId: pet.id,
+    primaryOwnerId: pet.ownerId,
+    jointOwners: jointOwnersOf(pet.id).map(({ userId, name, email, addedBy, addedAt }) => ({
+      userId,
+      name,
+      email,
+      addedBy,
+      addedAt,
+    })),
+  };
+}
+
+function canManageOwners(user: AuthenticatedRequest['user'], pet: StoredPet): boolean {
+  if (!user) return false;
+  return user.role === UserRole.ADMIN || isPetOwner(user.id, pet);
+}
+
+// POST /api/pets/:id/owners — add a joint owner by email
+router.post('/:id/owners', async (req: AuthenticatedRequest, res) => {
+  const pet = store.pets.get(req.params.id);
+  if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
+  if (!canManageOwners(req.user, pet)) {
+    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to manage owners of this pet');
+  }
+
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'A valid email is required');
+  }
+
+  const user = await findUserByEmail(email);
+  if (!user) return sendError(res, 404, 'USER_NOT_FOUND', 'No user found with that email');
+  if (isPetOwner(user.id, pet)) {
+    return sendError(res, 409, 'ALREADY_OWNER', 'User is already an owner of this pet');
+  }
+
+  const before = jointOwnersOf(pet.id).map((row) => row.userId);
+  store.petJointOwners.set(`${pet.id}:${user.id}`, {
+    petId: pet.id,
+    userId: user.id,
+    email: user.email,
+    name: user.name,
+    addedBy: req.user!.id,
+    addedAt: new Date().toISOString(),
+  });
+
+  await logAuditTrail({
+    req,
+    entityType: 'pet',
+    entityId: pet.id,
+    action: 'UPDATE',
+    before: { jointOwners: before },
+    after: { jointOwners: [...before, user.id] },
+  });
+  await invalidatePet(pet.id, user.id);
+
+  return res.status(201).json(ok(ownersView(pet)));
+});
+
+// DELETE /api/pets/:id/owners/:userId — remove a joint owner
+router.delete('/:id/owners/:userId', async (req: AuthenticatedRequest, res) => {
+  const pet = store.pets.get(req.params.id);
+  if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
+  if (!canManageOwners(req.user, pet)) {
+    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to manage owners of this pet');
+  }
+
+  const { userId } = req.params;
+  if (userId === req.user!.id) {
+    return sendError(res, 400, 'SELF_REMOVAL', 'You cannot remove yourself as an owner');
+  }
+  if (userId === pet.ownerId) {
+    return sendError(res, 400, 'PRIMARY_OWNER', 'The primary owner cannot be removed');
+  }
+
+  const key = `${pet.id}:${userId}`;
+  if (!store.petJointOwners.has(key)) {
+    return sendError(res, 404, 'NOT_FOUND', 'User is not a joint owner of this pet');
+  }
+
+  const before = jointOwnersOf(pet.id).map((row) => row.userId);
+  store.petJointOwners.delete(key);
+
+  await logAuditTrail({
+    req,
+    entityType: 'pet',
+    entityId: pet.id,
+    action: 'UPDATE',
+    before: { jointOwners: before },
+    after: { jointOwners: before.filter((id) => id !== userId) },
+  });
+  await invalidatePet(pet.id, userId);
+
+  return res.json(ok(ownersView(pet)));
 });
 
 export default router;

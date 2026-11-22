@@ -8,6 +8,12 @@ import {
   View,
 } from 'react-native';
 
+import {
+  hapticSOSCancelled,
+  hapticSOSCountdownTick,
+  hapticSOSFired,
+} from '../utils/hapticFeedback';
+
 const COUNTDOWN_SECONDS = 5;
 
 type LocationPermissionStatus = 'granted' | 'denied' | 'revoked' | 'unknown';
@@ -45,6 +51,7 @@ export default function SOSScreen(): React.ReactElement {
   const cancel = useCallback(() => {
     clearTimer();
     setCountdown(null);
+    void hapticSOSCancelled();
     AccessibilityInfo.announceForAccessibility('SOS activation cancelled');
   }, [clearTimer]);
 
@@ -71,6 +78,7 @@ export default function SOSScreen(): React.ReactElement {
     if (countdown <= 0) {
       clearTimer();
       setCountdown(null);
+      void hapticSOSFired();
       AccessibilityInfo.announceForAccessibility(
         locationPermission === 'granted'
           ? 'SOS activated with your location'
@@ -78,6 +86,8 @@ export default function SOSScreen(): React.ReactElement {
       );
       return;
     }
+    // Light haptic for every second of the countdown so it can be felt.
+    void hapticSOSCountdownTick();
     timerRef.current = setInterval(() => {
       setCountdown((current) => (current === null ? null : current - 1));
     }, 1000);
