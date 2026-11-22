@@ -1,6 +1,7 @@
 import { Pool, type PoolConfig } from 'pg';
 
 import config from '../../config';
+import { traceDbQuery } from '../../utils/logger';
 
 let pool: Pool | null = null;
 
@@ -34,7 +35,8 @@ export function getPool(): Pool {
 
 export async function query(text: string, params?: unknown[]) {
   const start = Date.now();
-  const res = await getPool().query(text, params);
+  // Sentry span per query; parameter values are never attached (#1392).
+  const res = await traceDbQuery(text, () => getPool().query(text, params));
   const duration = Date.now() - start;
 
   if (config.isDev) {

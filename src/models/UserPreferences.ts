@@ -20,6 +20,28 @@ export type QuietHoursConfig = {
   timezone: string;
 };
 
+/**
+ * Bump whenever the analytics data collection scope changes; users who
+ * consented to an older scope are asked again (#1391).
+ */
+export const ANALYTICS_CONSENT_SCOPE_VERSION = 1;
+
+/** Plain-language list of what analytics collects, shown when asking. */
+export const ANALYTICS_DATA_COLLECTED = [
+  'Screens you open and features you use',
+  'App errors and crashes',
+  'Onboarding progress',
+  'Non-identifying device details such as app version and language',
+];
+
+export type AnalyticsConsent = {
+  granted: boolean;
+  /** ANALYTICS_CONSENT_SCOPE_VERSION the user answered. */
+  scopeVersion: number;
+  /** ISO timestamp of the decision. */
+  decidedAt: string;
+};
+
 export interface UserPreferences {
   language: string;
   theme: Theme;
@@ -27,6 +49,8 @@ export interface UserPreferences {
   reminderLeadTimeDays: number;
   notificationPreferences: NotificationPreferences;
   quietHours: QuietHoursConfig;
+  /** Analytics opt-in; null until the user has been asked (#1391). */
+  analyticsConsent: AnalyticsConsent | null;
 }
 
 export const DEFAULT_USER_PREFERENCES: UserPreferences = {
@@ -45,4 +69,5 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
     endMinutes: 7 * 60,
     timezone: 'UTC',
   },
+  analyticsConsent: null,
 };
