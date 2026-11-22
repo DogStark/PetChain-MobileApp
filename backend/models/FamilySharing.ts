@@ -82,6 +82,8 @@ export interface PetAccessPermission {
   grantedBy: string;
   grantedAt: string;
   expiresAt?: string;
+  /** Last time the grantee used this grant to act on the pet (#1398). */
+  lastAccessedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -117,6 +119,12 @@ export interface FamilyActivityFeed {
   petId?: string;
   description: string;
   metadata?: Record<string, unknown>;
+  /** Co-owner who performed a shared-access action (#1398). */
+  actingUserId?: string;
+  /** Primary owner the co-owner acted on behalf of (#1398). */
+  onBehalfOfUserId?: string;
+  /** Pet access grant used for the action (#1398). */
+  grantId?: string;
   createdAt: string;
 }
 

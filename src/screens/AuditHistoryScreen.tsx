@@ -90,18 +90,35 @@ const AuditHistoryScreen: React.FC<Props> = ({ entityType, entityId, title, onBa
           <Text style={styles.muted}>No audit history available yet.</Text>
         )}
 
-        {rows.map((r) => (
-          <View key={r.id} style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.action}>{r.action}</Text>
-              <Text style={styles.time}>{formatRelativeTime(r.createdAt)}</Text>
+        {rows.map((r) => {
+          // Co-owner (family sharing) actions are shown distinctly (#1398).
+          const isCoOwner = !!r.onBehalfOfUserId;
+          return (
+            <View
+              key={r.id}
+              style={[styles.card, isCoOwner && styles.coOwnerCard]}
+              accessibilityLabel={isCoOwner ? 'Co-owner action' : undefined}
+            >
+              <View style={styles.cardHeader}>
+                <Text style={styles.action}>{r.action}</Text>
+                <Text style={styles.time}>{formatRelativeTime(r.createdAt)}</Text>
+              </View>
+              {isCoOwner ? (
+                <>
+                  <Text style={styles.coOwnerBadge}>Co-owner action</Text>
+                  <Text style={styles.meta}>
+                    {`By: ${r.actingUserId ?? r.changedBy ?? 'unknown'}\nOn behalf of: ${r.onBehalfOfUserId}`}
+                  </Text>
+                </>
+              ) : (
+                <Text style={styles.meta}>
+                  {r.changedBy ? `User: ${r.changedBy}` : 'User: (system/unknown)'}
+                </Text>
+              )}
+              <Text style={styles.diff}>{prettyDiff(r)}</Text>
             </View>
-            <Text style={styles.meta}>
-              {r.changedBy ? `User: ${r.changedBy}` : 'User: (system/unknown)'}
-            </Text>
-            <Text style={styles.diff}>{prettyDiff(r)}</Text>
-          </View>
-        ))}
+          );
+        })}
       </ScrollView>
     </View>
   );
@@ -141,6 +158,18 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  coOwnerCard: { borderLeftWidth: 4, borderLeftColor: '#7c3aed' },
+  coOwnerBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#ede9fe',
+    color: '#5b21b6',
+    fontSize: 12,
+    fontWeight: '700',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginBottom: 6,
+  },
   action: { fontWeight: '800', color: '#1a1a1a' },
   time: { color: '#666' },
   meta: { color: '#666', marginBottom: 10 },
