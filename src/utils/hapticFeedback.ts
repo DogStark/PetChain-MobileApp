@@ -65,3 +65,61 @@ export async function hapticSOSSent(): Promise<void> {
     // ignore
   }
 }
+
+// ─── SOS countdown haptics (#1387) ───────────────────────────────────────────
+
+type SilentModeProvider = () => boolean | Promise<boolean>;
+
+let silentModeProvider: SilentModeProvider = () => false;
+
+/**
+ * Register how the app detects that the device is in silent mode (ringer
+ * off). SOS haptics are skipped while this returns true.
+ */
+export function setSilentModeProvider(provider: SilentModeProvider): void {
+  silentModeProvider = provider;
+}
+
+/** True when the device reports silent mode. Errors are treated as not silent. */
+export async function isSilentMode(): Promise<boolean> {
+  try {
+    return await silentModeProvider();
+  } catch {
+    return false;
+  }
+}
+
+async function canPlaySOSHaptic(): Promise<boolean> {
+  if (!(await isHapticEnabled())) return false;
+  return !(await isSilentMode());
+}
+
+/** Light impact for each second of the SOS countdown. */
+export async function hapticSOSCountdownTick(): Promise<void> {
+  if (!(await canPlaySOSHaptic())) return;
+  try {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  } catch {
+    // ignore
+  }
+}
+
+/** Notification-success haptic when the SOS countdown is cancelled. */
+export async function hapticSOSCancelled(): Promise<void> {
+  if (!(await canPlaySOSHaptic())) return;
+  try {
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  } catch {
+    // ignore
+  }
+}
+
+/** Heavy impact when SOS fires at the end of the countdown. */
+export async function hapticSOSFired(): Promise<void> {
+  if (!(await canPlaySOSHaptic())) return;
+  try {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+  } catch {
+    // ignore
+  }
+}

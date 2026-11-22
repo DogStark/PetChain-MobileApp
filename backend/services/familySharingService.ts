@@ -637,6 +637,7 @@ function logActivity(
   resourceId: string,
   description: string,
   metadata?: Record<string, unknown>,
+  attribution?: Pick<FamilyActivityFeed, 'petId' | 'actingUserId' | 'onBehalfOfUserId' | 'grantId'>,
 ): void {
   const id = randomUUID();
 
@@ -649,6 +650,7 @@ function logActivity(
     resourceId,
     description,
     metadata,
+    ...attribution,
     createdAt: now(),
   };
 
@@ -679,6 +681,87 @@ export function getPetActivityFeed(
 
 export function getActivityFeedEntry(entryId: string): FamilyActivityFeed | undefined {
   return activityFeed.get(entryId);
+}
+
+// ─── Shared-access attribution (#1398) ─────────────────────────────────────────
+
+export interface SharedAccessContext {
+  grantId: string;
+  petId: string;
+  /** The co-owner performing the action. */
+  actingUserId: string;
+  /** The primary owner of the pet. */
+  onBehalfOfUserId: string;
+}
+
+/**
+ * Returns the shared-access context when `actingUserId` is not the pet's
+ * primary owner but holds an active access grant for it; otherwise null.
+ */
+export function resolveSharedAccess(
+  petId: string,
+  actingUserId: string,
+  primaryOwnerId: string | undefined,
+): SharedAccessContext | null {
+  if (!primaryOwnerId || actingUserId === primaryOwnerId) return null;
+  const grant = getPetAccess(petId, actingUserId);
+  if (!grant) return null;
+  return { grantId: grant.id, petId, actingUserId, onBehalfOfUserId: primaryOwnerId };
+}
+
+/**
+ * Records a shared-access action: stamps the grant's last_accessed_at and
+ * adds an attributed entry to the grant's access log.
+ */
+export function recordSharedAccess(
+  ctx: SharedAccessContext,
+  action: string,
+  resourceType: string,
+  resourceId: string,
+): void {
+  const grant = petAccessPermissions.get(ctx.grantId);
+  if (grant) {
+    petAccessPermissions.set(grant.id, { ...grant, lastAccessedAt: now() });
+  }
+  logActivity(
+    '',
+    ctx.actingUserId,
+    action,
+    resourceType,
+    resourceId,
+    `Co-owner ${ctx.actingUserId} performed ${action} on behalf of ${ctx.onBehalfOfUserId}`,
+    undefined,
+    {
+      petId: ctx.petId,
+      actingUserId: ctx.actingUserId,
+      onBehalfOfUserId: ctx.onBehalfOfUserId,
+      grantId: ctx.grantId,
+    },
+  );
+}
+
+export function getPetAccessGrant(grantId: string): PetAccessPermission | undefined {
+  return petAccessPermissions.get(grantId);
+}
+
+/** Paginated access log for one grant, most recent first. */
+export function getGrantActivity(
+  grantId: string,
+  page: number = 1,
+  limit: number = 50,
+): { data: FamilyActivityFeed[]; total: number; page: number; limit: number; totalPages: number } {
+  const rows = [...activityFeed.values()]
+    .filter((a) => a.grantId === grantId || (a.resourceType === 'pet_access' && a.resourceId === grantId))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const total = rows.length;
+  const start = (page - 1) * limit;
+  return {
+    data: rows.slice(start, start + limit),
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit) || 1,
+  };
 }
 
 // ─── Utility Functions ─────────────────────────────────────────────────────────
@@ -747,6 +830,12 @@ export default {
   getFamilyActivityFeed,
   getPetActivityFeed,
   getActivityFeedEntry,
+
+  // Shared-access attribution
+  resolveSharedAccess,
+  recordSharedAccess,
+  getPetAccessGrant,
+  getGrantActivity,
 
   // Utilities
   getFamilyGroupWithMembers,

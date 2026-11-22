@@ -14,6 +14,7 @@ import { useNavigationTheme } from '../theme';
 import type { RootStackParamList, MainTabParamList, PetStackParamList } from './types';
 import { DEEP_LINK_PREFIX } from './types';
 import { gateDeepLinkURL, parseDeepLink, takePendingAuthenticatedLink } from './deepLinks';
+import AnalyticsConsentPrompt from '../components/AnalyticsConsentPrompt';
 import LazyScreen from '../components/LazyScreen';
 import { useNotificationBadge } from '../hooks/useNotificationBadge';
 import type { Pet } from '../models/Pet';
@@ -457,6 +458,9 @@ function MainTabs() {
   const { count: badgeCount, refresh: refreshBadge } = useNotificationBadge();
 
   return (
+    <>
+    {/* Asks again if analytics consent is missing or its scope changed (#1391). */}
+    <AnalyticsConsentPrompt />
     <Tab.Navigator
       screenListeners={{
         tabPress: () => {
@@ -562,6 +566,7 @@ function MainTabs() {
         )}
       </Tab.Screen>
     </Tab.Navigator>
+    </>
   );
 }
 

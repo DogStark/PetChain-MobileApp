@@ -15,12 +15,13 @@ export interface OnboardingState {
 }
 
 const STORAGE_KEY = 'onboarding_state';
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS = 7;
 
-// A/B: variant A = standard order, variant B = blockchain intro earlier (step 3)
+// A/B: variant A = standard order, variant B = blockchain intro earlier (step 4).
+// Step 1 is the analytics consent step, always right after Welcome (#1391).
 export const STEP_SEQUENCES: Record<OnboardingVariant, number[]> = {
-  A: [0, 1, 2, 3, 4, 5],
-  B: [0, 1, 5, 2, 3, 4],
+  A: [0, 1, 2, 3, 4, 5, 6],
+  B: [0, 1, 2, 6, 3, 4, 5],
 };
 
 /**

@@ -208,3 +208,100 @@ export function trackError(): void {
 export function _resetErrorWindow(): void {
   errorTimestamps.length = 0;
 }
+
+// ─── Sentry DB query tracing (#1392) ──────────────────────────────────────────
+
+/** Queries at or above this duration are flagged as slow in Sentry. */
+export const SLOW_QUERY_SPAN_MS = 500;
+
+type SentryNode = any;
+let sentryNode: SentryNode | null | undefined;
+
+/**
+ * Lazily loads @sentry/node and initialises it once. The DSN is only ever
+ * read from the SENTRY_DSN environment variable; without it Sentry stays
+ * disabled and queries run untraced.
+ */
+export function getSentry(): SentryNode | null {
+  if (sentryNode !== undefined) return sentryNode;
+  const dsn = process.env.SENTRY_DSN;
+  if (!dsn) {
+    sentryNode = null;
+    return sentryNode;
+  }
+  try {
+    const Sentry = require('@sentry/node') as SentryNode;
+    if (!Sentry.getClient?.()) {
+      Sentry.init({
+        dsn,
+        environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV,
+        tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
+      });
+    }
+    sentryNode = Sentry;
+  } catch {
+    sentryNode = null;
+  }
+  return sentryNode;
+}
+
+/**
+ * Removes literal values from SQL so spans never carry sensitive data.
+ * Parameter values ($1, $2…) are never attached; inline string and numeric
+ * literals are replaced with `?`.
+ */
+export function redactSql(text: string): string {
+  return text
+    .replace(/'(?:[^']|'')*'/g, '?')
+    .replace(/(?<![$\w])\d+(?:\.\d+)?\b/g, '?')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+}
+
+/** Short span name, e.g. "SELECT appointments" or "INSERT audit_trail". */
+export function queryName(text: string): string {
+  const sql = text.replace(/\s+/g, ' ').trim();
+  const op = (sql.match(/^\w+/)?.[0] ?? 'QUERY').toUpperCase();
+  const table = sql.match(/\b(?:FROM|INTO|UPDATE|JOIN)\s+"?([\w.]+)"?/i)?.[1];
+  return table ? `${op} ${table}` : op;
+}
+
+/**
+ * Runs a database query inside a Sentry span named after the query, recording
+ * its duration and flagging it as slow when it takes 500ms or longer.
+ */
+export async function traceDbQuery<T>(text: string, run: () => Promise<T>): Promise<T> {
+  const Sentry = getSentry();
+  if (!Sentry?.startSpan) return run();
+
+  const statement = redactSql(text);
+  return Sentry.startSpan(
+    {
+      name: queryName(text),
+      op: 'db.query',
+      attributes: { 'db.system': 'postgresql', 'db.statement': statement },
+    },
+    async (span: any) => {
+      const start = Date.now();
+      try {
+        return await run();
+      } catch (err) {
+        span?.setStatus?.({ code: 2, message: 'internal_error' });
+        throw err;
+      } finally {
+        const durationMs = Date.now() - start;
+        span?.setAttribute?.('db.duration_ms', durationMs);
+        if (durationMs >= SLOW_QUERY_SPAN_MS) {
+          span?.setAttribute?.('db.slow', true);
+          Sentry.addBreadcrumb?.({
+            category: 'db.slow_query',
+            level: 'warning',
+            message: `Slow query ${queryName(text)} (${durationMs}ms)`,
+            data: { durationMs, statement },
+          });
+        }
+      }
+    },
+  );
+}

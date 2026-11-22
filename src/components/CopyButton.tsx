@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { useOptionalToast } from '../context/ToastContext';
+import { getAdapter, scheduleSensitiveClear, SENSITIVE_CLEAR_MS } from '../utils/clipboard';
+
 /**
  * Secure clipboard copy button.
  *
@@ -29,6 +32,11 @@ export interface CopyButtonProps {
   className?: string;
   /** Called after a successful copy. */
   onCopied?: () => void;
+  /**
+   * Marks the value as sensitive (wallet address, recovery code, API key).
+   * The clipboard is then cleared after 60 seconds with a countdown toast (#1397).
+   */
+  isSensitive?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -51,16 +59,22 @@ export function CopyButton({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   className,
   onCopied,
+  isSensitive = false,
 }: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelSensitiveRef = useRef<(() => void) | null>(null);
+  const toast = useOptionalToast();
 
   const clearPendingTimeout = useCallback(() => {
     if (timeoutRef.current !== null) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
+    cancelSensitiveRef.current?.();
+    cancelSensitiveRef.current = null;
   }, []);
 
   useEffect(() => clearPendingTimeout, [clearPendingTimeout]);
@@ -77,7 +91,27 @@ export function CopyButton({
       setCopied(true);
       onCopied?.();
 
-      if (timeoutMs > 0) {
+      // Sensitive values are always cleared after 60s, with a countdown toast.
+      const adapter = isSensitive ? getAdapter() : null;
+      if (adapter) {
+        cancelSensitiveRef.current = scheduleSensitiveClear(adapter, value, {
+          delayMs: SENSITIVE_CLEAR_MS,
+          onTick: (left) => {
+            setSecondsLeft(left);
+            if (left > 0) {
+              toast?.show(`${label} copied. Clipboard will be cleared in ${left}s`, {
+                durationMs: 1500,
+              });
+            }
+          },
+          onCleared: (cleared) => {
+            cancelSensitiveRef.current = null;
+            setSecondsLeft(null);
+            setCopied(false);
+            if (cleared) toast?.show('Clipboard cleared', { variant: 'success' });
+          },
+        });
+      } else if (timeoutMs > 0) {
         timeoutRef.current = setTimeout(async () => {
           timeoutRef.current = null;
           const current = await readClipboard();
@@ -96,7 +130,7 @@ export function CopyButton({
       setCopied(false);
       setError(err instanceof Error ? err.message : 'Copy failed.');
     }
-  }, [value, timeoutMs, clearPendingTimeout, onCopied]);
+  }, [value, timeoutMs, clearPendingTimeout, onCopied, isSensitive, label, toast]);
 
   return (
     <span className={className}>
@@ -108,7 +142,12 @@ export function CopyButton({
       >
         {copied ? 'Copied' : `Copy ${label}`}
       </button>
-      {copied && timeoutMs > 0 ? (
+      {copied && isSensitive && secondsLeft !== null ? (
+        <span role="status" aria-live="polite">
+          {' '}
+          (clipboard clears in {secondsLeft}s)
+        </span>
+      ) : copied && timeoutMs > 0 ? (
         <span role="status" aria-live="polite">
           {' '}
           (clears in {Math.round(timeoutMs / 1000)}s)

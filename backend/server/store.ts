@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 
 import type { ApiKey, ApiKeyUsageRecord } from '../models/ApiKey';
+import type { PetJointOwner } from '../models/JointOwnership';
 import { AppointmentStatus, AppointmentType } from '../models/Appointment';
 import { UserRole } from '../models/UserRole';
 
@@ -336,6 +337,8 @@ const referrals = new Map<string, StoredReferral>();
 const referralCredits = new Map<string, StoredReferralCredit>();
 const payments = new Map<string, StoredPayment>();
 const familySharing = new Map<string, StoredFamilySharing>();
+/** Joint owners keyed by `${petId}:${userId}` (#1388). */
+const petJointOwners = new Map<string, PetJointOwner>();
 
 export function newId(): string {
   return randomUUID();
@@ -355,5 +358,6 @@ export const store = {
   referralCredits,
   payments,
   familySharing,
+  petJointOwners,
   newId,
 };

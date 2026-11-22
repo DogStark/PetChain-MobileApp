@@ -42,12 +42,12 @@ const SENSITIVE_KINDS: ReadonlySet<ClipboardKind> = new Set([
 
 export const DEFAULT_CLIPBOARD_TIMEOUT_MS = 60_000;
 
-interface ClipboardAdapter {
+export interface ClipboardAdapter {
   writeText(value: string): Promise<void>;
   readText(): Promise<string>;
 }
 
-function getAdapter(): ClipboardAdapter | null {
+export function getAdapter(): ClipboardAdapter | null {
   const nav = typeof navigator !== 'undefined' ? navigator : undefined;
   if (nav && nav.clipboard) {
     return {
@@ -136,4 +136,48 @@ export async function clearIfUnchanged(
 /** Cancel any pending timeout for a previously copied value. */
 export function cancelClipboardTimeout(value: string): void {
   clearPendingTimer(value);
+}
+
+// ─── Sensitive auto-clear (#1397) ────────────────────────────────────────────
+
+/** Sensitive values (wallet addresses, recovery codes, API keys) are cleared after this. */
+export const SENSITIVE_CLEAR_MS = 60_000;
+
+export interface SensitiveClearOptions {
+  /** Delay before clearing; defaults to SENSITIVE_CLEAR_MS. */
+  delayMs?: number;
+  /** Called immediately and then every second with the seconds left. */
+  onTick?: (secondsLeft: number) => void;
+  /** Called once the clear attempt has run, with whether it cleared. */
+  onCleared?: (cleared: boolean) => void;
+}
+
+/**
+ * Schedules clearing of a sensitive value that was just copied. The clipboard
+ * is only cleared if it still holds `value`. Returns a function that cancels
+ * the countdown.
+ */
+export function scheduleSensitiveClear(
+  adapter: ClipboardAdapter,
+  value: string,
+  options: SensitiveClearOptions = {},
+): () => void {
+  const { delayMs = SENSITIVE_CLEAR_MS, onTick, onCleared } = options;
+  let secondsLeft = Math.ceil(delayMs / 1000);
+  onTick?.(secondsLeft);
+
+  const interval = setInterval(() => {
+    secondsLeft = Math.max(0, secondsLeft - 1);
+    onTick?.(secondsLeft);
+  }, 1000);
+
+  const timer = setTimeout(() => {
+    clearInterval(interval);
+    void clearIfUnchanged(adapter, value).then((cleared) => onCleared?.(cleared));
+  }, delayMs);
+
+  return () => {
+    clearInterval(interval);
+    clearTimeout(timer);
+  };
 }

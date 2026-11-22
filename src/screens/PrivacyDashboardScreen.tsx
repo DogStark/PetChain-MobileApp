@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 
+import { getAnalyticsConsent, setAnalyticsConsent } from '../services/analyticsService';
 import { resilientRequest } from '../services/apiClient';
 import { requireBiometric } from '../services/authService';
 import {
@@ -159,6 +160,11 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onManageSess
 
   const loadConsents = useCallback(async () => {
     setDatabaseRecovery(await getLocalDatabaseRecoveryInfo());
+    // The on-device analytics choice is what analyticsService enforces (#1391).
+    const applyLocalAnalyticsConsent = async () => {
+      const local = await getAnalyticsConsent();
+      if (local) setConsents((prev) => ({ ...prev, analytics: local.granted }));
+    };
     try {
       const res = await resilientRequest<{
         data: {
@@ -169,6 +175,7 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onManageSess
       }>({ method: 'GET', url: '/privacy/consent' });
 
       setConsents((prev) => ({ ...prev, ...res.data.data.consents }));
+      await applyLocalAnalyticsConsent();
       setConsentsConfirmed(true);
 
       if (res.data.data.lastExportDate) {
@@ -186,6 +193,7 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onManageSess
       }
     } catch {
       // Keep the last known choices visible, but never treat them as server-confirmed.
+      await applyLocalAnalyticsConsent();
       setConsentsConfirmed(false);
     } finally {
       setLoading(false);
@@ -475,10 +483,13 @@ const PrivacyDashboardScreen: React.FC<Props> = ({ onDeleteAccount, onManageSess
           </View>
           <Switch
             value={consents[key]}
-            onValueChange={(v) =>
-              key !== 'necessary' && setConsents((prev) => ({ ...prev, [key]: v }))
-            }
-            disabled={key === 'necessary' || !consentsConfirmed}
+            onValueChange={(v) => {
+              if (key === 'necessary') return;
+              setConsents((prev) => ({ ...prev, [key]: v }));
+              // Analytics opt-in/out applies on-device immediately (#1391).
+              if (key === 'analytics') void setAnalyticsConsent(v);
+            }}
+            disabled={key === 'necessary' || (key !== 'analytics' && !consentsConfirmed)}
             trackColor={{ true: '#4299e1', false: '#e2e8f0' }}
             accessibilityLabel={`Toggle ${label} consent`}
           />
