@@ -1,4 +1,5 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { NavigationContext } from '@react-navigation/native';
+import React, { useState, useCallback, useContext, useRef, useEffect } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -10,6 +11,9 @@ import {
 } from 'react-native';
 
 import { useOfflineStatus } from '../components/OfflineIndicator';
+import { getAppointments } from '../services/appointmentService';
+import { getMedications } from '../services/medicationService';
+import { getAllPets } from '../services/petService';
 import {
   globalSearch,
   type SearchResultItem,
@@ -23,7 +27,52 @@ import {
   filterSuggestions,
   QUICK_ACTIONS,
   type QuickAction,
+  getEntityIndex,
+  refreshEntityIndex,
+  getGroupedSuggestions,
+  getSuggestionRoute,
+  SUGGESTION_DEBOUNCE_MS,
+  type EntityLoaders,
+  type EntitySuggestion,
+  type SuggestionGroup,
 } from '../services/searchSuggestionsService';
+import { searchVets } from '../services/vetService';
+
+/**
+ * Sources for the local suggestion index (#1389). Each service falls back to
+ * its own local cache where it has one; failures keep the cached index.
+ */
+const ENTITY_LOADERS: EntityLoaders = {
+  pet: async () =>
+    (await getAllPets()).map((p) => ({
+      type: 'pet' as const,
+      id: p.id,
+      title: p.name,
+      subtitle: [p.species, p.breed].filter(Boolean).join(' · '),
+    })),
+  vet: async () =>
+    (await searchVets({})).map((v) => ({
+      type: 'vet' as const,
+      id: v.id,
+      title: v.name,
+      subtitle: v.specialty,
+    })),
+  medication: async () =>
+    (await getMedications()).map((m) => ({
+      type: 'medication' as const,
+      id: m.id,
+      title: m.name,
+      subtitle: m.dosage,
+      params: { petId: m.petId },
+    })),
+  appointment: async () =>
+    (await getAppointments()).map((a) => ({
+      type: 'appointment' as const,
+      id: a.id,
+      title: a.vet?.name ? `Appointment with ${a.vet.name}` : 'Appointment',
+      subtitle: [a.date, a.time].filter(Boolean).join(' '),
+    })),
+};
 
 const CATEGORIES: { key: SearchCategory; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -35,9 +84,15 @@ const CATEGORIES: { key: SearchCategory; label: string }[] = [
 interface Props {
   onSelectResult?: (item: SearchResultItem) => void;
   onQuickAction?: (action: string) => void;
+  /** Overrides the default navigation when a suggestion is picked. */
+  onSelectSuggestion?: (suggestion: EntitySuggestion) => void;
 }
 
-const GlobalSearchScreen: React.FC<Props> = ({ onSelectResult, onQuickAction }) => {
+const GlobalSearchScreen: React.FC<Props> = ({
+  onSelectResult,
+  onQuickAction,
+  onSelectSuggestion,
+}) => {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<SearchCategory>('all');
   const [results, setResults] = useState<SearchResultItem[]>([]);
@@ -45,13 +100,27 @@ const GlobalSearchScreen: React.FC<Props> = ({ onSelectResult, onQuickAction }) 
   const [fromCache, setFromCache] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [entityIndex, setEntityIndex] = useState<EntitySuggestion[]>([]);
+  const [suggestionGroups, setSuggestionGroups] = useState<SuggestionGroup[]>([]);
+  const navigation = useContext(NavigationContext);
   const abortControllerRef = useRef<AbortController | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { isOnline } = useOfflineStatus();
 
-  // Load recents on mount
+  // Load recents and the local suggestion index on mount; refresh the index
+  // in the background so suggestions also work offline (#1389).
   useEffect(() => {
+    let cancelled = false;
     getRecentSearches().then(setRecents);
+    getEntityIndex().then((index) => {
+      if (!cancelled) setEntityIndex(index);
+    });
+    refreshEntityIndex(ENTITY_LOADERS).then((index) => {
+      if (!cancelled) setEntityIndex(index);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const performSearch = useCallback((searchText: string, searchCategory: SearchCategory) => {
@@ -92,19 +161,20 @@ const GlobalSearchScreen: React.FC<Props> = ({ onSelectResult, onQuickAction }) 
       if (!text.trim()) {
         setResults([]);
         setSuggestions([]);
+        setSuggestionGroups([]);
         setLoading(false);
         return;
       }
 
-      // Inline autocomplete from recents
-      setSuggestions(filterSuggestions(recents, text));
-
       setLoading(true);
+      // Suggestions (recents + grouped type-ahead) appear after a 300ms debounce.
       debounceTimerRef.current = setTimeout(() => {
+        setSuggestions(filterSuggestions(recents, text));
+        setSuggestionGroups(getGroupedSuggestions(entityIndex, text));
         performSearch(text, category);
-      }, 300);
+      }, SUGGESTION_DEBOUNCE_MS);
     },
-    [category, recents, performSearch],
+    [category, recents, entityIndex, performSearch],
   );
 
   const handleCategoryChange = useCallback(
@@ -133,6 +203,24 @@ const GlobalSearchScreen: React.FC<Props> = ({ onSelectResult, onQuickAction }) 
       commitSearch(suggestion);
     },
     [category, commitSearch, performSearch],
+  );
+
+  const handleSelectEntity = useCallback(
+    (suggestion: EntitySuggestion) => {
+      commitSearch(query);
+      setSuggestionGroups([]);
+      if (onSelectSuggestion) {
+        onSelectSuggestion(suggestion);
+        return;
+      }
+      // Navigate straight to the matching entity.
+      const { screen, params } = getSuggestionRoute(suggestion);
+      (navigation as { navigate?: (s: string, p?: object) => void } | undefined)?.navigate?.(
+        screen,
+        params,
+      );
+    },
+    [query, commitSearch, onSelectSuggestion, navigation],
   );
 
   const handleRemoveRecent = useCallback(async (item: string) => {
@@ -206,6 +294,36 @@ const GlobalSearchScreen: React.FC<Props> = ({ onSelectResult, onQuickAction }) 
               <Text style={styles.suggestionIcon}>🔍</Text>
               <Text style={styles.suggestionText}>{s}</Text>
             </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
+      {/* Type-ahead suggestions grouped by entity type (#1389) */}
+      {query.trim().length > 0 && suggestionGroups.length > 0 && (
+        <View style={styles.suggestionsBox} accessibilityLabel="Suggestions">
+          {suggestionGroups.map((group) => (
+            <View key={group.type}>
+              <Text style={styles.groupTitle}>
+                {group.icon} {group.label}
+              </Text>
+              {group.items.map((item) => (
+                <TouchableOpacity
+                  key={`${item.type}:${item.id}`}
+                  style={styles.suggestionRow}
+                  onPress={() => handleSelectEntity(item)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${group.label}: ${item.title}`}
+                >
+                  <Text style={styles.suggestionIcon}>{group.icon}</Text>
+                  <View>
+                    <Text style={styles.suggestionText}>{item.title}</Text>
+                    {item.subtitle ? (
+                      <Text style={styles.resultSubtitle}>{item.subtitle}</Text>
+                    ) : null}
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
           ))}
         </View>
       )}
@@ -334,6 +452,14 @@ const styles = StyleSheet.create({
   },
   suggestionIcon: { fontSize: 14, marginRight: 8, color: '#999' },
   suggestionText: { fontSize: 15, color: '#333' },
+  groupTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#888',
+    textTransform: 'uppercase',
+    paddingHorizontal: 12,
+    paddingTop: 8,
+  },
   tabs: { flexDirection: 'row', marginBottom: 8 },
   tab: {
     paddingVertical: 6,

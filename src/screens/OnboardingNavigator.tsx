@@ -16,6 +16,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { OnboardingProvider, useOnboarding } from '../context/OnboardingContext';
+import AnalyticsConsentStep from './onboarding/AnalyticsConsentStep';
 import BiometricStep from './onboarding/BiometricStep';
 import BlockchainIntroStep from './onboarding/BlockchainIntroStep';
 import FirstRecordStep from './onboarding/FirstRecordStep';
@@ -26,6 +27,7 @@ import WelcomeStep from './onboarding/WelcomeStep';
 // Step index → component mapping (0-based, matches STEP_SEQUENCES values)
 const STEP_COMPONENTS = [
   WelcomeStep,
+  AnalyticsConsentStep,
   PetSetupStep,
   NotificationsStep,
   BiometricStep,
@@ -155,7 +157,7 @@ function OnboardingFlow({ onComplete, onSkip }: OnboardingNavigatorProps) {
         <StepComponent
           onNext={handleNext}
           onSkip={handleSkip}
-          {...(isLast && stepIndex === 5 ? { isLast: true } : {})}
+          {...(isLast && stepIndex === 6 ? { isLast: true } : {})}
         />
       </Animated.View>
     </SafeAreaView>

@@ -1,4 +1,10 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 import apiClient from './apiClient';
+import {
+  ANALYTICS_CONSENT_SCOPE_VERSION,
+  type AnalyticsConsent,
+} from '../models/UserPreferences';
 
 export type EventType = 'screen_view' | 'feature_usage' | 'error' | 'custom';
 
@@ -68,6 +74,81 @@ const scrubPii = <T extends Record<string, unknown>>(
   return Object.keys(safe).length > 0 ? safe : undefined;
 };
 
+// ─── Consent (#1391) ──────────────────────────────────────────────────────────
+
+/** Key under which UserPreferences are persisted. */
+const PREFERENCES_STORAGE_KEY = '@user_preferences';
+
+/**
+ * In-memory consent. Analytics is opt-in: nothing is queued or sent until the
+ * user has granted consent for the current data collection scope.
+ */
+let consentGranted = false;
+
+function isCurrentGrant(consent: AnalyticsConsent | null | undefined): boolean {
+  return !!consent?.granted && consent.scopeVersion === ANALYTICS_CONSENT_SCOPE_VERSION;
+}
+
+async function readPreferences(): Promise<Record<string, unknown>> {
+  try {
+    const raw = await AsyncStorage.getItem(PREFERENCES_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Returns the stored consent decision, or null if the user was never asked. */
+export async function getAnalyticsConsent(): Promise<AnalyticsConsent | null> {
+  const prefs = await readPreferences();
+  const consent = prefs.analyticsConsent as AnalyticsConsent | null | undefined;
+  consentGranted = isCurrentGrant(consent);
+  return consent ?? null;
+}
+
+/**
+ * True when the user must be asked: never asked, or asked about an older
+ * data collection scope.
+ */
+export async function needsAnalyticsConsent(): Promise<boolean> {
+  const consent = await getAnalyticsConsent();
+  return !consent || consent.scopeVersion !== ANALYTICS_CONSENT_SCOPE_VERSION;
+}
+
+/** Stores the user's choice in UserPreferences and applies it immediately. */
+export async function setAnalyticsConsent(granted: boolean): Promise<AnalyticsConsent> {
+  const consent: AnalyticsConsent = {
+    granted,
+    scopeVersion: ANALYTICS_CONSENT_SCOPE_VERSION,
+    decidedAt: new Date().toISOString(),
+  };
+  consentGranted = granted;
+  if (!granted) {
+    // Opting out discards anything not yet sent.
+    queue = [];
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+  }
+  try {
+    const prefs = await readPreferences();
+    await AsyncStorage.setItem(
+      PREFERENCES_STORAGE_KEY,
+      JSON.stringify({ ...prefs, analyticsConsent: consent }),
+    );
+  } catch {
+    // best-effort; the in-memory choice still applies for this session
+  }
+  return consent;
+}
+
+/** Current in-memory consent state. */
+export const hasAnalyticsConsent = (): boolean => consentGranted;
+
+// Load the persisted choice on startup.
+void getAnalyticsConsent();
+
 // ─── Queue state ──────────────────────────────────────────────────────────────
 
 let queue: AnalyticsEvent[] = [];
@@ -90,6 +171,10 @@ export async function flush(): Promise<void> {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
+  if (!consentGranted) {
+    queue = [];
+    return;
+  }
   if (queue.length === 0) return;
 
   const batch = queue;
@@ -108,6 +193,8 @@ export async function flush(): Promise<void> {
 }
 
 const enqueue = (type: EventType, name: string, meta?: Record<string, unknown>): void => {
+  // Users who have not opted in have no analytics events recorded or sent.
+  if (!consentGranted) return;
   queue.push({ type, name, meta: scrubPii(meta), timestamp: Date.now() });
   if (queue.length >= BATCH_SIZE) {
     void flush();
@@ -166,6 +253,10 @@ export const analyticsService = {
   setUserProperties,
   resetUserProperties,
   flush,
+  getAnalyticsConsent,
+  setAnalyticsConsent,
+  needsAnalyticsConsent,
+  hasAnalyticsConsent,
 };
 
 export default analyticsService;

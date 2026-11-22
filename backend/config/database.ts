@@ -3,6 +3,8 @@ import path from 'path';
 import { runner } from 'node-pg-migrate';
 import { Pool, type QueryConfig, type QueryResult } from 'pg';
 
+import { traceDbQuery } from '../utils/logger';
+
 const DATABASE_URL =
   process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/petchain';
 
@@ -37,11 +39,14 @@ export async function instrumentedQuery(
   textOrConfig: string | QueryConfig,
   params?: unknown[],
 ): Promise<QueryResult> {
+  const rawText = typeof textOrConfig === 'string' ? textOrConfig : (textOrConfig.text ?? '');
   const start = Date.now();
-  const result = await pool.query(textOrConfig as string, params);
+  // Sentry span per query; parameter values are never attached (#1392).
+  const result = await traceDbQuery(rawText, () =>
+    pool.query(textOrConfig as string, params),
+  );
   const durationMs = Date.now() - start;
 
-  const rawText = typeof textOrConfig === 'string' ? textOrConfig : (textOrConfig.text ?? '');
   const sanitised = sanitizeQueryText(rawText);
   const rowCount = result.rowCount ?? 0;
 
