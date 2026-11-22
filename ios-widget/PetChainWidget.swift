@@ -23,6 +23,8 @@ struct MedicationItem: Codable {
     let scheduledTime: String?
     let frequency: Int
     let taken: Bool
+    /// petchain://doses/:petId/:medicationId — opens DoseConfirmationScreen.
+    let deepLink: String?
 }
 
 struct AppointmentItem: Codable {
@@ -333,6 +335,7 @@ struct PetChainLargeWidget: View {
 struct PetChainWidgetBundle: WidgetBundle {
     var body: some Widget {
         PetChainWidget()
+        PetChainLockScreenWidget()
     }
 }
 

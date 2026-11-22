@@ -69,6 +69,8 @@ const iosWidgetTargetConfig = async (config, options) =>
     project.addBuildPhase([], 'PBXFrameworksBuildPhase', 'Frameworks', targetUuid);
     project.addBuildPhase([], 'PBXResourcesBuildPhase', 'Resources', targetUuid);
     project.addSourceFile(`${targetName}/${targetName}.swift`, { target: targetUuid });
+    // Lock screen widget (#1395) lives in the same extension.
+    project.addSourceFile(`${targetName}/PetChainLockScreenWidget.swift`, { target: targetUuid });
 
     const targetBuildConfigurations = project.pbxXCBuildConfigurationSection();
     Object.values(targetBuildConfigurations).forEach((buildConfiguration) => {
@@ -105,6 +107,10 @@ const iosWidgetSourcesConfig = async (config) => {
   fs.copyFileSync(
     path.join(projectRoot, 'ios-widget/PetChainWidget.swift'),
     path.join(targetRoot, `${widgetName}.swift`),
+  );
+  fs.copyFileSync(
+    path.join(projectRoot, 'ios-widget/PetChainLockScreenWidget.swift'),
+    path.join(targetRoot, 'PetChainLockScreenWidget.swift'),
   );
   fs.writeFileSync(
     path.join(targetRoot, `${widgetName}-Info.plist`),

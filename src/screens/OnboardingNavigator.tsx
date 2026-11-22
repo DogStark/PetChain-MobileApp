@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -15,7 +15,9 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 
+import MultiStepFormHeader from '../components/MultiStepFormHeader';
 import { OnboardingProvider, useOnboarding } from '../context/OnboardingContext';
+import { isStepSkippable } from '../services/onboardingService';
 import BiometricStep from './onboarding/BiometricStep';
 import BlockchainIntroStep from './onboarding/BlockchainIntroStep';
 import FirstRecordStep from './onboarding/FirstRecordStep';
@@ -44,12 +46,14 @@ function OnboardingFlow({ onComplete, onSkip }: OnboardingNavigatorProps) {
     loading,
     currentStep,
     totalSteps,
-    completionPercentage,
     stepSequence,
+    stepStatuses,
     advance,
     skip,
+    skipToNextMandatory,
     completeOnboarding,
   } = useOnboarding();
+  const stepHeadingRef = useRef<View>(null);
 
   // Slide animation: translateX from right (+width) to 0
   const translateX = useSharedValue(0);
@@ -97,6 +101,8 @@ function OnboardingFlow({ onComplete, onSkip }: OnboardingNavigatorProps) {
     const sequencePosition = currentStep;
     const stepIndex = stepSequence[sequencePosition];
     const isLast = sequencePosition >= totalSteps - 1;
+    // Mandatory steps (pet setup, notifications) cannot be skipped (#1393).
+    if (!isStepSkippable(stepIndex)) return;
 
     animateOut(async () => {
       if (isLast) {
@@ -109,12 +115,16 @@ function OnboardingFlow({ onComplete, onSkip }: OnboardingNavigatorProps) {
     });
   }, [currentStep, stepSequence, totalSteps, animateOut, skip, completeOnboarding, onComplete]);
 
+  // "Skip all" skips optional steps only, stopping at the next mandatory step.
   const handleGlobalSkip = useCallback(() => {
     animateOut(async () => {
-      await completeOnboarding();
-      onSkip();
+      const canComplete = await skipToNextMandatory();
+      if (canComplete) {
+        await completeOnboarding();
+        onSkip();
+      }
     });
-  }, [animateOut, completeOnboarding, onSkip]);
+  }, [animateOut, skipToNextMandatory, completeOnboarding, onSkip]);
 
   if (loading || !state) {
     return (
@@ -145,9 +155,15 @@ function OnboardingFlow({ onComplete, onSkip }: OnboardingNavigatorProps) {
         </TouchableOpacity>
       </View>
 
-      {/* Progress bar */}
-      <View style={styles.progressTrack}>
-        <View style={[styles.progressFill, { width: `${completionPercentage}%` }]} />
+      {/* Progress: completed vs skipped steps (#1393) */}
+      <View style={styles.progressHeader}>
+        <MultiStepFormHeader
+          stepHeadingRef={stepHeadingRef}
+          announcement={`Step ${sequencePosition + 1} of ${totalSteps}`}
+          currentStep={sequencePosition}
+          totalSteps={totalSteps}
+          stepStatuses={stepStatuses}
+        />
       </View>
 
       {/* Animated step */}
@@ -155,6 +171,7 @@ function OnboardingFlow({ onComplete, onSkip }: OnboardingNavigatorProps) {
         <StepComponent
           onNext={handleNext}
           onSkip={handleSkip}
+          canSkip={isStepSkippable(stepIndex)}
           {...(isLast && stepIndex === 5 ? { isLast: true } : {})}
         />
       </Animated.View>
@@ -196,5 +213,6 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   progressFill: { height: 4, backgroundColor: '#3B82F6', borderRadius: 2 },
+  progressHeader: { marginHorizontal: 20 },
   stepContainer: { flex: 1 },
 });

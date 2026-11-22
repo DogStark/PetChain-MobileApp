@@ -4,9 +4,11 @@ import { View, Text, TouchableOpacity, StyleSheet, Platform, Alert } from 'react
 interface Props {
   onNext: () => void;
   onSkip: () => void;
+  /** Hidden for mandatory steps (#1393). */
+  canSkip?: boolean;
 }
 
-const BiometricStep: React.FC<Props> = ({ onNext, onSkip }) => {
+const BiometricStep: React.FC<Props> = ({ onNext, onSkip, canSkip = true }) => {
   const handleEnable = () => {
     // On a real device this would call expo-local-authentication
     if (Platform.OS !== 'web') {
@@ -42,9 +44,11 @@ const BiometricStep: React.FC<Props> = ({ onNext, onSkip }) => {
       >
         <Text style={styles.primaryText}>Enable Biometric Login</Text>
       </TouchableOpacity>
-      <TouchableOpacity onPress={onSkip} accessibilityRole="button" testID="biometric-skip-button">
-        <Text style={styles.skip}>Use password instead</Text>
-      </TouchableOpacity>
+      {canSkip ? (
+        <TouchableOpacity onPress={onSkip} accessibilityRole="button" testID="biometric-skip-button">
+          <Text style={styles.skip}>Use password instead</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 };

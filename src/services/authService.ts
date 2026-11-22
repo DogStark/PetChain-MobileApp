@@ -53,6 +53,10 @@ export interface AuthSession {
   token: string;
   refreshToken?: string;
   expiresIn?: number;
+  /** Vet accounts without 2FA must set it up (#1394). */
+  twoFactorSetupRequired?: boolean;
+  /** When the vet 2FA grace period ends. */
+  twoFactorDeadline?: string;
 }
 
 export interface StoredSession {
@@ -241,11 +245,17 @@ export async function login(email: string, password: string): Promise<AuthSessio
       refreshToken: data.refreshToken,
     });
 
+    const twoFactor = data as LoginResponse & {
+      twoFactorSetupRequired?: boolean;
+      twoFactorDeadline?: string;
+    };
     return {
       user: data.user,
       token: data.token,
       refreshToken: data.refreshToken,
       expiresIn: data.expiresIn,
+      twoFactorSetupRequired: twoFactor.twoFactorSetupRequired,
+      twoFactorDeadline: twoFactor.twoFactorDeadline,
     };
   } catch (err: unknown) {
     if (err instanceof AuthError) {

@@ -4,6 +4,7 @@ import { changeLanguage } from '../i18n';
 import onboardingService, {
   type OnboardingState,
   type OnboardingVariant,
+  type StepStatus,
   STEP_SEQUENCES,
 } from '../services/onboardingService';
 
@@ -16,8 +17,12 @@ interface OnboardingContextValue {
   variant: OnboardingVariant;
   /** Ordered step indices for the current variant */
   stepSequence: number[];
+  /** Completed / skipped / pending status per sequence position (#1393). */
+  stepStatuses: StepStatus[];
   advance: (stepIndex: number) => Promise<void>;
   skip: (stepIndex: number) => Promise<void>;
+  /** Skips optional steps up to the next mandatory one; true if onboarding can complete. */
+  skipToNextMandatory: () => Promise<boolean>;
   completeOnboarding: () => Promise<void>;
   reset: () => Promise<void>;
 }
@@ -56,6 +61,13 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     [state],
   );
 
+  const skipToNextMandatory = useCallback(async () => {
+    if (!state) return true;
+    const result = await onboardingService.skipToNextMandatory(state);
+    setState(result.state);
+    return result.canComplete;
+  }, [state]);
+
   const completeOnboarding = useCallback(async () => {
     if (!state) return;
     const next = await onboardingService.complete(state);
@@ -74,17 +86,20 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     return {
       state,
       loading,
-      currentStep: state?.currentStep ?? 0,
+      // Resume from the first unfinished step persisted before a crash (#1393).
+      currentStep: state ? onboardingService.getResumePosition(state) : 0,
       totalSteps: onboardingService.TOTAL_STEPS,
       completionPercentage: state ? onboardingService.completionPercentage(state) : 0,
       variant,
       stepSequence,
+      stepStatuses: state ? onboardingService.getStepStatuses(state) : [],
       advance,
       skip,
+      skipToNextMandatory,
       completeOnboarding,
       reset,
     };
-  }, [state, loading, advance, skip, completeOnboarding, reset]);
+  }, [state, loading, advance, skip, skipToNextMandatory, completeOnboarding, reset]);
 
   return <OnboardingContext.Provider value={value}>{children}</OnboardingContext.Provider>;
 }
