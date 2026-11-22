@@ -3,6 +3,7 @@ import http from 'http';
 import { createApp, setReadiness } from './app';
 import { checkDatabaseConnection, runMigrations } from '../config/database';
 import apiKeyService from '../services/apiKeyService';
+import { startDataRetentionJob } from '../services/dataRetentionService';
 import { startReceiptCheckJob, startScheduledProcessor } from '../services/pushService';
 import { startPaymentIdempotencyCleanupJob } from '../services/stellarPaymentService';
 import logger from '../utils/logger';
@@ -66,6 +67,9 @@ async function start(): Promise<void> {
 
     const scheduledProcessor = startScheduledProcessor();
     scheduledProcessor.unref();
+
+    // Inactive-account retention policy (#1400); runs only when DATA_RETENTION_ENABLED=true.
+    startDataRetentionJob()?.unref();
 
     if (process.send) process.send('ready');
   });

@@ -89,6 +89,8 @@ router.get('/', authenticateJWT, async (req: AuthenticatedRequest, res) => {
         before_data AS "beforeData",
         after_data AS "afterData",
         changed_by AS "changedBy",
+        acting_user_id AS "actingUserId",
+        on_behalf_of_user_id AS "onBehalfOfUserId",
         ip_address AS "ipAddress",
         user_agent AS "userAgent",
         created_at AS "createdAt"

@@ -13,6 +13,10 @@ export interface AuditTrailEntry {
   beforeData: Record<string, unknown> | null;
   afterData: Record<string, unknown> | null;
   changedBy: string | null;
+  /** Co-owner who performed the action via family sharing (#1398). */
+  actingUserId?: string | null;
+  /** Primary owner the co-owner acted on behalf of (#1398). */
+  onBehalfOfUserId?: string | null;
   ipAddress: string | null;
   userAgent: string | null;
   createdAt: string;

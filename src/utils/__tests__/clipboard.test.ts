@@ -109,3 +109,75 @@ describe('clearIfUnchanged', () => {
     expect(adapter.getValue()).toBe('newer content');
   });
 });
+
+describe('scheduleSensitiveClear (#1397)', () => {
+  const {
+    scheduleSensitiveClear,
+    SENSITIVE_CLEAR_MS,
+  } = require('../clipboard') as typeof import('../clipboard');
+
+  function createAdapter(initial = '') {
+    let value = initial;
+    return {
+      async readText() {
+        return value;
+      },
+      async writeText(text: string) {
+        value = text;
+      },
+      getValue: () => value,
+    };
+  }
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('clears a sensitive value after 60 seconds', async () => {
+    const adapter = createAdapter('recovery-code-123');
+    const onCleared = jest.fn();
+    scheduleSensitiveClear(adapter, 'recovery-code-123', { onCleared });
+
+    expect(SENSITIVE_CLEAR_MS).toBe(60_000);
+    await jest.advanceTimersByTimeAsync(59_000);
+    expect(adapter.getValue()).toBe('recovery-code-123');
+
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(adapter.getValue()).toBe('');
+    expect(onCleared).toHaveBeenCalledWith(true);
+  });
+
+  it('reports a per-second countdown for the toast', async () => {
+    const adapter = createAdapter('sk_live_abc');
+    const onTick = jest.fn();
+    scheduleSensitiveClear(adapter, 'sk_live_abc', { onTick });
+
+    expect(onTick).toHaveBeenLastCalledWith(60);
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(onTick).toHaveBeenLastCalledWith(50);
+  });
+
+  it('does not clear content the user copied afterwards', async () => {
+    const adapter = createAdapter('GABC...wallet');
+    scheduleSensitiveClear(adapter, 'GABC...wallet');
+
+    await adapter.writeText('something newer');
+    await jest.advanceTimersByTimeAsync(60_000);
+
+    expect(adapter.getValue()).toBe('something newer');
+  });
+
+  it('can be cancelled before the clipboard is cleared', async () => {
+    const adapter = createAdapter('GABC...wallet');
+    const cancel = scheduleSensitiveClear(adapter, 'GABC...wallet');
+
+    cancel();
+    await jest.advanceTimersByTimeAsync(60_000);
+
+    expect(adapter.getValue()).toBe('GABC...wallet');
+  });
+});
