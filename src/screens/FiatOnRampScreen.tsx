@@ -23,6 +23,8 @@ import {
 import { WebView } from 'react-native-webview';
 
 import apiClient from '../services/apiClient';
+import stellarAccountService from '../services/stellarAccountService';
+import { recordFiatOnRampTransaction } from '../services/stellarTransactionRegistry';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -61,6 +63,23 @@ type Currency = (typeof SUPPORTED_CURRENCIES)[number];
 
 const POLL_INTERVAL_MS = 10_000;
 
+/** Rough per-status estimate shown while a deposit is still in flight. */
+const ESTIMATED_COMPLETION_MS: Record<DepositStatus, number> = {
+  pending_user_transfer_start: 15 * 60_000,
+  pending_external: 10 * 60_000,
+  pending_anchor: 5 * 60_000,
+  pending_stellar: 60_000,
+  completed: 0,
+  error: 0,
+  refunded: 0,
+};
+
+function formatEta(ms: number): string {
+  if (ms <= 0) return 'less than a minute';
+  const minutes = Math.ceil(ms / 60_000);
+  return minutes === 1 ? 'about 1 minute' : `about ${minutes} minutes`;
+}
+
 const STATUS_LABELS: Record<DepositStatus, string> = {
   pending_user_transfer_start: 'Waiting for your bank transfer…',
   pending_external: 'Processing your bank transfer…',
@@ -83,8 +102,11 @@ export default function FiatOnRampScreen() {
   const [deposit, setDeposit] = useState<DepositRecord | null>(null);
   const [interactiveUrl, setInteractiveUrl] = useState('');
   const [webviewVisible, setWebviewVisible] = useState(false);
+  const [pollError, setPollError] = useState<string | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const walletAddressRef = useRef(walletAddress);
+  walletAddressRef.current = walletAddress;
 
   // ── Cleanup on unmount ──────────────────────────────────────────────────
   useEffect(() => {
@@ -93,28 +115,67 @@ export default function FiatOnRampScreen() {
     };
   }, []);
 
-  // ── Polling ─────────────────────────────────────────────────────────────
-  const startPolling = useCallback((depositId: string) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-
-    const poll = async () => {
-      try {
-        const res = await apiClient.get<DepositRecord>(`/anchor/deposit/${depositId}`);
-        const record = res.data;
-        setDeposit(record);
-
-        if (TERMINAL_STATUSES.includes(record.status)) {
-          if (pollRef.current) clearInterval(pollRef.current);
-          setStep('done');
-        }
-      } catch {
-        // Ignore transient network errors; keep polling
-      }
-    };
-
-    poll();
-    pollRef.current = setInterval(poll, POLL_INTERVAL_MS);
+  // ── Registry + wallet balance ───────────────────────────────────────────
+  const recordOnRamp = useCallback(async (record: DepositRecord) => {
+    await recordFiatOnRampTransaction({
+      depositId: record.id,
+      walletAddress: walletAddressRef.current.trim(),
+      currency: record.currency,
+      assetCode: record.assetCode,
+      status: record.status,
+      amountIn: record.amountIn,
+      amountOut: record.amountOut,
+      stellarTxId: record.stellarTxId,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    });
   }, []);
+
+  const refreshWalletBalance = useCallback(async (address: string) => {
+    // Re-reads Horizon so the wallet reflects the deposit immediately.
+    await stellarAccountService.getBalance(address);
+  }, []);
+
+  // ── Polling ─────────────────────────────────────────────────────────────
+  const startPolling = useCallback(
+    (depositId: string) => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      setPollError(null);
+
+      const poll = async () => {
+        try {
+          const res = await apiClient.get<DepositRecord>(`/anchor/deposit/${depositId}`);
+          const record = res.data;
+          setDeposit(record);
+          setPollError(null);
+          await recordOnRamp(record);
+
+          if (TERMINAL_STATUSES.includes(record.status)) {
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
+            if (record.status === 'completed') {
+              await refreshWalletBalance(walletAddressRef.current.trim());
+            }
+            setStep('done');
+          }
+        } catch (err: unknown) {
+          // Transient network errors keep polling; surface the last failure so
+          // the user can retry manually if it persists.
+          setPollError(err instanceof Error ? err.message : 'Could not check deposit status');
+        }
+      };
+
+      poll();
+      pollRef.current = setInterval(poll, POLL_INTERVAL_MS);
+    },
+    [recordOnRamp, refreshWalletBalance],
+  );
+
+  const handleRetryPolling = useCallback(() => {
+    if (!deposit) return;
+    setStep('polling');
+    startPolling(deposit.id);
+  }, [deposit, startPolling]);
 
   // ── Initiate deposit ────────────────────────────────────────────────────
   const handleInitiate = useCallback(async () => {
@@ -132,14 +193,17 @@ export default function FiatOnRampScreen() {
 
       const { depositId, interactiveUrl: url } = res.data;
       setInteractiveUrl(url);
-      setDeposit({
+      const now = new Date().toISOString();
+      const initialRecord: DepositRecord = {
         id: depositId,
         assetCode: res.data.assetCode,
         currency: res.data.currency,
         status: 'pending_user_transfer_start',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
+        createdAt: now,
+        updatedAt: now,
+      };
+      setDeposit(initialRecord);
+      await recordOnRamp(initialRecord);
       setStep('webview');
       setWebviewVisible(true);
     } catch (err: unknown) {
@@ -148,7 +212,7 @@ export default function FiatOnRampScreen() {
     } finally {
       setLoading(false);
     }
-  }, [walletAddress, currency]);
+  }, [walletAddress, currency, recordOnRamp]);
 
   // ── WebView closed → start polling ──────────────────────────────────────
   const handleWebviewClose = useCallback(() => {
@@ -162,8 +226,10 @@ export default function FiatOnRampScreen() {
   // ── Reset ────────────────────────────────────────────────────────────────
   const handleReset = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
     setDeposit(null);
     setInteractiveUrl('');
+    setPollError(null);
     setStep('form');
   }, []);
 
@@ -239,6 +305,23 @@ export default function FiatOnRampScreen() {
               You will receive: {deposit.amountOut} {deposit.assetCode}
             </Text>
           )}
+          {step === 'polling' && !TERMINAL_STATUSES.includes(deposit.status) && (
+            <Text style={styles.eta}>
+              Estimated completion: {formatEta(ESTIMATED_COMPLETION_MS[deposit.status])}
+            </Text>
+          )}
+          {pollError && (
+            <View style={styles.errorBox}>
+              <Text style={styles.errorText}>Could not check deposit status: {pollError}</Text>
+              <TouchableOpacity
+                style={styles.retryBtn}
+                onPress={handleRetryPolling}
+                accessibilityRole="button"
+              >
+                <Text style={styles.retryBtnText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           <TouchableOpacity style={styles.linkBtn} onPress={() => setWebviewVisible(true)}>
             <Text style={styles.linkBtnText}>Re-open anchor page</Text>
           </TouchableOpacity>
@@ -265,6 +348,29 @@ export default function FiatOnRampScreen() {
             <Text style={styles.txId} numberOfLines={1} ellipsizeMode="middle">
               Tx: {deposit.stellarTxId}
             </Text>
+          )}
+          {(deposit.status === 'error' || deposit.status === 'refunded') && (
+            <View style={styles.errorBox}>
+              <Text style={styles.errorText}>
+                {deposit.status === 'error'
+                  ? 'The anchor could not complete this deposit. No funds were credited to your wallet.'
+                  : 'The anchor refunded this deposit. Check your bank statement for the returned funds.'}
+              </Text>
+              <TouchableOpacity
+                style={styles.retryBtn}
+                onPress={handleRetryPolling}
+                accessibilityRole="button"
+              >
+                <Text style={styles.retryBtnText}>Check status again</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.retryBtn}
+                onPress={handleReset}
+                accessibilityRole="button"
+              >
+                <Text style={styles.retryBtnText}>Try a new deposit</Text>
+              </TouchableOpacity>
+            </View>
           )}
           <TouchableOpacity style={styles.button} onPress={handleReset}>
             <Text style={styles.buttonText}>New Deposit</Text>
@@ -357,6 +463,17 @@ const styles = StyleSheet.create({
   txId: { fontSize: 11, color: '#888', marginTop: 8, fontFamily: 'monospace', maxWidth: '100%' },
   linkBtn: { marginTop: 20 },
   linkBtnText: { color: '#4A90A4', fontWeight: '600', fontSize: 14 },
+  eta: { fontSize: 13, color: '#667', marginTop: 8, textAlign: 'center' },
+  errorBox: { marginTop: 16, alignItems: 'center' },
+  retryBtn: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#B42318',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+  },
+  retryBtnText: { color: '#B42318', fontWeight: '700', fontSize: 14 },
   doneTitle: { fontSize: 20, fontWeight: '700', textAlign: 'center' },
   success: { color: '#2E7D32' },
   errorText: { color: '#B42318' },
