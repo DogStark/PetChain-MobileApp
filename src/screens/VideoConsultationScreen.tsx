@@ -37,6 +37,11 @@ import {
 import { io, type Socket } from 'socket.io-client';
 
 import config from '../config';
+import {
+  clearCallQualityEvents,
+  logCallQualityEvent,
+  type CallNetworkQuality,
+} from '../services/callQualityLog';
 import consentService, {
   CONSENT_POLICY_VERSION,
   type ConsentScope,
@@ -56,7 +61,7 @@ interface Props {
   onEnd: () => void;
 }
 
-type NetworkQuality = 'excellent' | 'good' | 'poor' | 'critical';
+type NetworkQuality = CallNetworkQuality;
 type CallState = 'idle' | 'connecting' | 'waiting_room' | 'in_call' | 'screen_sharing' | 'ended';
 
 interface IceServer {
@@ -88,6 +93,15 @@ const QUALITY_THRESHOLDS = {
 
 /** How often (ms) to poll WebRTC stats */
 const STATS_POLL_INTERVAL_MS = 2000;
+
+/** Video bitrate caps (bits/s) applied per quality tier */
+const BITRATE_CAPS_BPS: Record<NetworkQuality, number | null> = {
+  excellent: null, // uncapped — let WebRTC use the full available bandwidth
+  good: 1_000_000,
+  poor: 200_000,
+  critical: 100_000,
+  off: 0,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COMPONENT
