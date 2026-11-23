@@ -8,6 +8,7 @@ export type AuditAction =
   | 'user.created'
   | 'user.updated'
   | 'user.deleted'
+  | 'user.data_exported'
   | 'pet.created'
   | 'pet.updated'
   | 'pet.deleted'

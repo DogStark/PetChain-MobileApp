@@ -4,6 +4,15 @@ import express from 'express';
 import type { AuditableRequest } from '../../middleware/auditLog';
 import { authenticateJWT, authorizeRoles, type AuthenticatedRequest } from '../../middleware/auth';
 import { UserRole } from '../../models/UserRole';
+import {
+  createSignedDownloadUrl,
+  generateExportArchive,
+  getExportArchive,
+  getExportRequest,
+  isLargeExport,
+  requestDataExport,
+  verifyExportToken,
+} from '../../services/dataExportService';
 import referralService from '../../services/referralService';
 import { userRepository, type DBUser } from '../../src/repositories/userRepository';
 import { ok, sendError } from '../response';
@@ -71,6 +80,91 @@ router.get('/', authenticateJWT, authorizeRoles(UserRole.ADMIN), async (req, res
     },
     timestamp: new Date().toISOString(),
   });
+});
+
+router.get('/export/:requestId/download', authenticateJWT, (req: AuthenticatedRequest, res) => {
+  const { requestId } = req.params;
+  const { expires, token } = req.query as Record<string, string | undefined>;
+
+  const request = getExportRequest(requestId);
+  if (!request) return sendError(res, 404, 'NOT_FOUND', 'Export request not found');
+  if (request.userId !== req.user!.id) {
+    return sendError(res, 403, 'FORBIDDEN', 'Access denied');
+  }
+  if (!expires || !token || !verifyExportToken(requestId, expires, token)) {
+    return sendError(res, 403, 'FORBIDDEN', 'Invalid or expired download token');
+  }
+
+  const archive = getExportArchive(requestId);
+  if (!archive) return sendError(res, 404, 'NOT_FOUND', 'Export archive not available');
+
+  (req as AuditableRequest).audit?.('user.data_exported', 'user', request.userId, {
+    requestId,
+    format: 'zip',
+  });
+
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="petchain-export-${requestId}.zip"`);
+  return res.send(archive);
+});
+
+router.get('/:id/export', authenticateJWT, async (req: AuthenticatedRequest, res) => {
+  const userId = req.params.id;
+
+  // Export is scoped to the authenticated user's own data only
+  if (req.user!.id !== userId) {
+    (req as AuditableRequest).audit?.('user.data_exported', 'user', userId, {}, 'denied');
+    return sendError(res, 403, 'FORBIDDEN', 'You can only export your own data');
+  }
+
+  const user = store.users.get(userId);
+  if (!user || user.deletedAt) return sendError(res, 404, 'NOT_FOUND', 'User not found');
+
+  if (isLargeExport(userId)) {
+    const request = requestDataExport(userId, user.email);
+    (req as AuditableRequest).audit?.('user.data_exported', 'user', userId, {
+      requestId: request.id,
+      mode: 'async',
+    });
+    return res.status(202).json(
+      ok(
+        {
+          requestId: request.id,
+          status: request.status,
+          requestedAt: request.requestedAt,
+          statusUrl: `/api/users/export/${request.id}`,
+          message:
+            'Export request queued. A signed download link will be emailed when ready (expires in 48 hours).',
+        },
+        'Export request created',
+      ),
+    );
+  }
+
+  const archive = await generateExportArchive(userId);
+  (req as AuditableRequest).audit?.('user.data_exported', 'user', userId, {
+    format: 'zip',
+    mode: 'sync',
+  });
+
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="petchain-export-${userId}.zip"`);
+  return res.send(archive);
+});
+
+router.get('/export/:requestId', authenticateJWT, (req: AuthenticatedRequest, res) => {
+  const request = getExportRequest(req.params.requestId);
+  if (!request) return sendError(res, 404, 'NOT_FOUND', 'Export request not found');
+  if (request.userId !== req.user!.id) {
+    return sendError(res, 403, 'FORBIDDEN', 'Access denied');
+  }
+  return res.json(
+    ok({
+      ...request,
+      downloadUrl:
+        request.status === 'completed' ? createSignedDownloadUrl(request.id) : undefined,
+    }),
+  );
 });
 
 router.get('/:id', authenticateJWT, (req, res) => {
