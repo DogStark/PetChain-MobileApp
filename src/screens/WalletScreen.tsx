@@ -4,14 +4,31 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
 
 import { useWallet } from '../hooks/useWallet';
 import { shortenAddress } from '../utils/format';
+import {
+  ACTIVITY_TYPES,
+  ACTIVITY_TYPE_LABELS,
+  buildActivityCsv,
+  getActivityAccessibilityLabel,
+  getActivityViewState,
+  getEmptyStateMessage,
+  loadFilteredActivity,
+  loadNextActivityPage,
+  validateFilters,
+  type ActivityFilters,
+  type ActivityType,
+  type WalletActivity,
+} from '../services/walletActivityFilterService';
+import { validateExpenseDateRange } from '../services/expenseExportService';
 
 /**
  * Default clipboard timeout (ms) for copied identifiers.
@@ -38,6 +55,77 @@ const WalletScreen: React.FC = () => {
   const { wallet, records } = useWallet();
   const [lastCopied, setLastCopied] = useState<string | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [filters, setFilters] = useState<ActivityFilters>({});
+  const [activity, setActivity] = useState<WalletActivity[]>([]);
+  const [nextLink, setNextLink] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [filterError, setFilterError] = useState<string | null>(null);
+
+  const loadActivity = useCallback(async (next: ActivityFilters) => {
+    const errors = validateFilters(next);
+    setFilterError(errors[0] ?? null);
+    if (errors.length > 0) return;
+
+    setLoading(true);
+    try {
+      const res = await loadFilteredActivity(next);
+      setActivity(res.data?.items ?? []);
+      setNextLink(res.data?.nextLink ?? null);
+    } catch {
+      setActivity([]);
+      setNextLink(null);
+      Alert.alert('Error', 'Failed to load wallet activity.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadActivity(filters);
+  }, [filters, loadActivity]);
+
+  const handleLoadMore = useCallback(async () => {
+    if (!nextLink || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await loadNextActivityPage(nextLink);
+      if (page) {
+        setActivity((prev) => [...prev, ...page.items]);
+        setNextLink(page.nextLink);
+      } else {
+        setNextLink(null);
+      }
+    } catch {
+      Alert.alert('Error', 'Failed to load more activity.');
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [nextLink, loadingMore]);
+
+  const handleExport = useCallback(async () => {
+    const rangeError = validateExpenseDateRange(
+      filters.from ?? '',
+      filters.to ?? '',
+    );
+    if (rangeError) {
+      Alert.alert('Export unavailable', 'Choose a valid date range to export.');
+      return;
+    }
+    try {
+      await Share.share({
+        title: 'Wallet activity CSV',
+        message: buildActivityCsv(activity),
+      });
+    } catch {
+      Alert.alert('Error', 'Failed to export wallet activity.');
+    }
+  }, [activity, filters.from, filters.to]);
+
+  const toggleType = useCallback((type: ActivityType) => {
+    setFilters((prev) => ({ ...prev, type: prev.type === type ? undefined : type }));
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -140,6 +228,82 @@ const WalletScreen: React.FC = () => {
         <Text style={styles.empty}>No wallet available.</Text>
       )}
 
+      <Text style={styles.sectionHeading}>Activity</Text>
+
+      <View style={styles.filterBar}>
+        <Text style={styles.label}>From</Text>
+        <TextInput
+          accessibilityLabel="Activity start date"
+          placeholder="YYYY-MM-DD"
+          value={filters.from ?? ''}
+          onChangeText={(from) => setFilters((prev) => ({ ...prev, from: from || undefined }))}
+          style={styles.input}
+        />
+        <Text style={styles.label}>To</Text>
+        <TextInput
+          accessibilityLabel="Activity end date"
+          placeholder="YYYY-MM-DD"
+          value={filters.to ?? ''}
+          onChangeText={(to) => setFilters((prev) => ({ ...prev, to: to || undefined }))}
+          style={styles.input}
+        />
+        <View style={styles.chipRow}>
+          {ACTIVITY_TYPES.map((type) => (
+            <Pressable
+              key={type}
+              accessibilityRole="button"
+              accessibilityState={{ selected: filters.type === type }}
+              accessibilityLabel={`Filter by ${ACTIVITY_TYPE_LABELS[type]}`}
+              style={[styles.chip, filters.type === type && styles.chipSelected]}
+              onPress={() => toggleType(type)}
+            >
+              <Text style={styles.chipText}>{ACTIVITY_TYPE_LABELS[type]}</Text>
+            </Pressable>
+          ))}
+        </View>
+        {filterError ? <Text style={styles.error}>{filterError}</Text> : null}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Export wallet activity as CSV"
+          style={styles.copyButton}
+          onPress={handleExport}
+        >
+          <Text style={styles.copyButtonText}>Export CSV</Text>
+        </Pressable>
+      </View>
+
+      {loading ? <Text style={styles.empty}>Loading activity…</Text> : null}
+      {!loading && activity.length === 0 ? (
+        <Text style={styles.empty}>
+          {getEmptyStateMessage(filters, getActivityViewState(activity))}
+        </Text>
+      ) : null}
+      {activity.map((entry) => (
+        <View key={entry.id} style={styles.card}>
+          <Text
+            style={styles.label}
+            accessibilityLabel={getActivityAccessibilityLabel(entry)}
+          >
+            {entry.type ? `${ACTIVITY_TYPE_LABELS[entry.type]} · ` : ''}
+            {entry.amount} {entry.asset} · {entry.status}
+          </Text>
+          <Text style={styles.label}>{entry.createdAt.slice(0, 10)}</Text>
+        </View>
+      ))}
+      {nextLink ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Load more activity"
+          style={styles.copyButton}
+          onPress={handleLoadMore}
+          disabled={loadingMore}
+        >
+          <Text style={styles.copyButtonText}>
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </Text>
+        </Pressable>
+      ) : null}
+
       <Text style={styles.sectionHeading}>Records</Text>
       {records && records.length > 0 ? (
         records.map((record) => (
@@ -232,6 +396,42 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#888',
     lineHeight: 18,
+  },
+  filterBar: {
+    marginBottom: 12,
+  },
+  input: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d0d0d0',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: 8,
+  },
+  chip: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#d0d0d0',
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  chipSelected: {
+    backgroundColor: '#1f6feb',
+    borderColor: '#1f6feb',
+  },
+  chipText: {
+    fontSize: 13,
+  },
+  error: {
+    color: '#c62828',
+    marginBottom: 8,
   },
 });
 
