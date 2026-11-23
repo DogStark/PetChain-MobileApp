@@ -14,8 +14,12 @@ import Svg, {
 import { useAppTheme } from '../theme';
 import { normalizeWeightSeries, seriesHasMixedUnits, type WeightUnit } from './chartUnits';
 import {
+  buildAccessibleChartTable,
+  buildChartDataTable,
+  buildChartSummary,
+} from '../utils/a11yChartSummary';
+import {
   buildDataPointAccessibilityLabel,
-  buildWeightChartAccessibilityLabel,
   filterDataByRange,
   formatDateLabel,
   rangeLabel,
@@ -106,8 +110,37 @@ const WeightChart: React.FC<Props> = ({
   );
 
   const chartAccessibilityLabel = useMemo(
-    () => buildWeightChartAccessibilityLabel(petName, filteredData, selectedRange),
+    () =>
+      buildChartSummary({
+        chartType: 'weight',
+        metric: 'Weight',
+        unit: 'kg',
+        petName,
+        rangeLabel: rangeLabel(selectedRange),
+        dataPoints: filteredData.map((point) => ({
+          date: point.date,
+          value: point.weightKg,
+          note: point.note,
+        })),
+      }),
     [petName, filteredData, selectedRange],
+  );
+
+  const accessibleChartTable = useMemo(
+    () =>
+      buildAccessibleChartTable(
+        buildChartDataTable({
+          chartType: 'weight',
+          metric: 'Weight',
+          unit: 'kg',
+          dataPoints: filteredData.map((point) => ({
+            date: point.date,
+            value: point.weightKg,
+            note: point.note,
+          })),
+        }),
+      ),
+    [filteredData],
   );
 
   const chartWidth = SCREEN_WIDTH - 32; // Account for container padding
@@ -417,16 +450,20 @@ const WeightChart: React.FC<Props> = ({
             )}
           </View>
 
-          <View style={styles.accessiblePointsList} accessibilityRole="list">
-            {filteredData.map((point, idx) => (
+          <View
+            style={styles.accessiblePointsList}
+            accessibilityRole="list"
+            accessibilityLabel={accessibleChartTable.listLabel}
+          >
+            {accessibleChartTable.items.map((item) => (
               <Text
-                key={`${point.date}-${idx}`}
+                key={item.key}
                 accessible
                 accessibilityRole="text"
-                accessibilityLabel={buildDataPointAccessibilityLabel(point)}
+                accessibilityLabel={item.label}
                 style={styles.accessiblePointItem}
               >
-                {buildDataPointAccessibilityLabel(point)}
+                {item.label}
               </Text>
             ))}
           </View>
