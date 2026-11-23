@@ -1,11 +1,16 @@
 import crypto from 'crypto';
 
 import { store, type StoredReferral, type StoredReferralCredit } from '../server/store';
+import { SUBSCRIPTION_PLANS } from '../models/Payment';
+import { decimalToUnits, unitsToDecimal } from '../utils/decimal';
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 8;
 const PREMIUM_DAYS_PER_CONVERSION = 30;
 const MAX_PENDING_PER_DEVICE = 3;
+const CREDIT_SCALE = 2;
+const DEFAULT_INVOICE_PLAN = 'premium_monthly' as const;
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9:_-]{1,200}$/;
 
 export interface ReferralFraudSignals {
   deviceFingerprint?: string;
@@ -29,6 +34,26 @@ export interface ReferralStats {
     blockReason?: string;
   }>;
   credits: StoredReferralCredit[];
+}
+
+export interface ReferralRedemptionResult {
+  redemptionId: string;
+  userId: string;
+  idempotencyKey: string;
+  requestedAmount: number;
+  appliedAmount: number;
+  invoiceTotal: number;
+  invoiceRemaining: number;
+  creditIds: string[];
+  createdAt: string;
+  replayed: boolean;
+}
+
+export interface RedeemReferralCreditsInput {
+  userId: string;
+  amount: number;
+  idempotencyKey: string;
+  invoiceTotal?: number;
 }
 
 function hashSignal(value?: string): string | undefined {
@@ -214,6 +239,84 @@ export function completeReferralConversion(
   return { referral: converted, credit };
 }
 
+export function redeemReferralCredits(input: RedeemReferralCreditsInput): ReferralRedemptionResult {
+  const { userId, amount, idempotencyKey } = input;
+  const key = idempotencyKey?.trim();
+
+  if (!key || !IDEMPOTENCY_KEY_PATTERN.test(key)) {
+    throw new Error('Invalid idempotency key');
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('Redemption amount must be greater than zero');
+  }
+
+  const requestedUnits = decimalToUnits(amount.toFixed(CREDIT_SCALE), CREDIT_SCALE);
+  if (requestedUnits <= 0n) {
+    throw new Error('Redemption amount must be greater than zero');
+  }
+
+  const scopedKey = `${userId}:${key}`;
+  const previous = store.referralRedemptions.get(scopedKey);
+  if (previous) {
+    if (previous.requestedAmount !== amount) {
+      throw new Error('Idempotency key was already used for a different redemption');
+    }
+    return { ...previous, replayed: true };
+  }
+
+  const invoiceTotal = input.invoiceTotal ?? Number(SUBSCRIPTION_PLANS[DEFAULT_INVOICE_PLAN].priceMonthly);
+  if (!Number.isFinite(invoiceTotal) || invoiceTotal < 0) {
+    throw new Error('Invalid invoice total');
+  }
+  const invoiceUnits = decimalToUnits(invoiceTotal.toFixed(CREDIT_SCALE), CREDIT_SCALE);
+
+  const activeCredits = [...store.referralCredits.values()]
+    .filter((credit) => credit.userId === userId && credit.status === 'active')
+    .sort((a, b) => new Date(a.awardedAt).getTime() - new Date(b.awardedAt).getTime());
+
+  const availableUnits = activeCredits.reduce(
+    (sum, credit) => sum + decimalToUnits(credit.amount.toFixed(CREDIT_SCALE), CREDIT_SCALE),
+    0n,
+  );
+
+  if (availableUnits <= 0n) {
+    throw new Error('No referral credits available');
+  }
+
+  const appliedUnits = requestedUnits < availableUnits ? requestedUnits : availableUnits;
+  if (appliedUnits > invoiceUnits) {
+    throw new Error('Redemption amount exceeds invoice total');
+  }
+
+  const t = new Date().toISOString();
+  const creditIds: string[] = [];
+  let remaining = appliedUnits;
+  for (const credit of activeCredits) {
+    if (remaining <= 0n) break;
+    const creditUnits = decimalToUnits(credit.amount.toFixed(CREDIT_SCALE), CREDIT_SCALE);
+    if (creditUnits <= remaining) {
+      store.referralCredits.set(credit.id, { ...credit, status: 'redeemed' });
+      creditIds.push(credit.id);
+      remaining -= creditUnits;
+    }
+  }
+
+  const redemption = {
+    id: store.newId(),
+    userId,
+    idempotencyKey: key,
+    requestedAmount: amount,
+    appliedAmount: Number(unitsToDecimal(appliedUnits, CREDIT_SCALE)),
+    invoiceTotal,
+    invoiceRemaining: Number(unitsToDecimal(invoiceUnits - appliedUnits, CREDIT_SCALE)),
+    creditIds,
+    createdAt: t,
+  };
+  store.referralRedemptions.set(scopedKey, redemption);
+
+  return { ...redemption, replayed: false };
+}
+
 export function getReferralStats(userId: string): ReferralStats {
   const code = ensureReferralCode(userId);
   const referrals = [...store.referrals.values()].filter((row) => row.referrerUserId === userId);
@@ -246,5 +349,6 @@ export default {
   ensureReferralCode,
   createPendingReferral,
   completeReferralConversion,
+  redeemReferralCredits,
   getReferralStats,
 };
