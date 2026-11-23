@@ -49,6 +49,8 @@ const POLL_INTERVAL_MS = 30_000;
 interface Props {
   /** ID of the currently authenticated user */
   userId: string;
+  /** When true, only active (WAITING / NOTIFIED) entries are listed */
+  activeOnly?: boolean;
   /** Called when the user successfully accepts a slot and an appointment should be created */
   onSlotAccepted?: (entry: WaitlistEntry, appointmentId: string) => void;
   /** Optional back navigation callback */
