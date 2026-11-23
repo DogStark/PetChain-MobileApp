@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 
 import { TrustBadge } from '../components/TrustBadge';
+import { reviewService } from '../services/reviewService';
 import type { MedicalRecord } from '../services/medicalRecordService';
 import {
   clearVerificationCache,

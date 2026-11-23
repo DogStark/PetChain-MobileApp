@@ -50,6 +50,7 @@ import {
   removeAppointmentFromCalendar,
 } from '../services/calendarSyncService';
 import { getMedications } from '../services/medicationService';
+import { reviewService } from '../services/reviewService';
 import { formatLocalDate, formatLocalTime } from '../utils/dateLocale';
 import { useSecureScreen } from '../utils/secureScreen';
 
@@ -395,6 +396,7 @@ const AppointmentScreen: React.FC = () => {
 
       const saved = result.appointment;
       attemptRef.current = null;
+      reviewService.notifyPositiveAction('appointment_booked');
       // Schedule 24h and 1h reminders
       await scheduleAppointmentReminders(saved).catch(() => {});
       // Sync to device calendar
