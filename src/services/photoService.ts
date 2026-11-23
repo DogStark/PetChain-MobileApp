@@ -237,6 +237,10 @@ function getSourceSize(localUri: string): Promise<{ width: number; height: numbe
  *   - Capture timestamps
  *   - Embedded EXIF thumbnail previews (which retain their own GPS copy)
  *
+ * The result is then verified with {@link assertNoExifMetadata}, which walks
+ * the JPEG marker chain and rejects the upload if any APP1/APP13/APP14 segment
+ * survived (issue #1378).
+ *
  * ## Orientation
  *
  * Decoding applies the source EXIF `Orientation` tag, so the bitmap handed to
@@ -295,17 +299,22 @@ export async function stripExifAndCompress(
     base64: true,
   });
 
+  // Fail closed if the re-encode left any EXIF/XMP/IPTC block behind.
+  if (processed.base64) {
+    assertNoExifMetadata(processed.base64);
+  }
+
   // Compute a SHA-256 checksum of the processed image bytes.
   // expo-image-manipulator can return base64 when requested; we use that to
   // feed CryptoJS without an extra file read.
   let checksumSha256 = '';
-  if (compressed.base64) {
-    const wordArray = CryptoJS.enc.Base64.parse(compressed.base64);
+  if (processed.base64) {
+    const wordArray = CryptoJS.enc.Base64.parse(processed.base64);
     checksumSha256 = CryptoJS.SHA256(wordArray).toString(CryptoJS.enc.Hex);
   } else {
     // Fallback: read the file from disk and hash it
     try {
-      const base64Content = await FileSystem.readAsStringAsync(compressed.uri, {
+      const base64Content = await FileSystem.readAsStringAsync(processed.uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
       const wordArray = CryptoJS.enc.Base64.parse(base64Content);
@@ -317,7 +326,7 @@ export async function stripExifAndCompress(
   }
 
   // Rough size estimate: dimensions × 3 bytes/pixel × compress factor
-  const estimatedBytes = Math.round(compressed.width * compressed.height * 3 * compress * 0.1);
+  const estimatedBytes = Math.round(processed.width * processed.height * 3 * compress * 0.1);
 
   return {
     uri: processed.uri,
@@ -366,6 +375,88 @@ export function verifyProcessedOutput(
   if (Math.abs(sourceRatio - outputRatio) / sourceRatio > tolerance) {
     throw new PhotoValidationError(
       `Aspect ratio changed during processing (${sourceRatio.toFixed(3)} -> ${outputRatio.toFixed(3)}); orientation may have been lost.`,
+      'VERIFICATION_FAILED',
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXIF VERIFICATION  (Issue #1378)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Metadata segments that must never appear in an uploaded JPEG. */
+const FORBIDDEN_JPEG_SEGMENTS = [
+  { marker: 0xe1, name: 'APP1 (EXIF/XMP)' },
+  { marker: 0xed, name: 'APP13 (IPTC/Photoshop)' },
+  { marker: 0xee, name: 'APP14 (Adobe)' },
+] as const;
+
+/**
+ * Scan the JPEG byte stream for metadata segments (EXIF/XMP/IPTC).
+ *
+ * The re-encode is what removes metadata, but nothing previously *checked* the
+ * result. This walks the JPEG marker chain and reports any APP1/APP13/APP14
+ * segment, which is where GPS coordinates, camera make/model, body serial
+ * number and capture timestamps live.
+ *
+ * @param bytes raw JPEG bytes (e.g. decoded from the manipulator's base64)
+ * @returns names of the metadata segments found; empty when the file is clean
+ */
+export function findJpegMetadataSegments(bytes: Uint8Array): string[] {
+  const found: string[] = [];
+
+  // JPEG must start with SOI (0xFFD8).
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    return found;
+  }
+
+  let offset = 2;
+  while (offset + 3 < bytes.length) {
+    if (bytes[offset] !== 0xff) break;
+    const marker = bytes[offset + 1];
+
+    // Standalone markers carry no length field.
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      offset += 2;
+      continue;
+    }
+    // Start of scan / end of image — no metadata follows.
+    if (marker === 0xda || marker === 0xd9) break;
+
+    const length = (bytes[offset + 2] << 8) | bytes[offset + 3];
+    if (length < 2) break;
+
+    const forbidden = FORBIDDEN_JPEG_SEGMENTS.find((s) => s.marker === marker);
+    if (forbidden) found.push(forbidden.name);
+
+    offset += 2 + length;
+  }
+
+  return found;
+}
+
+/**
+ * Assert that a processed image carries no EXIF/XMP/IPTC metadata.
+ *
+ * Throws {@link PhotoValidationError} with code `VERIFICATION_FAILED` when any
+ * metadata segment survives, so a regression in the processing pipeline can
+ * never silently upload GPS coordinates.
+ *
+ * @param base64 base64-encoded JPEG bytes returned by the manipulator
+ */
+export function assertNoExifMetadata(base64: string): void {
+  if (!base64) return;
+
+  const wordArray = CryptoJS.enc.Base64.parse(base64);
+  const bytes = new Uint8Array(wordArray.sigBytes);
+  for (let i = 0; i < wordArray.sigBytes; i += 1) {
+    bytes[i] = (wordArray.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+  }
+
+  const segments = findJpegMetadataSegments(bytes);
+  if (segments.length > 0) {
+    throw new PhotoValidationError(
+      `Processed image still contains metadata (${segments.join(', ')}); refusing to upload.`,
       'VERIFICATION_FAILED',
     );
   }
