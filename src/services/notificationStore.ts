@@ -10,7 +10,7 @@ import { initializeLocalDatabase } from './localDB';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type NotificationCategory = 'medication' | 'appointment' | 'sos' | 'system';
+export type NotificationCategory = 'medication' | 'appointment' | 'sos' | 'system' | 'milestone';
 
 export interface NavPayload {
   screen: string;
