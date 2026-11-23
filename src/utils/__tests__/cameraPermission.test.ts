@@ -1,5 +1,7 @@
 import {
   cameraPermissionAllowsCamera,
+  cameraPermissionNeedsRationale,
+  cameraPermissionNeedsSettingsPrompt,
   cameraPermissionRequiresSettings,
   resolveCameraPermissionState,
 } from '../cameraPermission';
@@ -69,6 +71,33 @@ describe('cameraPermission state resolution (Issue #936)', () => {
       expect(cameraPermissionAllowsCamera('granted')).toBe(true);
       expect(cameraPermissionAllowsCamera('denied')).toBe(false);
       expect(cameraPermissionAllowsCamera('denied-permanently')).toBe(false);
+    });
+  });
+
+  describe('cameraPermissionNeedsRationale (Issue #1351)', () => {
+    it('shows the rationale before the first system request', () => {
+      expect(cameraPermissionNeedsRationale('undetermined')).toBe(true);
+    });
+
+    it('does not show the rationale once the user has decided', () => {
+      expect(cameraPermissionNeedsRationale('granted')).toBe(false);
+      expect(cameraPermissionNeedsRationale('denied')).toBe(false);
+      expect(cameraPermissionNeedsRationale('denied-permanently')).toBe(false);
+      expect(cameraPermissionNeedsRationale('restricted')).toBe(false);
+      expect(cameraPermissionNeedsRationale('unavailable')).toBe(false);
+    });
+  });
+
+  describe('cameraPermissionNeedsSettingsPrompt (Issue #1351)', () => {
+    it('prompts for settings when the user denied permanently', () => {
+      expect(cameraPermissionNeedsSettingsPrompt('denied-permanently')).toBe(true);
+      expect(cameraPermissionNeedsSettingsPrompt('restricted')).toBe(true);
+    });
+
+    it('does not prompt for settings while the OS can still ask', () => {
+      expect(cameraPermissionNeedsSettingsPrompt('undetermined')).toBe(false);
+      expect(cameraPermissionNeedsSettingsPrompt('denied')).toBe(false);
+      expect(cameraPermissionNeedsSettingsPrompt('granted')).toBe(false);
     });
   });
 });
