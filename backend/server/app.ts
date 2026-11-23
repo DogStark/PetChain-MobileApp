@@ -44,6 +44,7 @@ import usersRouter from './routes/users';
 import vaccinationsRouter from './routes/vaccinations';
 import vetsRouter from './routes/vets';
 import vitalsRouter from './routes/vitals';
+import webhooksRouter from './routes/webhooks';
 import { getPoolStats } from '../config/database';
 import { attachAudit } from '../middleware/auditLog';
 import { authRateLimiter, dataRateLimiter, publicRateLimiter } from '../middleware/rateLimiter';
@@ -206,6 +207,7 @@ export function createApp(): Express {
   api.use('/notifications', dataRateLimiter, notificationsRouter);
   api.use('/notification-templates', dataRateLimiter, notificationTemplatesRouter);
   api.use('/reminders', remindersRouter);
+  api.use('/webhooks', dataRateLimiter, webhooksRouter);
 
   app.use('/api', api);
 
