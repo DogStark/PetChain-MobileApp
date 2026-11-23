@@ -247,6 +247,56 @@ export function getDrugsForSpecies(species: Species): DrugRecord[] {
   return DRUG_DATABASE.filter((d) => d.dosageBySpecies[species] !== undefined);
 }
 
+export interface DrugSearchResult {
+  drug: DrugRecord;
+  /** Suggested dose amounts (in `unit`) for the drug's tablet strength. */
+  dosageOptions: string[];
+  unit: DoseUnit;
+  /** Suggested dosing intervals in hours between doses. */
+  frequencyOptions: number[];
+}
+
+const DEFAULT_FREQUENCY_OPTIONS = [8, 12, 24];
+
+function dosageOptionsFor(drug: DrugRecord): string[] {
+  const strength = drug.tabletStrength;
+  if (strength === undefined) return [];
+  const options = [strength, strength / 2, strength * 2].filter(
+    (value) => Number.isFinite(value) && value > 0,
+  );
+  return Array.from(new Set(options.map((value) => `${Number(value.toFixed(2))}${drug.defaultUnit}`)));
+}
+
+/**
+ * Offline autocomplete over the bundled drug database. Matches on brand name,
+ * generic name and drug class, ranked by name prefix, then name substring.
+ */
+export function searchDrugs(query: string, limit = 8): DrugSearchResult[] {
+  const term = query.trim().toLowerCase();
+  if (term.length < 2) return [];
+
+  const scored = DRUG_DATABASE.map((drug) => {
+    const name = drug.name.toLowerCase();
+    const generic = drug.genericName.toLowerCase();
+    let score = -1;
+    if (name.startsWith(term)) score = 0;
+    else if (generic.startsWith(term)) score = 1;
+    else if (name.includes(term)) score = 2;
+    else if (generic.includes(term)) score = 3;
+    else if (drug.drugClass.toLowerCase().includes(term)) score = 4;
+    return { drug, score };
+  })
+    .filter((entry) => entry.score >= 0)
+    .sort((a, b) => a.score - b.score || a.drug.name.localeCompare(b.drug.name));
+
+  return scored.slice(0, limit).map(({ drug }) => ({
+    drug,
+    dosageOptions: dosageOptionsFor(drug),
+    unit: drug.defaultUnit,
+    frequencyOptions: DEFAULT_FREQUENCY_OPTIONS,
+  }));
+}
+
 export function getSafetyWarnings(drugId: string, species: Species, dosePerKg: number): string[] {
   const result = lookupDrug(drugId, species);
   if (!result) return [`Unknown drug: ${drugId}`];
