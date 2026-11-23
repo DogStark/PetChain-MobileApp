@@ -35,4 +35,5 @@ export const CACHE_TTL = {
   PET: 3600, // 1 hour
   VET: 21600, // 6 hours
   BREED: 86400, // 24 hours
+  HEALTH_SUMMARY: 60, // 60 seconds
 } as const;

@@ -42,12 +42,14 @@ export function cacheMiddleware(
     // ── Cache hit ──────────────────────────────────────────────────────────
     const cached = await get<unknown>(key);
     if (cached !== null) {
+      console.info('[cache] hit', { key, path: req.originalUrl });
       res.setHeader('X-Cache', 'HIT');
       res.json(cached);
       return;
     }
 
     // ── Cache miss — intercept the response ────────────────────────────────
+    console.info('[cache] miss', { key, path: req.originalUrl });
     res.setHeader('X-Cache', 'MISS');
 
     // Monkey-patch res.json to capture the outgoing payload
@@ -91,6 +93,17 @@ export function petsByOwnerCacheMiddleware(): RequestHandler {
       'unknown';
     return CacheKeys.petsByOwner(ownerId);
   }, CACHE_TTL.PET);
+}
+
+/**
+ * Cache middleware for `GET /api/pets/:id/health-summary`.
+ * Key: `petchain:cache:pet:<id>:health-summary`  TTL: 60 seconds
+ */
+export function petHealthSummaryCacheMiddleware(): RequestHandler {
+  return cacheMiddleware(
+    (req) => CacheKeys.petHealthSummary(String(req.params.id)),
+    CACHE_TTL.HEALTH_SUMMARY,
+  );
 }
 
 /**
