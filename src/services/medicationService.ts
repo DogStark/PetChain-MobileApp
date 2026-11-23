@@ -370,3 +370,118 @@ export async function scheduleDoseReminder(
 export async function cancelDoseReminder(notificationId: string): Promise<void> {
   await Notifications.cancelScheduledNotificationAsync(notificationId);
 }
+
+// ── Time-zone aware scheduling (#1359) ───────────────────────────────────────
+
+/** A dose occurrence that is (or should be) backed by a local notification. */
+export interface ScheduledDose {
+  medicationId: string;
+  /** Existing notification id, when the dose is already scheduled. */
+  notificationId?: string;
+  /** Absolute instant of the dose. */
+  fireDate: string | Date;
+}
+
+/** Result of diffing existing notifications against the desired schedule. */
+export interface DoseReconciliation {
+  /** Notification ids that must be cancelled (stale or duplicated). */
+  toCancel: string[];
+  /** Doses that still need a notification scheduled. */
+  toSchedule: ScheduledDose[];
+  /** Notification ids that already match a desired dose. */
+  keep: string[];
+}
+
+/** The pet's home time zone, falling back to the device zone then UTC. */
+export function resolveHomeTimezone(medication?: Pick<Medication, 'reminders'>): string {
+  const stored = medication?.reminders?.timezone;
+  if (stored) return stored;
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+/**
+ * Stable identity for a scheduled dose: medication + absolute instant snapped
+ * to the whole minute. The same instant expressed in any time zone (or offset)
+ * yields the same key, so travel/DST never forks a dose.
+ */
+export function doseIdentityKey(dose: ScheduledDose): string {
+  const ms = dose.fireDate instanceof Date ? dose.fireDate.getTime() : new Date(dose.fireDate).getTime();
+  if (Number.isNaN(ms)) {
+    throw new Error('doseIdentityKey: invalid fireDate');
+  }
+  return scheduledDoseId(dose.medicationId, ms);
+}
+
+/**
+ * Diff the notifications currently scheduled against the desired dose list.
+ *
+ * Doses are matched by absolute identity, so a schedule recomputed after a
+ * time-zone change keeps every notification whose instant is unchanged and
+ * only cancels/re-creates the ones that actually moved. Exact duplicates for
+ * the same instant are collapsed to the first notification.
+ */
+export function reconcileDoseSchedules(
+  existing: ScheduledDose[],
+  desired: ScheduledDose[],
+): DoseReconciliation {
+  const desiredKeys = new Set(desired.map(doseIdentityKey));
+  const toCancel: string[] = [];
+  const keep: string[] = [];
+  const seen = new Set<string>();
+
+  for (const dose of existing) {
+    const key = doseIdentityKey(dose);
+    if (!desiredKeys.has(key) || seen.has(key)) {
+      if (dose.notificationId) toCancel.push(dose.notificationId);
+      continue;
+    }
+    seen.add(key);
+    if (dose.notificationId) keep.push(dose.notificationId);
+  }
+
+  const toSchedule = desired.filter((dose) => !seen.has(doseIdentityKey(dose)));
+  return { toCancel, toSchedule, keep };
+}
+
+/**
+ * Reconcile upcoming reminders after the device time zone changed so local
+ * dose times are preserved. Returns the reconciliation plus a user-facing
+ * message when anything was adjusted (null when nothing changed).
+ */
+export async function reconcileRemindersForTimezoneChange(
+  medications: Medication[],
+  existing: ScheduledDose[],
+  now: Date = new Date(),
+): Promise<{ reconciliation: DoseReconciliation; notification: string | null }> {
+  const desired: ScheduledDose[] = [];
+  for (const med of medications) {
+    if (med.status && med.status !== 'active') continue;
+    if (!med.reminders?.enabled) continue;
+    const horizon = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    for (const dose of getScheduleForRange(med, now, horizon)) {
+      desired.push({ medicationId: med.id, fireDate: dose });
+    }
+  }
+
+  const reconciliation = reconcileDoseSchedules(existing, desired);
+  for (const id of reconciliation.toCancel) {
+    await cancelDoseReminder(id);
+  }
+  for (const dose of reconciliation.toSchedule) {
+    const med = medications.find((m) => m.id === dose.medicationId);
+    await scheduleDoseReminder(dose.medicationId, med?.name ?? 'medication', dose.fireDate);
+  }
+
+  const adjusted = reconciliation.toCancel.length + reconciliation.toSchedule.length;
+  return {
+    reconciliation,
+    notification:
+      adjusted > 0
+        ? `Your time zone changed. ${adjusted} medication reminder${adjusted === 1 ? '' : 's'} were adjusted to keep your local dose times.`
+        : null,
+  };
+}
