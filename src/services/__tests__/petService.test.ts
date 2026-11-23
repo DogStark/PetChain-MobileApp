@@ -32,6 +32,10 @@ jest.mock('../offlineQueue', () => ({
   },
 }));
 
+jest.mock('../../utils/encryption/keychain', () => ({
+  getCurrentAccountId: jest.fn(() => 'account-1'),
+}));
+
 import apiClient from '../apiClient';
 import { getItem, setItem, removeItem } from '../localDB';
 import {
@@ -43,6 +47,8 @@ import {
   deletePet,
   uploadPetPhoto,
   PetServiceError,
+  cancelPendingPetRequests,
+  _getInflightPetRequestCount,
 } from '../petService';
 import { scanQRCode } from '../qrCodeService';
 import offlineQueue from '../offlineQueue';
@@ -99,7 +105,7 @@ describe('petService', () => {
 
     const result = await getPetById('pet-1');
 
-    expect(mockGet).toHaveBeenCalledWith('/pets/pet-1');
+    expect(mockGet).toHaveBeenCalledWith('/pets/pet-1', { signal: expect.anything() });
     expect(result).toEqual(PET);
   });
 
@@ -124,7 +130,7 @@ describe('petService', () => {
       status: 403,
     });
 
-    expect(mockGet).toHaveBeenCalledWith('/pets/pet-1');
+    expect(mockGet).toHaveBeenCalledWith('/pets/pet-1', { signal: expect.anything() });
   });
 
   it('does not serve cached pet data after the server denies access', async () => {

@@ -3,6 +3,7 @@ import * as SecureStore from 'expo-secure-store';
 
 import sessionMonitoringService from './sessionMonitoringService';
 import { incrementLogoutGeneration } from './apiClient';
+import { cancelPendingPetRequests } from './petService';
 import type {
   LoginRequest,
   LoginResponse,
@@ -415,6 +416,10 @@ async function clearTokensIfCurrent(generation: number): Promise<void> {
 }
 
 export async function logout(): Promise<void> {
+  // Cancel in-flight pet detail requests so a previous account's data can
+  // never resolve into the next session (#1073).
+  cancelPendingPetRequests();
+
   await Promise.allSettled([
     syncEngine.clearAll(),
     offlineQueue.clearAll(),

@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 import apiClient from './apiClient';
+import { getCurrentAccountId } from '../utils/encryption/keychain';
 import { getItem, setItem, removeItem } from './localDB';
 import offlineQueue from './offlineQueue';
 import { scanQRCode, type QRScanResult } from './qrCodeService';
@@ -265,16 +266,46 @@ export async function getAllPets(): Promise<Pet[]> {
   }
 }
 
-export async function getPetById(petId: string): Promise<Pet> {
-  const id = petId.trim();
-  if (!id) {
-    const err = new PetServiceError('Pet ID is required', 'INVALID_PET_ID');
-    logPetError(err, { service: 'petService', action: 'validation' });
-    throw err;
-  }
+// ─── Pet detail request deduplication (Issue #1073) ──────────────────────────
+// Concurrent callers for the same account + pet id share a single in-flight
+// request.  The entry is dropped as soon as the request settles, so a later
+// call (or an explicit `refresh`) always starts a fresh request.
 
+export interface GetPetByIdOptions {
+  /** Bypass the in-flight entry and start a new request. */
+  refresh?: boolean;
+}
+
+interface InflightPetRequest {
+  promise: Promise<Pet>;
+  /** Aborts the underlying request when the session ends. */
+  abort: () => void;
+}
+
+const inflightPetRequests = new Map<string, InflightPetRequest>();
+
+function petRequestKey(accountId: string | null, petId: string): string {
+  return `${accountId ?? 'anonymous'}:${petId}`;
+}
+
+/**
+ * Cancel every pending pet detail request (called on logout so a previous
+ * account's data can never resolve into the next session).
+ */
+export function cancelPendingPetRequests(): void {
+  const pending = Array.from(inflightPetRequests.values());
+  inflightPetRequests.clear();
+  pending.forEach((entry) => entry.abort());
+}
+
+/** Exposed for testing only. */
+export function _getInflightPetRequestCount(): number {
+  return inflightPetRequests.size;
+}
+
+async function fetchPetById(id: string, signal: AbortSignal): Promise<Pet> {
   try {
-    const response = await apiClient.get(`/pets/${encodeURIComponent(id)}`);
+    const response = await apiClient.get(`/pets/${encodeURIComponent(id)}`, { signal });
     const pet = unwrapApiData(response.data);
     await setItem(`${PET_CACHE_PREFIX}${pet.id}`, JSON.stringify(pet));
     return pet;
@@ -287,6 +318,32 @@ export async function getPetById(petId: string): Promise<Pet> {
     if (cached) return cached;
     throw toPetServiceError(error, { action: 'get_pet_by_id', petId: id });
   }
+}
+
+export async function getPetById(petId: string, options: GetPetByIdOptions = {}): Promise<Pet> {
+  const id = petId.trim();
+  if (!id) {
+    const err = new PetServiceError('Pet ID is required', 'INVALID_PET_ID');
+    logPetError(err, { service: 'petService', action: 'validation' });
+    throw err;
+  }
+
+  const key = petRequestKey(getCurrentAccountId(), id);
+
+  if (options.refresh !== true) {
+    const existing = inflightPetRequests.get(key);
+    if (existing) return existing.promise;
+  }
+
+  const controller = new AbortController();
+  const promise = fetchPetById(id, controller.signal).finally(() => {
+    if (inflightPetRequests.get(key)?.promise === promise) {
+      inflightPetRequests.delete(key);
+    }
+  });
+
+  inflightPetRequests.set(key, { promise, abort: () => controller.abort() });
+  return promise;
 }
 
 export async function getPetByQRCode(qrCode: string): Promise<Pet> {
