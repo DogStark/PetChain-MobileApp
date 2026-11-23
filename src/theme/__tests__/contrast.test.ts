@@ -1,4 +1,4 @@
-import { darkTheme, lightTheme } from '../colors';
+import { darkOledTheme, darkTheme, lightTheme } from '../colors';
 import { contrastRatio, passesWcagAA } from '../contrast';
 
 describe('theme contrast', () => {
@@ -47,6 +47,30 @@ describe('theme contrast', () => {
       expect(passesWcagAA(lightTheme.error, bg)).toBe(true);
       expect(passesWcagAA(lightTheme.success, bg)).toBe(true);
       expect(passesWcagAA(lightTheme.notification, bg)).toBe(true);
+    }
+  });
+
+  it('keeps OLED dark mode text pairs above WCAG AA contrast', () => {
+    const oledBackgrounds = [
+      darkOledTheme.background,
+      darkOledTheme.surface,
+      darkOledTheme.card,
+      darkOledTheme.cardElevated,
+      darkOledTheme.input,
+      darkOledTheme.subtle,
+      darkOledTheme.muted,
+    ];
+
+    for (const bg of oledBackgrounds) {
+      expect(passesWcagAA(darkOledTheme.text, bg)).toBe(true);
+      expect(passesWcagAA(darkOledTheme.secondaryText, bg)).toBe(true);
+      expect(passesWcagAA(darkOledTheme.placeholder, bg)).toBe(true);
+      expect(passesWcagAA(darkOledTheme.accent, bg)).toBe(true);
+      expect(passesWcagAA(darkOledTheme.info, bg)).toBe(true);
+      expect(passesWcagAA(darkOledTheme.warning, bg)).toBe(true);
+      expect(passesWcagAA(darkOledTheme.error, bg)).toBe(true);
+      expect(passesWcagAA(darkOledTheme.success, bg)).toBe(true);
+      expect(passesWcagAA(darkOledTheme.notification, bg)).toBe(true);
     }
   });
 

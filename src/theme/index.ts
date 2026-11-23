@@ -1,6 +1,6 @@
 import { AccessibilityInfo } from 'react-native';
 import { useEffect, useState } from 'react';
-import { darkTheme, lightTheme, navigationDarkTheme, navigationLightTheme } from './colors';
+import { darkOledTheme, darkTheme, lightTheme, navigationDarkOledTheme, navigationDarkTheme, navigationLightTheme } from './colors';
 import { tokens } from './tokens';
 import { useTheme as useThemePreference } from '../context/ThemeContext';
 
@@ -19,7 +19,11 @@ export function useAppTheme() {
  */
 export function useNavigationTheme() {
   const { theme } = useThemePreference();
-  return theme === 'dark' ? navigationDarkTheme : navigationLightTheme;
+  return theme === 'dark-oled'
+    ? navigationDarkOledTheme
+    : theme === 'dark'
+      ? navigationDarkTheme
+      : navigationLightTheme;
 }
 
 /**
@@ -72,5 +76,14 @@ export function useMotionConfig() {
   };
 }
 
-export { tokens, lightTheme, darkTheme, navigationLightTheme, navigationDarkTheme };
+export {
+  tokens,
+  oledBackgroundTokens,
+  lightTheme,
+  darkTheme,
+  darkOledTheme,
+  navigationLightTheme,
+  navigationDarkTheme,
+  navigationDarkOledTheme,
+};
 export { contrastRatio, passesWcagAA } from './contrast';

@@ -925,7 +925,7 @@ const SettingsScreen: React.FC<Props> = ({ onLogout, onOpenSyncRetryDetail }) =>
       {/* ── Theme ── */}
       <SectionHeader title={t('settings.theme', 'Theme')} />
       <View style={cardStyle}>
-        {(['system', 'light', 'dark'] as ThemeMode[]).map((option, idx, arr) => (
+        {(['system', 'light', 'dark', 'dark-oled'] as ThemeMode[]).map((option, idx, arr) => (
           <React.Fragment key={option}>
             <TouchableOpacity
               style={styles.row}
@@ -938,7 +938,9 @@ const SettingsScreen: React.FC<Props> = ({ onLogout, onOpenSyncRetryDetail }) =>
                   ? t('settings.themeSystem', 'Follow system')
                   : option === 'light'
                     ? t('settings.themeLight', 'Light')
-                    : t('settings.themeDark', 'Dark')}
+                    : option === 'dark'
+                      ? t('settings.themeDark', 'Dark')
+                      : t('settings.themeDarkOled', 'Dark (OLED black)')}
               </Text>
               {themeMode === option && <Text style={styles.checkmark}>✓</Text>}
             </TouchableOpacity>
