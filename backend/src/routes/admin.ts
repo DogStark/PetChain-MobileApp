@@ -15,7 +15,8 @@ import {
   listSupportRequests,
   updateSupportRequest,
 } from '../../server/supportRequests';
-import { getAllSyncResults, getSyncResults } from '../../services/shelterIntegrationService';
+import { logAuditTrail } from '../../middleware/auditLogger';
+import shelterIntegrationService from '../../services/shelterIntegrationService';
 
 const router = Router();
 
@@ -422,6 +423,44 @@ router.get('/analytics/export.csv', async (req, res) => {
 
 router.get('/metrics', (req, res) => {
   return res.json(ok(getServerMetrics(req as AuthenticatedRequest)));
+});
+
+router.post('/shelters/:id/sync', async (req, res) => {
+  const shelterId = req.params.id;
+
+  try {
+    const run = await shelterIntegrationService.runShelterSync(shelterId);
+
+    void logAuditTrail({
+      req: req as AuthenticatedRequest,
+      entityType: 'shelter',
+      entityId: shelterId,
+      action: 'UPDATE',
+      before: null,
+      after: {
+        syncId: run.result.id,
+        status: run.result.status,
+        attempts: run.attempts,
+        recordsAdded: run.result.recordsAdded,
+        recordsUpdated: run.result.recordsUpdated,
+        errors: run.result.errors,
+        syncedAt: run.result.syncedAt,
+      },
+    });
+
+    return res.json(ok(run, 'Shelter sync completed'));
+  } catch (err) {
+    return sendError(
+      res,
+      500,
+      'SYNC_FAILED',
+      err instanceof Error ? err.message : 'Shelter sync failed',
+    );
+  }
+});
+
+router.get('/shelters/:id/sync/status', (req, res) => {
+  return res.json(ok(shelterIntegrationService.getShelterSyncStatus(req.params.id)));
 });
 
 router.get('/support-requests', (_req, res) => {
