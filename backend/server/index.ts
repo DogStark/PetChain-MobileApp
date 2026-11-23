@@ -2,6 +2,7 @@ import http from 'http';
 
 import { createApp, setReadiness } from './app';
 import { checkDatabaseConnection, runMigrations } from '../config/database';
+import { getRedisClient } from '../config/redis';
 import apiKeyService from '../services/apiKeyService';
 import { startDataRetentionJob } from '../services/dataRetentionService';
 import { startReceiptCheckJob, startScheduledProcessor } from '../services/pushService';
@@ -40,6 +41,9 @@ async function start(): Promise<void> {
   logger.info('[server] Database connection verified.');
 
   await runMigrations();
+
+  // Per-API-key rate limits are counted in Redis, separate from IP-based limits.
+  apiKeyService.setRateLimitRedis(getRedisClient());
 
   const app = createApp();
   const server = http.createServer(app);
