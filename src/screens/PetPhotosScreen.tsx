@@ -58,6 +58,10 @@ import { logError } from '../utils/errorLogger';
 
 const PAGE_SIZE = 20;
 
+/** Number of grid rows rendered eagerly; the rest load as they scroll into view. */
+const INITIAL_ROWS = 2;
+const NUM_COLUMNS = 3;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,6 +71,35 @@ interface Props {
   petName: string;
   onBack: () => void;
 }
+
+interface PhotoGridItemProps {
+  photo: PetPhoto;
+  visible: boolean;
+  onPress: (photo: PetPhoto) => void;
+}
+
+/**
+ * Grid cell that only mounts its `OptimizedImage` once the cell has been
+ * rendered by the list (i.e. is at or near the viewport), so off-screen
+ * photos are never fetched.
+ */
+const PhotoGridItem: React.FC<PhotoGridItemProps> = ({ photo, visible, onPress }) => (
+  <TouchableOpacity
+    style={styles.thumb}
+    onPress={() => onPress(photo)}
+    accessibilityRole="button"
+    accessibilityLabel={photo.caption ?? 'Pet photo'}
+  >
+    <OptimizedImage
+      uri={photo.url}
+      thumbnailUri={photo.thumbnailUrl}
+      blurhash={photo.blurhash}
+      visible={visible}
+      useThumbnailFirst
+      style={styles.thumbImage}
+    />
+  </TouchableOpacity>
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COMPONENT
@@ -346,27 +379,22 @@ const PetPhotosScreen: React.FC<Props> = ({ petId, petName, onBack }) => {
         <FlatList
           data={photos}
           keyExtractor={(item) => item.id}
-          numColumns={3}
+          numColumns={NUM_COLUMNS}
           contentContainerStyle={styles.grid}
+          initialNumToRender={INITIAL_ROWS * NUM_COLUMNS}
+          windowSize={5}
+          removeClippedSubviews
           onEndReachedThreshold={5 / PAGE_SIZE}
           onEndReached={handleEndReached}
           ListFooterComponent={
             loadingMore ? <ActivityIndicator style={styles.loader} color="#4A90E2" /> : null
           }
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.thumb}
-              onPress={() => setSelectedPhoto(item)}
-              accessibilityRole="button"
-              accessibilityLabel={item.caption ?? 'Pet photo'}
-            >
-              <OptimizedImage
-                uri={item.url}
-                thumbnailUri={item.thumbnailUrl}
-                useThumbnailFirst
-                style={styles.thumbImage}
-              />
-            </TouchableOpacity>
+          renderItem={({ item, index }) => (
+            <PhotoGridItem
+              photo={item}
+              visible={index < INITIAL_ROWS * NUM_COLUMNS}
+              onPress={setSelectedPhoto}
+            />
           )}
         />
       )}

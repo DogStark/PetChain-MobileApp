@@ -123,7 +123,9 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
       >
         {item.photoUrl || item.thumbnailUrl ? (
           <OptimizedImage
-            uri={item.thumbnailUrl || item.photoUrl || ''}
+            uri={item.photoUrl || item.thumbnailUrl || ''}
+            thumbnailUri={item.thumbnailUrl}
+            blurhash={item.blurhash}
             style={styles.avatar}
             accessibilityLabel={`${item.name} photo`}
           />

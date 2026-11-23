@@ -30,6 +30,8 @@ export interface Pet {
   microchipId?: string;
   photoUrl?: string;
   thumbnailUrl?: string;
+  /** Tiny base64 data URI used as a blurred placeholder while the photo loads. */
+  blurhash?: string;
   ownerId: string;
   owner?: PetOwnerSummary;
   createdAt: string;
