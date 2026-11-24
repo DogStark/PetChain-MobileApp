@@ -4,6 +4,7 @@ import { createApp, setReadiness } from './app';
 import { checkDatabaseConnection, runMigrations } from '../config/database';
 import apiKeyService from '../services/apiKeyService';
 import { startReceiptCheckJob, startScheduledProcessor } from '../services/pushService';
+import { ensureIndices } from '../services/searchService';
 import { startPaymentIdempotencyCleanupJob } from '../services/stellarPaymentService';
 import logger from '../utils/logger';
 
@@ -39,6 +40,17 @@ async function start(): Promise<void> {
   logger.info('[server] Database connection verified.');
 
   await runMigrations();
+
+  if (process.env.ELASTICSEARCH_URL) {
+    try {
+      await ensureIndices();
+      logger.info('[server] Elasticsearch indices initialized.');
+    } catch (error) {
+      logger.warn('[server] Elasticsearch unavailable; PostgreSQL fallback enabled.', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   const app = createApp();
   const server = http.createServer(app);

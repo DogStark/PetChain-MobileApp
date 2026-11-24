@@ -34,16 +34,13 @@ const CONSTANTS = {
 // Calendar-sync conflict policy for appointments (#1034)
 // Controls how two-way calendar synchronization resolves conflicts between
 // device-calendar events and PetChain appointments.
-type CalendarSyncConflictPolicy =
-  | 'device-wins'
-  | 'app-wins'
-  | 'newest-wins'
-  | 'manual';
+type CalendarSyncConflictPolicy = 'device-wins' | 'app-wins' | 'newest-wins' | 'manual';
 
 const CALENDAR_SYNC = {
   // When a conflict is detected, preserve both timestamps and require an
   // explicit resolution unless a deterministic policy is configured.
-  conflictPolicy: (process.env.CALENDAR_SYNC_CONFLICT_POLICY as CalendarSyncConflictPolicy) || 'manual',
+  conflictPolicy:
+    (process.env.CALENDAR_SYNC_CONFLICT_POLICY as CalendarSyncConflictPolicy) || 'manual',
   // Persist external event IDs and source ownership so imports/exports are
   // idempotent and retries do not duplicate events.
   persistExternalEventIds: true,
@@ -96,13 +93,7 @@ const SUPPORT_BUNDLE_REDACTION: SupportBundleRedactionPolicy = {
     'endpoint',
     'baseUrl',
   ],
-  forbiddenValuePatterns: [
-    'bearer ',
-    'authorization:',
-    'https://',
-    'http://',
-    '@',
-  ],
+  forbiddenValuePatterns: ['bearer ', 'authorization:', 'https://', 'http://', '@'],
   maxBundleBytes: Number(process.env.SUPPORT_BUNDLE_MAX_BYTES) || 262144, // 256 KB
   redactionPlaceholder: '[REDACTED]',
 };
@@ -124,6 +115,10 @@ const config = {
     url: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/petchain',
     poolSize: Number(process.env.DB_POOL_SIZE) || 20,
     idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT) || 30000,
+  },
+
+  elasticsearch: {
+    url: process.env.ELASTICSEARCH_URL?.trim() || null,
   },
 
   app: {
