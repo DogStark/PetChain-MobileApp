@@ -4,6 +4,11 @@ import jwt from 'jsonwebtoken';
 
 import config from '../../config';
 import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
+import {
+  loginEmailRateLimiter,
+  loginIpRateLimiter,
+  registerIpRateLimiter,
+} from '../../middleware/rateLimiter';
 import { UserRole } from '../../models/UserRole';
 import referralService from '../../services/referralService';
 import {
@@ -35,7 +40,7 @@ function issueToken(user: { id: string; email: string; role: UserRole }) {
   });
 }
 
-router.post('/register', async (req, res) => {
+router.post('/register', registerIpRateLimiter, async (req, res) => {
   const { email, name, password, phone, role, referralCode, deviceFingerprint } = req.body as {
     email?: string;
     name?: string;
@@ -95,7 +100,7 @@ router.post('/register', async (req, res) => {
   });
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', loginIpRateLimiter, loginEmailRateLimiter, async (req, res) => {
   const { email, password } = req.body as { email?: string; password?: string };
   if (!email?.trim() || !password) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'email and password are required');

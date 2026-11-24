@@ -157,8 +157,8 @@ export function createApp(): Express {
   });
 
   // --- Application routes ------------------------------------------------
-  api.use('/auth', authRateLimiter, authRouter);
-  api.use('/auth', authRateLimiter, oauthRouter);
+  api.use('/auth', authRouter);
+  api.use('/auth', oauthRouter);
   api.use('/analytics', dataRateLimiter, analyticsRouter);
   api.use('/anchor', anchorRouter);
   api.use('/notes', dataRateLimiter, notesRouter);
