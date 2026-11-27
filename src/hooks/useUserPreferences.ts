@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { LanguageCode } from '../i18n';
 
-export type ThemePreference = 'light' | 'dark' | 'system';
+export type ThemePreference = 'light' | 'dark' | 'dark-oled' | 'system';
 
 export interface QuietHoursConfig {
   enabled: boolean;

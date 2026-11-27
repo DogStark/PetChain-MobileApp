@@ -47,6 +47,7 @@ import {
   scheduleMedicationReminder,
   syncRefillThresholdNotification,
 } from '../services/notificationService';
+import { reviewService } from '../services/reviewService';
 import { formatLocalDate, formatLocalTime } from '../utils/dateLocale';
 import { useSecureScreen } from '../utils/secureScreen';
 
@@ -348,6 +349,9 @@ const MedicationScreen: React.FC = () => {
         skipped,
       };
       await logDose(log);
+      if (!skipped) {
+        reviewService.notifyPositiveAction('dose_confirmed');
+      }
       const med = medications.find((m) => m.id === medicationId);
       if (med && !skipped) {
         // Decrement both supply fields, then resync run-out & notifications

@@ -147,7 +147,10 @@ export const resolvers: Resolvers<GraphQLContext> = {
 
     medicalRecord: async (_parent, { id }, ctx) => {
       requireAuth(ctx);
-      const res = await query('SELECT * FROM medical_records WHERE id = $1', [id]);
+      const res = await query(
+        'SELECT * FROM medical_records WHERE id = $1 AND deleted_at IS NULL',
+        [id],
+      );
       return res.rows[0] ? dbRecordToGql(res.rows[0]) : null;
     },
 
@@ -241,7 +244,12 @@ export const resolvers: Resolvers<GraphQLContext> = {
 
     deletePet: async (_parent, { id }, ctx) => {
       requireAuth(ctx);
-      const res = await query('DELETE FROM pets WHERE id = $1', [id]);
+      // Soft-delete (#1349): the row is retained for 30 days before hard purge.
+      const res = await query(
+        'UPDATE pets SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL',
+        [id],
+      );
+      ctx.loaders.petById.clear(id);
       return (res.rowCount ?? 0) > 0;
     },
 

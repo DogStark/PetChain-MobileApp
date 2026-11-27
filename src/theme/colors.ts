@@ -65,6 +65,31 @@ export const darkTheme = {
   white: '#FFFFFF',
 };
 
+/**
+ * OLED-optimised dark variant: pure black backgrounds reduce battery drain on
+ * OLED panels. Foreground tokens are inherited from `darkTheme` so contrast
+ * ratios stay at or above WCAG AA (4.5:1).
+ */
+export const darkOledTheme = {
+  ...darkTheme,
+  background: '#000000',
+  surface: '#000000',
+  card: '#0A0A0A',
+  cardElevated: '#141414',
+  input: '#0A0A0A',
+  subtle: '#000000',
+  muted: '#1A1A1A',
+  border: '#3F4B5F',
+  overlay: 'rgba(0,0,0,0.85)',
+  shadow: '#000000',
+  chartGrid: '#334155',
+  chartAxis: '#E2E8F0',
+  chartLine: '#90CAF9',
+  chartAnnotation: '#FCA5A5',
+  chartRangeFill: 'rgba(129, 199, 132, 0.2)',
+  white: '#FFFFFF',
+};
+
 export const navigationLightTheme = {
   ...NavigationDefaultTheme,
   colors: {
@@ -88,5 +113,18 @@ export const navigationDarkTheme = {
     border: darkTheme.border,
     primary: darkTheme.primary,
     notification: darkTheme.notification,
+  },
+};
+
+export const navigationDarkOledTheme = {
+  ...NavigationDarkTheme,
+  colors: {
+    ...NavigationDarkTheme.colors,
+    background: darkOledTheme.background,
+    card: darkOledTheme.card,
+    text: darkOledTheme.text,
+    border: darkOledTheme.border,
+    primary: darkOledTheme.primary,
+    notification: darkOledTheme.notification,
   },
 };

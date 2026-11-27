@@ -14,6 +14,8 @@ export interface DBPet {
   owner_id: string;
   created_at: Date;
   updated_at: Date;
+  /** Soft-delete timestamp (#1349); NULL means active. */
+  deleted_at?: Date | null;
 }
 
 export class PetRepository extends BaseRepository<DBPet> {
@@ -53,8 +55,38 @@ export class PetRepository extends BaseRepository<DBPet> {
   }
 
   async findByOwnerId(ownerId: string): Promise<DBPet[]> {
-    const res = await query(`SELECT * FROM pets WHERE owner_id = $1`, [ownerId]);
+    const res = await query(`SELECT * FROM pets WHERE owner_id = $1 AND deleted_at IS NULL`, [
+      ownerId,
+    ]);
     return res.rows;
+  }
+
+  /** Soft-deletes a pet (#1349). Returns the updated row, or null if not found/active. */
+  async softDelete(id: string): Promise<DBPet | null> {
+    const res = await query(
+      `UPDATE pets SET deleted_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND deleted_at IS NULL
+        RETURNING *`,
+      [id],
+    );
+    return res.rows[0] || null;
+  }
+
+  /** Restores a soft-deleted pet (#1349). */
+  async restore(id: string): Promise<DBPet | null> {
+    const res = await query(
+      `UPDATE pets SET deleted_at = NULL, updated_at = NOW()
+        WHERE id = $1 AND deleted_at IS NOT NULL
+        RETURNING *`,
+      [id],
+    );
+    return res.rows[0] || null;
+  }
+
+  /** Finds a pet regardless of soft-delete state (used by restore). */
+  async findByIdIncludingDeleted(id: string): Promise<DBPet | null> {
+    const res = await query(`SELECT * FROM pets WHERE id = $1`, [id]);
+    return res.rows[0] || null;
   }
 
   async update(id: string, updates: Partial<DBPet>): Promise<DBPet | null> {

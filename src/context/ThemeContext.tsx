@@ -2,10 +2,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useColorScheme } from 'react-native';
 
-import { darkTheme, lightTheme } from '../theme/colors';
+import { darkTheme, darkOledTheme, lightTheme } from '../theme/colors';
 
-export type ThemeMode = 'light' | 'dark' | 'system';
-export type ResolvedTheme = 'light' | 'dark';
+export type ThemeMode = 'light' | 'dark' | 'dark-oled' | 'system';
+export type ResolvedTheme = 'light' | 'dark' | 'dark-oled';
 
 const STORAGE_KEY = '@theme_mode';
 
@@ -34,7 +34,12 @@ export const ThemeProvider: React.FC<React.PropsWithChildren<unknown>> = ({ chil
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
       .then((stored) => {
-        if (stored === 'light' || stored === 'dark' || stored === 'system') {
+        if (
+          stored === 'light' ||
+          stored === 'dark' ||
+          stored === 'dark-oled' ||
+          stored === 'system'
+        ) {
           setModeState(stored);
         }
       })
@@ -51,13 +56,14 @@ export const ThemeProvider: React.FC<React.PropsWithChildren<unknown>> = ({ chil
   }, []);
 
   const theme = resolveThemeMode(mode, systemScheme === 'dark' ? 'dark' : 'light');
-  const colors = theme === 'dark' ? darkTheme : lightTheme;
+  const colors =
+    theme === 'dark-oled' ? darkOledTheme : theme === 'dark' ? darkTheme : lightTheme;
 
   const value = useMemo(
     () => ({
       theme,
       mode,
-      isDark: theme === 'dark',
+      isDark: theme !== 'light',
       colors,
       setMode,
     }),

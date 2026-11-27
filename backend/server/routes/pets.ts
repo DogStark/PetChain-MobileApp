@@ -18,6 +18,7 @@ import { issuePetAsset, transferPetAsset } from '../../services/stellarAssetServ
 import { petRepository } from '../../src/repositories/petRepository';
 import { type DBPet } from '../../src/repositories/petRepository';
 import { userRepository } from '../../src/repositories/userRepository';
+import { decodeCursor, encodeCursor, paginateByCursor, parseLimit } from '../pagination';
 import { ok, errBody, sendError } from '../response';
 import { type StoredMedicalRecord, type StoredPet, store } from '../store';
 
@@ -368,15 +369,43 @@ router.get('/:petId/medical-records', (req: AuthenticatedRequest, res) => {
   const q = req.query as Record<string | undefined>;
   const type = q.type;
   const page = Math.max(1, Number(q.page) || 1);
-  const limit = Math.min(100, Math.max(1, Number(q.limit) || 20));
+  const limit = parseLimit(q.limit);
 
   let rows = [...store.medicalRecords.values()].filter((r) => r.petId === petId);
   if (type) rows = rows.filter((r) => r.type === type);
-  rows.sort((a, b) => new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime());
+  rows.sort(
+    (a, b) =>
+      new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime() ||
+      a.id.localeCompare(b.id),
+  );
   const total = rows.length;
+
+  // Cursor pagination (#1347); offset/page remains as a deprecated fallback.
+  if (typeof q.cursor === 'string' && q.cursor.length > 0) {
+    const cursor = decodeCursor(q.cursor);
+    if (!cursor) return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid cursor');
+    const pageResult = paginateByCursor(
+      rows,
+      cursor,
+      limit,
+      (r) => r.visitDate,
+      (r) => r.id,
+    );
+    return res.json({
+      data: pageResult.data.map(medicalToMobileRow),
+      total,
+      limit,
+      nextCursor: pageResult.nextCursor,
+      prevCursor: pageResult.prevCursor,
+      hasMore: pageResult.hasMore,
+    });
+  }
+
   const totalPages = Math.ceil(total / limit) || 1;
   const start = (page - 1) * limit;
   const slice = rows.slice(start, start + limit).map(medicalToMobileRow);
+  const last = rows[start + limit - 1];
+  const first = rows[start];
 
   return res.json({
     data: slice,
@@ -384,6 +413,10 @@ router.get('/:petId/medical-records', (req: AuthenticatedRequest, res) => {
     page,
     limit,
     totalPages,
+    nextCursor:
+      start + limit < total && last ? encodeCursor({ k: last.visitDate, id: last.id }) : null,
+    prevCursor: start > 0 && first ? encodeCursor({ k: first.visitDate, id: first.id }) : null,
+    pagination: { mode: 'offset', deprecated: true },
   });
 });
 

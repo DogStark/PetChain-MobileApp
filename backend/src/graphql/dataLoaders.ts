@@ -16,6 +16,8 @@ export interface DBMedicalRecord {
   next_visit_date?: Date;
   created_at: Date;
   updated_at: Date;
+  /** Soft-delete timestamp (#1349); NULL means active. */
+  deleted_at?: Date | null;
 }
 
 export interface DBMedication {
@@ -54,13 +56,17 @@ async function batchUsers(ids: readonly string[]): Promise<(DBUser | null)[]> {
 }
 
 async function batchPets(ids: readonly string[]): Promise<(DBPet | null)[]> {
-  const res = await query(`SELECT * FROM pets WHERE id = ANY($1::uuid[])`, [ids]);
+  const res = await query(`SELECT * FROM pets WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL`, [
+    ids,
+  ]);
   const map = new Map(res.rows.map((p: DBPet) => [p.id, p]));
   return ids.map((id) => map.get(id) ?? null);
 }
 
 async function batchPetsByOwner(ownerIds: readonly string[]): Promise<DBPet[][]> {
-  const res = await query(`SELECT * FROM pets WHERE owner_id = ANY($1::uuid[])`, [ownerIds]);
+  const res = await query(`SELECT * FROM pets WHERE owner_id = ANY($1::uuid[]) AND deleted_at IS NULL`, [
+    ownerIds,
+  ]);
   const map = new Map<string, DBPet[]>();
   for (const pet of res.rows as DBPet[]) {
     const list = map.get(pet.owner_id) ?? [];
@@ -72,7 +78,7 @@ async function batchPetsByOwner(ownerIds: readonly string[]): Promise<DBPet[][]>
 
 async function batchMedicalRecordsByPet(petIds: readonly string[]): Promise<DBMedicalRecord[][]> {
   const res = await query(
-    `SELECT * FROM medical_records WHERE pet_id = ANY($1::uuid[]) ORDER BY visit_date DESC`,
+    `SELECT * FROM medical_records WHERE pet_id = ANY($1::uuid[]) AND deleted_at IS NULL ORDER BY visit_date DESC`,
     [petIds],
   );
   const map = new Map<string, DBMedicalRecord[]>();
