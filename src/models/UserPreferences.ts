@@ -43,6 +43,18 @@ export type AnalyticsConsent = {
   decidedAt: string;
 };
 
+/** Distance radius options (km) for vet search. */
+export type VetSearchRadiusKm = 5 | 10 | 25 | 50;
+
+/**
+ * Persisted vet directory filters (#1383). An empty `specialties` array
+ * means no specialty filter is applied.
+ */
+export type VetSearchFilters = {
+  specialties: string[];
+  radiusKm: VetSearchRadiusKm;
+};
+
 export interface UserPreferences {
   language: string;
   theme: Theme;
@@ -52,6 +64,8 @@ export interface UserPreferences {
   quietHours: QuietHoursConfig;
   /** Analytics opt-in; null until the user has been asked (#1391). */
   analyticsConsent: AnalyticsConsent | null;
+  /** Vet directory filters, persisted across sessions (#1383). */
+  vetSearchFilters: VetSearchFilters;
 }
 
 export const DEFAULT_USER_PREFERENCES: UserPreferences = {
@@ -71,4 +85,8 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
     timezone: 'UTC',
   },
   analyticsConsent: null,
+  vetSearchFilters: {
+    specialties: [],
+    radiusKm: 25,
+  },
 };

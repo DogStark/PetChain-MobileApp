@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 import apiClient from './apiClient';
+import { getCurrentAccountId } from '../utils/encryption/keychain';
 import { getItem, setItem, removeItem } from './localDB';
 import offlineQueue from './offlineQueue';
 import { scanQRCode, type QRScanResult } from './qrCodeService';
@@ -29,6 +30,8 @@ export interface Pet {
   microchipId?: string;
   photoUrl?: string;
   thumbnailUrl?: string;
+  /** Tiny base64 data URI used as a blurred placeholder while the photo loads. */
+  blurhash?: string;
   ownerId: string;
   owner?: PetOwnerSummary;
   createdAt: string;
@@ -265,16 +268,46 @@ export async function getAllPets(): Promise<Pet[]> {
   }
 }
 
-export async function getPetById(petId: string): Promise<Pet> {
-  const id = petId.trim();
-  if (!id) {
-    const err = new PetServiceError('Pet ID is required', 'INVALID_PET_ID');
-    logPetError(err, { service: 'petService', action: 'validation' });
-    throw err;
-  }
+// ─── Pet detail request deduplication (Issue #1073) ──────────────────────────
+// Concurrent callers for the same account + pet id share a single in-flight
+// request.  The entry is dropped as soon as the request settles, so a later
+// call (or an explicit `refresh`) always starts a fresh request.
 
+export interface GetPetByIdOptions {
+  /** Bypass the in-flight entry and start a new request. */
+  refresh?: boolean;
+}
+
+interface InflightPetRequest {
+  promise: Promise<Pet>;
+  /** Aborts the underlying request when the session ends. */
+  abort: () => void;
+}
+
+const inflightPetRequests = new Map<string, InflightPetRequest>();
+
+function petRequestKey(accountId: string | null, petId: string): string {
+  return `${accountId ?? 'anonymous'}:${petId}`;
+}
+
+/**
+ * Cancel every pending pet detail request (called on logout so a previous
+ * account's data can never resolve into the next session).
+ */
+export function cancelPendingPetRequests(): void {
+  const pending = Array.from(inflightPetRequests.values());
+  inflightPetRequests.clear();
+  pending.forEach((entry) => entry.abort());
+}
+
+/** Exposed for testing only. */
+export function _getInflightPetRequestCount(): number {
+  return inflightPetRequests.size;
+}
+
+async function fetchPetById(id: string, signal: AbortSignal): Promise<Pet> {
   try {
-    const response = await apiClient.get(`/pets/${encodeURIComponent(id)}`);
+    const response = await apiClient.get(`/pets/${encodeURIComponent(id)}`, { signal });
     const pet = unwrapApiData(response.data);
     await setItem(`${PET_CACHE_PREFIX}${pet.id}`, JSON.stringify(pet));
     return pet;
@@ -287,6 +320,32 @@ export async function getPetById(petId: string): Promise<Pet> {
     if (cached) return cached;
     throw toPetServiceError(error, { action: 'get_pet_by_id', petId: id });
   }
+}
+
+export async function getPetById(petId: string, options: GetPetByIdOptions = {}): Promise<Pet> {
+  const id = petId.trim();
+  if (!id) {
+    const err = new PetServiceError('Pet ID is required', 'INVALID_PET_ID');
+    logPetError(err, { service: 'petService', action: 'validation' });
+    throw err;
+  }
+
+  const key = petRequestKey(getCurrentAccountId(), id);
+
+  if (options.refresh !== true) {
+    const existing = inflightPetRequests.get(key);
+    if (existing) return existing.promise;
+  }
+
+  const controller = new AbortController();
+  const promise = fetchPetById(id, controller.signal).finally(() => {
+    if (inflightPetRequests.get(key)?.promise === promise) {
+      inflightPetRequests.delete(key);
+    }
+  });
+
+  inflightPetRequests.set(key, { promise, abort: () => controller.abort() });
+  return promise;
 }
 
 export async function getPetByQRCode(qrCode: string): Promise<Pet> {
@@ -450,6 +509,126 @@ export async function uploadPetPhoto(
   }
 }
 
+// ─────────────────────────────────────────────
+// BULK ACTIONS (multi-select on PetListScreen)
+// ─────────────────────────────────────────────
+
+export type PetBulkAction = 'export' | 'share' | 'archive';
+
+export interface PetBulkResult {
+  action: PetBulkAction;
+  succeeded: string[];
+  failed: { petId: string; error: string }[];
+}
+
+export interface PetBulkExport {
+  /** Combined JSON payload of every selected pet profile. */
+  json: string;
+  /** Suggested file name for the combined export. */
+  fileName: string;
+  petCount: number;
+}
+
+function normalizePetIds(petIds: string[]): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const raw of petIds) {
+    const id = typeof raw === 'string' ? raw.trim() : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * Build a combined export document for the given pets. Records are read from
+ * the local cache first so the export works offline, falling back to the API.
+ */
+export async function exportPetsBulk(petIds: string[]): Promise<PetBulkExport> {
+  const ids = normalizePetIds(petIds);
+  if (ids.length === 0) {
+    const err = new PetServiceError('Select at least one pet to export', 'NO_PETS_SELECTED');
+    logPetError(err, { service: 'petService', action: 'bulk_export_validation' });
+    throw err;
+  }
+
+  const cachedList = await getCachedPets();
+  const pets: Pet[] = [];
+  for (const id of ids) {
+    const cached = cachedList.find((pet) => pet.id === id) ?? (await getCachedPet(id));
+    if (cached) {
+      pets.push(cached);
+      continue;
+    }
+    try {
+      pets.push(await getPetById(id));
+    } catch (error) {
+      throw toPetServiceError(error, { action: 'bulk_export', petId: id });
+    }
+  }
+
+  const json = JSON.stringify(
+    {
+      exportedAt: new Date().toISOString(),
+      petCount: pets.length,
+      pets,
+    },
+    null,
+    2,
+  );
+
+  return {
+    json,
+    fileName: `petchain-pets-export-${Date.now()}.json`,
+    petCount: pets.length,
+  };
+}
+
+/** Build a shareable text summary of the selected pet profiles. */
+export async function buildPetsShareMessage(petIds: string[]): Promise<string> {
+  const ids = normalizePetIds(petIds);
+  if (ids.length === 0) {
+    const err = new PetServiceError('Select at least one pet to share', 'NO_PETS_SELECTED');
+    logPetError(err, { service: 'petService', action: 'bulk_share_validation' });
+    throw err;
+  }
+
+  const cachedList = await getCachedPets();
+  const lines = ids.map((id) => {
+    const pet = cachedList.find((item) => item.id === id);
+    if (!pet) return `• ${id}`;
+    const details = [pet.species, pet.breed].filter(Boolean).join(' · ');
+    return `• ${pet.name}${details ? ` (${details})` : ''}`;
+  });
+
+  return ['PetChain pet profiles', ...lines].join('\n');
+}
+
+/** Archive (soft-delete) every selected pet, reporting per-pet failures. */
+export async function archivePetsBulk(petIds: string[]): Promise<PetBulkResult> {
+  const ids = normalizePetIds(petIds);
+  if (ids.length === 0) {
+    const err = new PetServiceError('Select at least one pet to archive', 'NO_PETS_SELECTED');
+    logPetError(err, { service: 'petService', action: 'bulk_archive_validation' });
+    throw err;
+  }
+
+  const result: PetBulkResult = { action: 'archive', succeeded: [], failed: [] };
+  for (const id of ids) {
+    try {
+      await deletePet(id);
+      result.succeeded.push(id);
+    } catch (error) {
+      result.failed.push({
+        petId: id,
+        error: error instanceof Error ? error.message : 'Archive failed',
+      });
+    }
+  }
+  return result;
+}
+
 // Default export for screens that import petService as default
 const petService = {
   getPets,
@@ -461,6 +640,9 @@ const petService = {
   updatePet,
   deletePet,
   uploadPetPhoto,
+  exportPetsBulk,
+  buildPetsShareMessage,
+  archivePetsBulk,
 };
 
 export default petService;

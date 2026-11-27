@@ -7,6 +7,7 @@ import {
   type AuthenticatedRequest,
 } from '../../middleware/adminAuth';
 import { type UserRole } from '../../models/UserRole';
+import { get as cacheGet, set as cacheSet } from '../../services/cacheService';
 import { ok, sendError } from '../../server/response';
 import { store } from '../../server/store';
 import {
@@ -14,7 +15,8 @@ import {
   listSupportRequests,
   updateSupportRequest,
 } from '../../server/supportRequests';
-import { getAllSyncResults, getSyncResults } from '../../services/shelterIntegrationService';
+import { logAuditTrail } from '../../middleware/auditLogger';
+import shelterIntegrationService from '../../services/shelterIntegrationService';
 
 const router = Router();
 
@@ -45,6 +47,16 @@ interface DashboardAnalytics {
     errorsLast24h: number;
     errorRateLast24h: number;
   };
+  generatedAt: string;
+}
+
+interface ActivityMetrics {
+  period: { days: number; since: string };
+  dau: number;
+  wau: number;
+  mau: number;
+  featureUsage: Record<string, number>;
+  retentionCohorts: Array<{ cohort: string; size: number; retained: number; retentionRate: number }>;
   generatedAt: string;
 }
 
@@ -237,6 +249,99 @@ async function collectAnalytics(req: AuthenticatedRequest): Promise<DashboardAna
   };
 }
 
+const ACTIVITY_PERIODS = [7, 30, 90] as const;
+const ACTIVITY_CACHE_TTL_SECONDS = 300;
+
+function parseActivityPeriod(raw: unknown): number | null {
+  if (raw === undefined || raw === '') return 30;
+  const days = Number(raw);
+  if (!Number.isInteger(days) || !(ACTIVITY_PERIODS as readonly number[]).includes(days)) {
+    return null;
+  }
+  return days;
+}
+
+async function collectActivityMetrics(
+  req: AuthenticatedRequest,
+  days: number,
+): Promise<ActivityMetrics> {
+  const [dauRow] = await query<{ count: string }>(
+    req,
+    `SELECT COUNT(DISTINCT id) AS count
+     FROM users
+     WHERE last_login_at >= NOW() - INTERVAL '1 day'`,
+  );
+
+  const [wauRow] = await query<{ count: string }>(
+    req,
+    `SELECT COUNT(DISTINCT id) AS count
+     FROM users
+     WHERE last_login_at >= NOW() - INTERVAL '7 days'`,
+  );
+
+  const [mauRow] = await query<{ count: string }>(
+    req,
+    `SELECT COUNT(DISTINCT id) AS count
+     FROM users
+     WHERE last_login_at >= NOW() - INTERVAL '30 days'`,
+  );
+
+  const featureRows = await query<Record<string, string>>(
+    req,
+    `SELECT
+       COUNT(*) FILTER (WHERE feature = 'qr_scanner') AS qr_scanner,
+       COUNT(*) FILTER (WHERE feature = 'medical_records') AS medical_records,
+       COUNT(*) FILTER (WHERE feature = 'appointments') AS appointments,
+       COUNT(*) FILTER (WHERE feature = 'medications') AS medications,
+       COUNT(*) FILTER (WHERE feature = 'emergency') AS emergency
+     FROM feature_events
+     WHERE occurred_at >= NOW() - ($1::int || ' days')::interval`,
+    [days],
+  );
+
+  const featureUsage: Record<string, number> = {};
+  for (const [feature, count] of Object.entries(featureRows[0] ?? {})) {
+    featureUsage[feature] = Number(count) || 0;
+  }
+
+  const cohortRows = await query<{ cohort: string; size: string; retained: string }>(
+    req,
+    `SELECT
+       to_char(date_trunc('week', created_at), 'YYYY-MM-DD') AS cohort,
+       COUNT(*) AS size,
+       COUNT(*) FILTER (WHERE last_login_at >= NOW() - INTERVAL '7 days') AS retained
+     FROM users
+     WHERE created_at >= NOW() - ($1::int || ' days')::interval
+     GROUP BY 1
+     ORDER BY 1 DESC`,
+    [days],
+  );
+
+  const retentionCohorts = cohortRows.map((row) => {
+    const size = Number(row.size) || 0;
+    const retained = Number(row.retained) || 0;
+    return {
+      cohort: row.cohort,
+      size,
+      retained,
+      retentionRate: size > 0 ? Number(((retained / size) * 100).toFixed(2)) : 0,
+    };
+  });
+
+  return {
+    period: {
+      days,
+      since: new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString(),
+    },
+    dau: Number(dauRow?.count) || 0,
+    wau: Number(wauRow?.count) || 0,
+    mau: Number(mauRow?.count) || 0,
+    featureUsage,
+    retentionCohorts,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 function buildDashboardCsv(analytics: DashboardAnalytics, users: AdminUserView[]): string {
   const rows = [
     ['metric', 'value'],
@@ -284,6 +389,28 @@ router.get('/analytics', async (req, res) => {
   return res.json(ok(await collectAnalytics(req as AuthenticatedRequest)));
 });
 
+router.get('/analytics/activity', async (req, res) => {
+  const days = parseActivityPeriod(req.query.period);
+  if (days === null) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      `period must be one of: ${ACTIVITY_PERIODS.join(', ')}`,
+    );
+  }
+
+  const cacheKey = `petchain:admin:analytics:activity:${days}`;
+  const cached = await cacheGet<ActivityMetrics>(cacheKey);
+  if (cached) {
+    return res.json(ok(cached));
+  }
+
+  const metrics = await collectActivityMetrics(req as AuthenticatedRequest, days);
+  await cacheSet(cacheKey, metrics, ACTIVITY_CACHE_TTL_SECONDS);
+  return res.json(ok(metrics));
+});
+
 router.get('/analytics/export.csv', async (req, res) => {
   const analytics = await collectAnalytics(req as AuthenticatedRequest);
   const users = getStoredUsers(true);
@@ -296,6 +423,44 @@ router.get('/analytics/export.csv', async (req, res) => {
 
 router.get('/metrics', (req, res) => {
   return res.json(ok(getServerMetrics(req as AuthenticatedRequest)));
+});
+
+router.post('/shelters/:id/sync', async (req, res) => {
+  const shelterId = req.params.id;
+
+  try {
+    const run = await shelterIntegrationService.runShelterSync(shelterId);
+
+    void logAuditTrail({
+      req: req as AuthenticatedRequest,
+      entityType: 'shelter',
+      entityId: shelterId,
+      action: 'UPDATE',
+      before: null,
+      after: {
+        syncId: run.result.id,
+        status: run.result.status,
+        attempts: run.attempts,
+        recordsAdded: run.result.recordsAdded,
+        recordsUpdated: run.result.recordsUpdated,
+        errors: run.result.errors,
+        syncedAt: run.result.syncedAt,
+      },
+    });
+
+    return res.json(ok(run, 'Shelter sync completed'));
+  } catch (err) {
+    return sendError(
+      res,
+      500,
+      'SYNC_FAILED',
+      err instanceof Error ? err.message : 'Shelter sync failed',
+    );
+  }
+});
+
+router.get('/shelters/:id/sync/status', (req, res) => {
+  return res.json(ok(shelterIntegrationService.getShelterSyncStatus(req.params.id)));
 });
 
 router.get('/support-requests', (_req, res) => {

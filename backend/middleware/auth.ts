@@ -160,6 +160,36 @@ export const authenticateJWT = (req: AuthenticatedRequest, res: Response, next: 
 };
 
 /**
+ * Middleware that attaches the user when a valid token is supplied but never
+ * rejects the request. Used by public endpoints that want optional attribution.
+ */
+export const optionalAuth = (req: AuthenticatedRequest, _res: Response, next: NextFunction) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) return next();
+
+  const token = authHeader.slice(7).trim();
+  if (!token) return next();
+
+  try {
+    if (config.isDev && token.startsWith('mock-')) {
+      const user = store.users.get(token.slice('mock-'.length));
+      if (user) req.user = { id: user.id, email: user.email, role: user.role };
+      return next();
+    }
+
+    const payload = jwt.verify(token, config.app.jwtSecret) as {
+      sub: string;
+      email: string;
+      role: UserRole;
+    };
+    req.user = { id: payload.sub, email: payload.email, role: payload.role };
+  } catch {
+    // Ignore invalid tokens: the endpoint is public.
+  }
+  return next();
+};
+
+/**
  * Middleware to authorize specific roles
  * @param roles Array of allowed roles
  */

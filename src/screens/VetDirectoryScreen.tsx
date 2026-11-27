@@ -6,7 +6,6 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Modal,
-  PanResponder,
   Platform,
   RefreshControl,
   ScrollView,
@@ -31,28 +30,27 @@ import {
 import {
   getMessages,
   getVetProfile,
+  getVetSpecialties,
   searchVets,
   sendMessage,
   type VetMessage,
   type VetProfile,
 } from '../services/vetService';
+import { getUserPreferences, updateUserPreferences } from '../services/userPreferencesService';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const RADIUS_MIN = 1;
-const RADIUS_MAX = 50;
+const RADIUS_OPTIONS = [5, 10, 25, 50] as const;
+const DEFAULT_RADIUS = 25;
 const DEBOUNCE_MS = 300;
 
-const SPECIALTY_OPTIONS = [
-  'General',
-  'Dermatology',
-  'Cardiology',
-  'Oncology',
-  'Surgery',
-  'Dentistry',
-  'Neurology',
-  'Ophthalmology',
-];
+const FALLBACK_SPECIALTIES = ['General', 'Dermatology', 'Oncology', 'Dentistry'];
+
+interface VetSearchFilters {
+  specialties: string[];
+  radius: number;
+}
+=======
 
 type Screen = 'directory' | 'profile' | 'chat';
 
@@ -68,83 +66,7 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// ─── RadiusSlider ─────────────────────────────────────────────────────────────
 
-interface RadiusSliderProps {
-  value: number;
-  onChange: (v: number) => void;
-}
-
-const RadiusSlider: React.FC<RadiusSliderProps> = ({ value, onChange }) => {
-  const trackWidth = useRef(0);
-  const ratio = (value - RADIUS_MIN) / (RADIUS_MAX - RADIUS_MIN);
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (e) => {
-        const x = e.nativeEvent.locationX;
-        const r = Math.max(0, Math.min(1, x / (trackWidth.current || 1)));
-        onChange(Math.round(RADIUS_MIN + r * (RADIUS_MAX - RADIUS_MIN)));
-      },
-      onPanResponderMove: (e) => {
-        const x = e.nativeEvent.locationX;
-        const r = Math.max(0, Math.min(1, x / (trackWidth.current || 1)));
-        onChange(Math.round(RADIUS_MIN + r * (RADIUS_MAX - RADIUS_MIN)));
-      },
-    }),
-  ).current;
-
-  return (
-    <View style={sliderStyles.wrapper}>
-      <View
-        style={sliderStyles.track}
-        onLayout={(e) => {
-          trackWidth.current = e.nativeEvent.layout.width;
-        }}
-        {...panResponder.panHandlers}
-      >
-        <View style={[sliderStyles.fill, { width: `${ratio * 100}%` }]} />
-        <View style={[sliderStyles.thumb, { left: `${ratio * 100}%` }]} />
-      </View>
-      <View style={sliderStyles.labels}>
-        <Text style={sliderStyles.labelText}>{RADIUS_MIN} km</Text>
-        <Text style={sliderStyles.labelText}>{RADIUS_MAX} km</Text>
-      </View>
-    </View>
-  );
-};
-
-const sliderStyles = StyleSheet.create({
-  wrapper: { marginVertical: 8 },
-  track: {
-    height: 6,
-    backgroundColor: '#E2E8F0',
-    borderRadius: 3,
-    justifyContent: 'center',
-    marginHorizontal: 8,
-  },
-  fill: { height: 6, backgroundColor: '#4299e1', borderRadius: 3 },
-  thumb: {
-    position: 'absolute',
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#fff',
-    borderWidth: 2,
-    borderColor: '#4299e1',
-    top: -7,
-    marginLeft: -10,
-  },
-  labels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 4,
-    paddingHorizontal: 8,
-  },
-  labelText: { fontSize: 11, color: '#718096' },
-});
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -166,13 +88,15 @@ const VetDirectoryScreen: React.FC = () => {
   const [locationDenied, setLocationDenied] = useState(false);
 
   // Filters
-  const [radius, setRadius] = useState(25);
+  const [radius, setRadius] = useState<number>(DEFAULT_RADIUS);
   const [selectedSpecialties, setSelectedSpecialties] = useState<string[]>([]);
   const [availableOnly, setAvailableOnly] = useState(false);
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
+  const [specialtyOptions, setSpecialtyOptions] = useState<string[]>(FALLBACK_SPECIALTIES);
+  const [filtersLoaded, setFiltersLoaded] = useState(false);
 
   // Draft filter state (inside drawer, not applied until confirmed)
-  const [draftRadius, setDraftRadius] = useState(25);
+  const [draftRadius, setDraftRadius] = useState<number>(DEFAULT_RADIUS);
   const [draftSpecialties, setDraftSpecialties] = useState<string[]>([]);
   const [draftAvailableOnly, setDraftAvailableOnly] = useState(false);
 
@@ -214,6 +138,42 @@ const VetDirectoryScreen: React.FC = () => {
     void requestLocation();
   }, [requestLocation]);
 
+  // ── Specialties + persisted filters ────────────────────────────────────────
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const specialties = await getVetSpecialties();
+        if (!cancelled && Array.isArray(specialties) && specialties.length > 0) {
+          setSpecialtyOptions(specialties);
+        }
+      } catch {
+        // Keep fallback list on failure
+      }
+      try {
+        const prefs = await getUserPreferences();
+        const saved = prefs?.vetSearchFilters as VetSearchFilters | undefined;
+        if (!cancelled && saved) {
+          if (Array.isArray(saved.specialties)) {
+            setSelectedSpecialties(saved.specialties);
+          }
+          if (RADIUS_OPTIONS.includes(saved.radius as (typeof RADIUS_OPTIONS)[number])) {
+            setRadius(saved.radius);
+          }
+        }
+      } catch {
+        // Ignore — use defaults
+      } finally {
+        if (!cancelled) setFiltersLoaded(true);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // ── Search ─────────────────────────────────────────────────────────────────
 
   const doSearch = useCallback(
@@ -228,16 +188,15 @@ const VetDirectoryScreen: React.FC = () => {
       const hadData = vets.length > 0;
       setLoading(true);
       try {
-        const specialtyParam = specialties.length === 1 ? specialties[0] : undefined;
         const results = await searchVets({
           lat: lat ?? undefined,
           lng: lng ?? undefined,
           radius: r,
-          specialty: specialtyParam,
+          specialties: specialties.length > 0 ? specialties : undefined,
           available: availOnly || undefined,
         });
 
-        // Attach distance client-side and sort
+        // Attach distance client-side
         const withDist = results.map((v) => {
           if (lat !== null && lng !== null && v.lat && v.lng) {
             return { ...v, distance: haversineKm(lat, lng, v.lat, v.lng) };
@@ -253,10 +212,13 @@ const VetDirectoryScreen: React.FC = () => {
               )
             : withDist;
 
-        const sorted =
-          lat !== null
-            ? [...filtered].sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity))
-            : [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+        // Sort by distance by default; fall back to name when distance unknown
+        const sorted = [...filtered].sort((a, b) => {
+          const da = a.distance ?? Infinity;
+          const db = b.distance ?? Infinity;
+          if (da !== db) return da - db;
+          return a.name.localeCompare(b.name);
+        });
 
         setVets(sorted);
       } catch {
@@ -276,6 +238,7 @@ const VetDirectoryScreen: React.FC = () => {
 
   // Debounced re-search when filters change
   useEffect(() => {
+    if (!filtersLoaded) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       void doSearch(userLat, userLng, radius, selectedSpecialties, availableOnly);
@@ -284,7 +247,7 @@ const VetDirectoryScreen: React.FC = () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userLat, userLng, radius, selectedSpecialties, availableOnly]);
+  }, [filtersLoaded, userLat, userLng, radius, selectedSpecialties, availableOnly]);
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
@@ -306,6 +269,13 @@ const VetDirectoryScreen: React.FC = () => {
     setSelectedSpecialties(draftSpecialties);
     setAvailableOnly(draftAvailableOnly);
     setFilterDrawerOpen(false);
+    const filters: VetSearchFilters = {
+      specialties: draftSpecialties,
+      radius: draftRadius,
+    };
+    updateUserPreferences({ vetSearchFilters: filters }).catch(() => {
+      // Persistence failure is non-blocking
+    });
   };
 
   const toggleDraftSpecialty = (s: string) => {
@@ -314,7 +284,7 @@ const VetDirectoryScreen: React.FC = () => {
 
   const activeFilterCount = useMemo(() => {
     let n = 0;
-    if (radius !== 25) n++;
+    if (radius !== DEFAULT_RADIUS) n++;
     if (selectedSpecialties.length) n++;
     if (availableOnly) n++;
     return n;
@@ -510,13 +480,32 @@ const VetDirectoryScreen: React.FC = () => {
 
               <ScrollView contentContainerStyle={styles.drawerBody}>
                 {/* Radius */}
-                <Text style={styles.drawerLabel}>Distance radius: {draftRadius} km</Text>
-                <RadiusSlider value={draftRadius} onChange={setDraftRadius} />
+                <Text style={styles.drawerLabel}>Distance radius</Text>
+                <View style={styles.radiusRow}>
+                  {RADIUS_OPTIONS.map((r) => {
+                    const active = draftRadius === r;
+                    return (
+                      <TouchableOpacity
+                        key={r}
+                        style={[styles.radiusChip, active && styles.radiusChipActive]}
+                        onPress={() => setDraftRadius(r)}
+                        accessibilityLabel={`Set radius to ${r} kilometers`}
+                        accessibilityState={{ selected: active }}
+                      >
+                        <Text
+                          style={[styles.radiusChipText, active && styles.radiusChipTextActive]}
+                        >
+                          {r} km
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
 
                 {/* Specialty multi-select */}
                 <Text style={styles.drawerLabel}>Specialty</Text>
                 <View style={styles.specialtyGrid}>
-                  {SPECIALTY_OPTIONS.map((s) => {
+                  {specialtyOptions.map((s) => {
                     const active = draftSpecialties.includes(s);
                     return (
                       <TouchableOpacity
@@ -558,7 +547,7 @@ const VetDirectoryScreen: React.FC = () => {
                 <TouchableOpacity
                   style={styles.drawerResetBtn}
                   onPress={() => {
-                    setDraftRadius(25);
+                    setDraftRadius(DEFAULT_RADIUS);
                     setDraftSpecialties([]);
                     setDraftAvailableOnly(false);
                   }}
@@ -845,6 +834,20 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     marginTop: 12,
   },
+
+  // Radius chips
+  radiusRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
+  radiusChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#CBD5E0',
+    backgroundColor: '#F7FAFC',
+  },
+  radiusChipActive: { backgroundColor: '#4299e1', borderColor: '#4299e1' },
+  radiusChipText: { fontSize: 13, color: '#4A5568' },
+  radiusChipTextActive: { color: '#fff', fontWeight: '600' },
 
   // Specialty chips
   specialtyGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },

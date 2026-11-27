@@ -38,6 +38,15 @@ const CONSECUTIVE_FAILURE_THRESHOLD = 3;
 /** Partial-sync threshold: if at least this fraction succeeds, commit the partial batch. */
 const PARTIAL_SUCCESS_THRESHOLD = 0.8;
 
+/** Maximum number of sync attempts (initial attempt + retries) for a failed sync. */
+const MAX_SYNC_ATTEMPTS = 3;
+
+/** Base delay (ms) for exponential backoff between sync retries. */
+const SYNC_RETRY_BASE_DELAY_MS = Number(process.env.SHELTER_SYNC_RETRY_BASE_DELAY_MS ?? 500);
+
+/** Number of attempts used by the most recent sync run, keyed by shelter id. */
+const lastSyncAttempts = new Map<string, number>();
+
 // ─── Email alert helper ───────────────────────────────────────────────────────
 
 /** Sends an alert email to the configured admin address (no-op if not configured). */
@@ -195,6 +204,23 @@ export interface ShelterAuthResult {
   authorizationUrl: string;
   state: string;
   mock: boolean;
+}
+
+export interface ShelterSyncRunResult {
+  shelterId: string;
+  result: ShelterSyncResult;
+  attempts: number;
+  retried: boolean;
+}
+
+export interface ShelterSyncStatusSummary {
+  shelterId: string;
+  lastSyncAt: string | null;
+  recordCount: number;
+  errors: ShelterSyncError[];
+  status: ShelterSyncStatus | null;
+  attempts: number;
+  history: ShelterSyncResult[];
 }
 
 // ─── Config / mock data ───────────────────────────────────────────────────────
@@ -692,6 +718,94 @@ export class ShelterIntegrationService {
     }
 
     return result;
+  }
+
+  /**
+   * Fetches the current pet listings for a shelter from its external API.
+   * In mock mode the bundled fixture data is returned.
+   */
+  async fetchShelterRecords(shelterId: string): Promise<Array<{ id: string; data: ShelterPet }>> {
+    if (MOCK_MODE) {
+      return MOCK_PETS.map((pet) => ({ id: pet.id, data: pet }));
+    }
+
+    const endpoint = process.env.SHELTER_SYNC_ENDPOINT;
+    if (!endpoint) {
+      throw new Error(`No shelter sync endpoint configured for shelter ${shelterId}`);
+    }
+
+    const response = await fetch(`${endpoint.replace(/\/$/, '')}/${encodeURIComponent(shelterId)}`);
+    if (!response.ok) {
+      throw new Error(`Shelter API responded with status ${response.status}`);
+    }
+
+    const payload = (await response.json()) as { pets?: ShelterPet[] };
+    return (payload.pets ?? []).map((pet) => ({ id: pet.id, data: pet }));
+  }
+
+  /**
+   * Runs a shelter sync, retrying failed syncs up to MAX_SYNC_ATTEMPTS times
+   * with exponential backoff between attempts.
+   */
+  async runShelterSync(shelterId: string): Promise<ShelterSyncRunResult> {
+    let attempts = 0;
+    let result: ShelterSyncResult | null = null;
+
+    while (attempts < MAX_SYNC_ATTEMPTS) {
+      attempts++;
+      try {
+        const records = await this.fetchShelterRecords(shelterId);
+        result = await this.syncShelter(shelterId, records);
+      } catch (err) {
+        result = {
+          id: randomUUID(),
+          shelterId,
+          syncedAt: new Date().toISOString(),
+          recordsAdded: 0,
+          recordsUpdated: 0,
+          errors: [{ message: err instanceof Error ? err.message : String(err) }],
+          status: 'failed',
+        };
+        storeResult(result);
+      }
+
+      if (result.status !== 'failed') break;
+
+      if (attempts < MAX_SYNC_ATTEMPTS) {
+        const delay = SYNC_RETRY_BASE_DELAY_MS * 2 ** (attempts - 1);
+        logger.warn('[shelter] Sync failed — retrying with backoff', {
+          shelterId,
+          attempt: attempts,
+          delayMs: delay,
+        });
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    lastSyncAttempts.set(shelterId, attempts);
+
+    return {
+      shelterId,
+      result: result as ShelterSyncResult,
+      attempts,
+      retried: attempts > 1,
+    };
+  }
+
+  /** Returns the latest sync status summary for a shelter. */
+  getShelterSyncStatus(shelterId: string): ShelterSyncStatusSummary {
+    const history = getSyncResults(shelterId);
+    const latest = history[0] ?? null;
+
+    return {
+      shelterId,
+      lastSyncAt: latest?.syncedAt ?? null,
+      recordCount: latest ? latest.recordsAdded + latest.recordsUpdated : 0,
+      errors: latest?.errors ?? [],
+      status: latest?.status ?? null,
+      attempts: lastSyncAttempts.get(shelterId) ?? 0,
+      history,
+    };
   }
 }
 

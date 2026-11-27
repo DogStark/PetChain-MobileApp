@@ -23,6 +23,16 @@ const config: CodegenConfig = {
         },
       },
     },
+    // Persisted query map for mobile clients (GET /graphql?queryId=<hash>).
+    // Generated at build time and committed so the backend can resolve query IDs.
+    './backend/src/graphql/persistedQueries.ts': {
+      documents: ['./src/services/graphql/operations.graphql'],
+      plugins: ['persisted-query-map'],
+      config: {
+        mapPath: './backend/src/graphql/persistedQueries.ts',
+        exportName: 'persistedQueries',
+      },
+    },
   },
 };
 

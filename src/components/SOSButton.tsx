@@ -239,6 +239,7 @@ const SOSButton: React.FC<SOSButtonProps> = ({ onSOSSent, style }) => {
         accessibilityRole="button"
         accessibilityLabel="SOS emergency. Activate to start the emergency countdown."
         accessibilityHint="Starts a 3 second countdown before the SOS is sent"
+        accessibilityState={{ busy: isPressing }}
         onAccessibilityAction={handleAccessibilityActivate}
         accessibilityActions={[{ name: 'activate', label: 'Activate SOS' }]}
       >

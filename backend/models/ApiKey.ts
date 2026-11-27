@@ -19,6 +19,9 @@ export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
 
 export type ApiKeyStatus = 'active' | 'rotating' | 'revoked';
 
+/** Default per-key request budget per minute when none is configured at creation. */
+export const DEFAULT_API_KEY_RATE_LIMIT = 100;
+
 export interface ApiKey {
   id: string;
   name: string;
@@ -35,6 +38,8 @@ export interface ApiKey {
   /** During rotation, old key remains valid until this timestamp. */
   rotationOverlapEndsAt?: string;
   lastUsedAt?: string;
+  /** Per-key request budget per minute (Redis-enforced, separate from IP limits). */
+  rateLimitPerMinute?: number;
   createdAt: string;
   updatedAt: string;
   revokedAt?: string;
@@ -52,6 +57,7 @@ export interface ApiKeyPublic {
   rotatedFromId?: string;
   rotationOverlapEndsAt?: string;
   lastUsedAt?: string;
+  rateLimitPerMinute?: number;
   createdAt: string;
   updatedAt: string;
   revokedAt?: string;
@@ -78,6 +84,8 @@ export interface CreateApiKeyInput {
   name: string;
   scopes: ApiKeyScope[];
   expiresAt?: string;
+  /** Optional per-key request budget per minute; defaults to DEFAULT_API_KEY_RATE_LIMIT. */
+  rateLimitPerMinute?: number;
 }
 
 export interface ApiKeyCreateResult {

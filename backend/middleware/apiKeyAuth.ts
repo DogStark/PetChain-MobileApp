@@ -58,6 +58,20 @@ export function authenticateApiKey(...requiredScopes: ApiKeyScope[]) {
       }
 
       const endpoint = req.baseUrl + req.path;
+      const keyLimit = await apiKeyService.checkKeyRateLimit(key);
+      res.setHeader('X-RateLimit-Limit', keyLimit.limit);
+      res.setHeader('X-RateLimit-Remaining', keyLimit.remaining);
+      if (!keyLimit.allowed) {
+        apiKeyService.recordUsage(key.id, endpoint, req.method, 429);
+        res.setHeader('Retry-After', keyLimit.retryAfter);
+        return sendError(
+          res,
+          429,
+          'RATE_LIMIT_EXCEEDED',
+          `API key rate limit of ${keyLimit.limit} requests/minute exceeded. Retry after ${keyLimit.retryAfter}s.`,
+        );
+      }
+
       if (!apiKeyService.checkRateLimit(key.id, endpoint)) {
         apiKeyService.recordUsage(key.id, endpoint, req.method, 429);
         return sendError(

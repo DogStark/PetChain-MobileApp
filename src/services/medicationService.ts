@@ -7,9 +7,9 @@ import {
   getDoseLogs as dbGetDoseLogs,
   addDoseLog as dbAddDoseLog,
 } from './localDB';
-import type { Medication, RefillStatus } from '../models/Medication';
+import type { Medication, RefillRequest, RefillRequestStatus, RefillStatus } from '../models/Medication';
 
-export type { Medication, RefillStatus };
+export type { Medication, RefillRequest, RefillRequestStatus, RefillStatus };
 
 /**
  * Explicit dose state machine (#1049).
@@ -173,6 +173,133 @@ export async function saveMedication(med: Medication): Promise<void> {
 
 export async function deleteMedication(id: string): Promise<void> {
   await deleteMedicationById(id);
+}
+
+// ── Refill requests (#1346) ──────────────────────────────────────────────────
+
+/** Allowed refill-request transitions. Anything else is rejected. */
+const REFILL_TRANSITIONS: Record<RefillRequestStatus, RefillRequestStatus[]> = {
+  pending: ['approved', 'rejected'],
+  approved: ['dispensed'],
+  rejected: [],
+  dispensed: [],
+};
+
+/** True when a refill request may move from `from` to `to`. */
+export function canTransitionRefillRequest(
+  from: RefillRequestStatus,
+  to: RefillRequestStatus,
+): boolean {
+  return REFILL_TRANSITIONS[from].includes(to);
+}
+
+/** True when the medication is active and therefore eligible for a refill request. */
+export function isRefillEligible(med: Medication): boolean {
+  return (med.status ?? 'active') === 'active';
+}
+
+/** True when the medication already has an open (pending or approved) request. */
+export function hasOpenRefillRequest(
+  medicationId: string,
+  requests: RefillRequest[],
+): boolean {
+  return requests.some(
+    (request) =>
+      request.medicationId === medicationId &&
+      (request.status === 'pending' || request.status === 'approved'),
+  );
+}
+
+/**
+ * Submit a refill request for an active medication. Only one open request per
+ * medication is allowed so the vet queue cannot be flooded.
+ */
+export async function requestRefill(
+  medicationId: string,
+  note?: string,
+): Promise<RefillRequest> {
+  const medications = await getMedications();
+  const medication = medications.find((med) => med.id === medicationId);
+  if (!medication) throw new Error('Medication not found');
+  if (!isRefillEligible(medication)) {
+    throw new Error('Only active medications can be refilled');
+  }
+
+  const requests = await getRefillRequests();
+  if (hasOpenRefillRequest(medicationId, requests)) {
+    throw new Error('A refill request is already in progress');
+  }
+
+  const now = new Date().toISOString();
+  const request: RefillRequest = {
+    id: `refill-${medicationId}-${Date.now()}`,
+    medicationId,
+    petId: medication.petId,
+    status: 'pending',
+    requestedAt: now,
+    updatedAt: now,
+    ...(note?.trim() ? { note: note.trim() } : {}),
+  };
+  await upsertRefillRequest(request);
+  return request;
+}
+
+/** List refill requests, newest first, optionally filtered by medication. */
+export async function getRefillRequests(medicationId?: string): Promise<RefillRequest[]> {
+  const requests = await dbGetRefillRequests<RefillRequest>();
+  return requests
+    .filter((request) => (medicationId ? request.medicationId === medicationId : true))
+    .sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
+}
+
+/**
+ * Move a refill request to its next status. Approving a request also starts the
+ * next medication cycle (new start date, supply reset to the previous total).
+ */
+export async function updateRefillRequestStatus(
+  requestId: string,
+  status: RefillRequestStatus,
+  options: { rejectionReason?: string } = {},
+): Promise<RefillRequest> {
+  const requests = await getRefillRequests();
+  const request = requests.find((entry) => entry.id === requestId);
+  if (!request) throw new Error('Refill request not found');
+  if (!canTransitionRefillRequest(request.status, status)) {
+    throw new Error(`Cannot move refill request from ${request.status} to ${status}`);
+  }
+
+  const now = new Date().toISOString();
+  const next: RefillRequest = {
+    ...request,
+    status,
+    updatedAt: now,
+    ...(status === 'rejected' && options.rejectionReason
+      ? { rejectionReason: options.rejectionReason }
+      : {}),
+  };
+
+  if (status === 'approved') {
+    const medications = await getMedications();
+    const medication = medications.find((med) => med.id === request.medicationId);
+    if (medication) {
+      const startDate = now.slice(0, 10);
+      const supply = medication.totalPills ?? medication.currentSupply ?? medication.remainingPills;
+      const nextCycle: Medication = {
+        ...medication,
+        startDate,
+        lastRefillDate: startDate,
+        ...(supply !== undefined
+          ? { currentSupply: supply, remainingPills: supply }
+          : {}),
+        refillThresholdNotifiedAt: undefined,
+      };
+      await saveMedication(nextCycle);
+      next.nextCycleStartDate = startDate;
+    }
+  }
+
+  await upsertRefillRequest(next);
+  return next;
 }
 
 export async function getDoseLogs(): Promise<DoseLog[]> {
@@ -369,4 +496,119 @@ export async function scheduleDoseReminder(
 /** Cancel a previously scheduled dose reminder by its notification id. */
 export async function cancelDoseReminder(notificationId: string): Promise<void> {
   await Notifications.cancelScheduledNotificationAsync(notificationId);
+}
+
+// ── Time-zone aware scheduling (#1359) ───────────────────────────────────────
+
+/** A dose occurrence that is (or should be) backed by a local notification. */
+export interface ScheduledDose {
+  medicationId: string;
+  /** Existing notification id, when the dose is already scheduled. */
+  notificationId?: string;
+  /** Absolute instant of the dose. */
+  fireDate: string | Date;
+}
+
+/** Result of diffing existing notifications against the desired schedule. */
+export interface DoseReconciliation {
+  /** Notification ids that must be cancelled (stale or duplicated). */
+  toCancel: string[];
+  /** Doses that still need a notification scheduled. */
+  toSchedule: ScheduledDose[];
+  /** Notification ids that already match a desired dose. */
+  keep: string[];
+}
+
+/** The pet's home time zone, falling back to the device zone then UTC. */
+export function resolveHomeTimezone(medication?: Pick<Medication, 'reminders'>): string {
+  const stored = medication?.reminders?.timezone;
+  if (stored) return stored;
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+/**
+ * Stable identity for a scheduled dose: medication + absolute instant snapped
+ * to the whole minute. The same instant expressed in any time zone (or offset)
+ * yields the same key, so travel/DST never forks a dose.
+ */
+export function doseIdentityKey(dose: ScheduledDose): string {
+  const ms = dose.fireDate instanceof Date ? dose.fireDate.getTime() : new Date(dose.fireDate).getTime();
+  if (Number.isNaN(ms)) {
+    throw new Error('doseIdentityKey: invalid fireDate');
+  }
+  return scheduledDoseId(dose.medicationId, ms);
+}
+
+/**
+ * Diff the notifications currently scheduled against the desired dose list.
+ *
+ * Doses are matched by absolute identity, so a schedule recomputed after a
+ * time-zone change keeps every notification whose instant is unchanged and
+ * only cancels/re-creates the ones that actually moved. Exact duplicates for
+ * the same instant are collapsed to the first notification.
+ */
+export function reconcileDoseSchedules(
+  existing: ScheduledDose[],
+  desired: ScheduledDose[],
+): DoseReconciliation {
+  const desiredKeys = new Set(desired.map(doseIdentityKey));
+  const toCancel: string[] = [];
+  const keep: string[] = [];
+  const seen = new Set<string>();
+
+  for (const dose of existing) {
+    const key = doseIdentityKey(dose);
+    if (!desiredKeys.has(key) || seen.has(key)) {
+      if (dose.notificationId) toCancel.push(dose.notificationId);
+      continue;
+    }
+    seen.add(key);
+    if (dose.notificationId) keep.push(dose.notificationId);
+  }
+
+  const toSchedule = desired.filter((dose) => !seen.has(doseIdentityKey(dose)));
+  return { toCancel, toSchedule, keep };
+}
+
+/**
+ * Reconcile upcoming reminders after the device time zone changed so local
+ * dose times are preserved. Returns the reconciliation plus a user-facing
+ * message when anything was adjusted (null when nothing changed).
+ */
+export async function reconcileRemindersForTimezoneChange(
+  medications: Medication[],
+  existing: ScheduledDose[],
+  now: Date = new Date(),
+): Promise<{ reconciliation: DoseReconciliation; notification: string | null }> {
+  const desired: ScheduledDose[] = [];
+  for (const med of medications) {
+    if (med.status && med.status !== 'active') continue;
+    if (!med.reminders?.enabled) continue;
+    const horizon = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    for (const dose of getScheduleForRange(med, now, horizon)) {
+      desired.push({ medicationId: med.id, fireDate: dose });
+    }
+  }
+
+  const reconciliation = reconcileDoseSchedules(existing, desired);
+  for (const id of reconciliation.toCancel) {
+    await cancelDoseReminder(id);
+  }
+  for (const dose of reconciliation.toSchedule) {
+    const med = medications.find((m) => m.id === dose.medicationId);
+    await scheduleDoseReminder(dose.medicationId, med?.name ?? 'medication', dose.fireDate);
+  }
+
+  const adjusted = reconciliation.toCancel.length + reconciliation.toSchedule.length;
+  return {
+    reconciliation,
+    notification:
+      adjusted > 0
+        ? `Your time zone changed. ${adjusted} medication reminder${adjusted === 1 ? '' : 's'} were adjusted to keep your local dose times.`
+        : null,
+  };
 }

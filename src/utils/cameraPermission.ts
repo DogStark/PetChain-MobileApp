@@ -65,3 +65,17 @@ export const cameraPermissionRequiresSettings = (state: CameraPermissionState): 
 /** True when the camera preview may be shown. */
 export const cameraPermissionAllowsCamera = (state: CameraPermissionState): boolean =>
   state === 'granted';
+
+/**
+ * True when the pre-permission rationale modal should be shown before the
+ * first system camera permission request (Issue #1351).
+ */
+export const cameraPermissionNeedsRationale = (state: CameraPermissionState): boolean =>
+  state === 'undetermined';
+
+/**
+ * True when the user must be sent to the system settings screen to recover
+ * camera access (permanently denied or restricted).
+ */
+export const cameraPermissionNeedsSettingsPrompt = (state: CameraPermissionState): boolean =>
+  cameraPermissionRequiresSettings(state);

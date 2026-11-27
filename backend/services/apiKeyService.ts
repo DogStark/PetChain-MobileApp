@@ -15,7 +15,7 @@ import type {
   ApiKeyUsageSummary,
   CreateApiKeyInput,
 } from '../models/ApiKey';
-import { API_KEY_SCOPES } from '../models/ApiKey';
+import { API_KEY_SCOPES, DEFAULT_API_KEY_RATE_LIMIT } from '../models/ApiKey';
 import { store, newId } from '../server/store';
 
 const BCRYPT_ROUNDS = process.env.NODE_ENV === 'test' ? 4 : 10;
@@ -25,8 +25,11 @@ const PREFIX_SEGMENT = 'pk_live';
 export const DEFAULT_ROTATION_OVERLAP_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Per-key per-endpoint rate limit: max requests per window. */
-const RATE_LIMIT_MAX = 100;
+const RATE_LIMIT_MAX = DEFAULT_API_KEY_RATE_LIMIT;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+
+/** Redis key prefix for per-API-key counters (distinct from IP-based `rl:*` keys). */
+const API_KEY_RATE_LIMIT_PREFIX = 'rl:apikey:';
 
 interface RateLimitBucket {
   count: number;
@@ -34,6 +37,37 @@ interface RateLimitBucket {
 }
 
 const rateLimitBuckets = new Map<string, RateLimitBucket>();
+
+/** Minimal Redis surface used for key-level counters (ioredis compatible). */
+export interface RateLimitRedis {
+  incr(key: string): Promise<number>;
+  expire(key: string, seconds: number): Promise<number>;
+  ttl(key: string): Promise<number>;
+}
+
+let rateLimitRedis: RateLimitRedis | null = null;
+
+/** Inject a Redis client so key-level limits are shared across instances. */
+export function setRateLimitRedis(client: RateLimitRedis | null): void {
+  rateLimitRedis = client;
+}
+
+export interface ApiKeyRateLimitResult {
+  allowed: boolean;
+  limit: number;
+  remaining: number;
+  /** Seconds until the current window resets. */
+  retryAfter: number;
+}
+
+function resolveLimit(key: ApiKey): number {
+  const configured = key.rateLimitPerMinute;
+  return typeof configured === 'number' && configured > 0 ? configured : RATE_LIMIT_MAX;
+}
+
+function isValidRateLimit(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
 
 function toPublic(key: ApiKey): ApiKeyPublic {
   const { keyHash: _hash, ...rest } = key;
@@ -98,6 +132,9 @@ export async function createApiKey(
   if (!isScopeValid(input.scopes)) {
     throw new Error('INVALID_SCOPES');
   }
+  if (input.rateLimitPerMinute !== undefined && !isValidRateLimit(input.rateLimitPerMinute)) {
+    throw new Error('INVALID_RATE_LIMIT');
+  }
 
   const { secret, prefix } = generateKeyMaterial();
   const keyHash = await hashKey(secret);
@@ -113,6 +150,7 @@ export async function createApiKey(
     status: 'active',
     createdBy,
     expiresAt: input.expiresAt,
+    rateLimitPerMinute: input.rateLimitPerMinute ?? RATE_LIMIT_MAX,
     createdAt: t,
     updatedAt: t,
   };
@@ -223,6 +261,7 @@ export async function rotateApiKey(
     status: 'active',
     createdBy: existing.createdBy,
     expiresAt: existing.expiresAt,
+    rateLimitPerMinute: existing.rateLimitPerMinute,
     rotatedFromId: existing.id,
     createdAt: t,
     updatedAt: t,
@@ -309,6 +348,42 @@ export function checkRateLimit(apiKeyId: string, endpoint: string): boolean {
   return true;
 }
 
+/**
+ * Enforce the key's own per-minute budget in Redis, independent of IP limits.
+ * Falls back to the in-memory sliding window when Redis is unavailable.
+ */
+export async function checkKeyRateLimit(key: ApiKey): Promise<ApiKeyRateLimitResult> {
+  const limit = resolveLimit(key);
+  const redis = rateLimitRedis;
+
+  if (!redis) {
+    const allowed = checkRateLimit(key.id, '*');
+    return { allowed, limit, remaining: allowed ? limit - 1 : 0, retryAfter: 60 };
+  }
+
+  const window = Math.floor(Date.now() / RATE_LIMIT_WINDOW_MS);
+  const redisKey = `${API_KEY_RATE_LIMIT_PREFIX}${key.id}:${window}`;
+
+  try {
+    const count = await redis.incr(redisKey);
+    if (count === 1) {
+      await redis.expire(redisKey, Math.ceil(RATE_LIMIT_WINDOW_MS / 1000));
+    }
+    const ttl = await redis.ttl(redisKey);
+    const retryAfter = ttl > 0 ? ttl : Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+    const allowed = count <= limit;
+    return {
+      allowed,
+      limit,
+      remaining: Math.max(0, limit - count),
+      retryAfter,
+    };
+  } catch {
+    const allowed = checkRateLimit(key.id, '*');
+    return { allowed, limit, remaining: allowed ? limit - 1 : 0, retryAfter: 60 };
+  }
+}
+
 /** Reset in-memory state (tests). */
 export function resetApiKeyStore(): void {
   store.apiKeys.clear();
@@ -330,6 +405,8 @@ export default {
   recordUsage,
   getUsageSummary,
   checkRateLimit,
+  checkKeyRateLimit,
+  setRateLimitRedis,
   hasScope,
   generateKeyMaterial,
   hashKey,

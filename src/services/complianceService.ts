@@ -82,6 +82,54 @@ export async function requestDataExport(userId: string): Promise<DataExportPaylo
   return response.data;
 }
 
+/** How long a signed portability export URL stays valid. */
+export const EXPORT_URL_TTL_HOURS = 48;
+/** Cooling-off period between export download and irreversible deletion. */
+export const DELETION_COOLING_OFF_HOURS = 24;
+
+export interface PortabilityExport {
+  /** Short-lived signed URL to the generated export archive. */
+  downloadUrl: string;
+  /** ISO timestamp after which the signed URL stops working. */
+  expiresAt: string;
+}
+
+/**
+ * Requests a signed, time-limited export URL for the account's data so the user
+ * can take a copy before deletion. The URL is valid for 48 hours.
+ */
+export async function requestPortabilityExport(userId: string): Promise<PortabilityExport> {
+  const response = await apiClient.post<Partial<PortabilityExport>>(
+    `/compliance/export/${userId}/signed-url`,
+  );
+  const body = response.data;
+  if (!body.downloadUrl) {
+    throw new Error('Export URL was not returned by the server');
+  }
+  const expiresAt =
+    body.expiresAt ??
+    new Date(Date.now() + EXPORT_URL_TTL_HOURS * 60 * 60 * 1000).toISOString();
+
+  return { downloadUrl: body.downloadUrl, expiresAt };
+}
+
+/**
+ * Records that the user downloaded their export. The server starts the 24-hour
+ * cooling-off period from this moment before deletion can run.
+ */
+export async function confirmExportDownloaded(
+  userId: string,
+): Promise<{ deletionScheduledAt: string }> {
+  const response = await apiClient.post<{ deletionScheduledAt?: string }>(
+    `/compliance/export/${userId}/downloaded`,
+  );
+  return {
+    deletionScheduledAt:
+      response.data.deletionScheduledAt ??
+      new Date(Date.now() + DELETION_COOLING_OFF_HOURS * 60 * 60 * 1000).toISOString(),
+  };
+}
+
 // ─────────────────────────────────────────────────────────────
 // GDPR RIGHT TO ERASURE (Art. 17)
 // ─────────────────────────────────────────────────────────────
@@ -115,6 +163,10 @@ export interface AccountDeletionStatus {
   completionEstimate: string | null;
   /** Server-authored explanation of what is retained and why. Shown verbatim. */
   retentionNotice: string | null;
+  /** When the user downloaded their data export, if they did. */
+  exportDownloadedAt?: string | null;
+  /** When the signed export URL stops working, if an export was generated. */
+  exportExpiresAt?: string | null;
 }
 
 const KNOWN_DELETION_STATES: AccountDeletionState[] = [
@@ -142,6 +194,8 @@ export async function getAccountDeletionStatus(userId: string): Promise<AccountD
     deletionScheduledAt: body.deletionScheduledAt ?? null,
     completionEstimate: body.completionEstimate ?? null,
     retentionNotice: body.retentionNotice ?? null,
+    exportDownloadedAt: body.exportDownloadedAt ?? null,
+    exportExpiresAt: body.exportExpiresAt ?? null,
   };
 }
 

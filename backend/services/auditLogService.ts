@@ -160,4 +160,110 @@ async function query(q: AuditLogQuery = {}): Promise<{
   return { data, total, page, limit, totalPages };
 }
 
-export default { log, query };
+export interface MetadataChangeActor {
+  actorId: string;
+  actorEmail?: string;
+  role?: string;
+  ipAddress?: string;
+  userAgent?: string;
+}
+
+export type JsonPatchOperation = {
+  op: 'add' | 'remove' | 'replace';
+  path: string;
+  value?: unknown;
+};
+
+/**
+ * Compute a minimal JSON patch (RFC 6902 subset) between two metadata objects.
+ * Only top-level keys are diffed; nested objects are treated as opaque values.
+ */
+function computeMetadataPatch(
+  before: Record<string, unknown> | null | undefined,
+  after: Record<string, unknown> | null | undefined,
+): JsonPatchOperation[] {
+  const beforeObj = before ?? {};
+  const afterObj = after ?? {};
+  const patch: JsonPatchOperation[] = [];
+
+  const keys = new Set([...Object.keys(beforeObj), ...Object.keys(afterObj)]);
+  for (const key of keys) {
+    const hasBefore = Object.prototype.hasOwnProperty.call(beforeObj, key);
+    const hasAfter = Object.prototype.hasOwnProperty.call(afterObj, key);
+    const path = `/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`;
+
+    if (!hasBefore && hasAfter) {
+      patch.push({ op: 'add', path, value: afterObj[key] });
+    } else if (hasBefore && !hasAfter) {
+      patch.push({ op: 'remove', path });
+    } else if (JSON.stringify(beforeObj[key]) !== JSON.stringify(afterObj[key])) {
+      patch.push({ op: 'replace', path, value: afterObj[key] });
+    }
+  }
+
+  return patch;
+}
+
+/**
+ * Record a pet metadata change with before/after snapshots and a JSON patch diff.
+ * Fire-and-forget — never throws.
+ */
+function recordMetadataChange(
+  petId: string,
+  before: Record<string, unknown> | null | undefined,
+  after: Record<string, unknown> | null | undefined,
+  actor: MetadataChangeActor,
+): void {
+  const patch = computeMetadataPatch(before, after);
+
+  log({
+    actorId: actor.actorId,
+    actorEmail: actor.actorEmail,
+    role: actor.role,
+    action: 'update',
+    resourceType: 'pet',
+    resourceId: petId,
+    ipAddress: actor.ipAddress,
+    userAgent: actor.userAgent,
+    meta: {
+      kind: 'pet_metadata_change',
+      before: before ?? {},
+      after: after ?? {},
+      patch,
+    },
+  });
+}
+
+/**
+ * Paginated metadata change history for a pet.
+ */
+async function getMetadataHistory(
+  petId: string,
+  page = 1,
+  limit = 50,
+): Promise<{
+  data: AuditLog[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}> {
+  const safePage = Math.max(1, page);
+  const safeLimit = Math.min(200, Math.max(1, limit));
+
+  const result = await query({
+    resourceType: 'pet',
+    resourceId: petId,
+    action: 'update',
+    page: safePage,
+    limit: safeLimit,
+  });
+
+  const data = result.data.filter(
+    (entry) => (entry.meta as Record<string, unknown> | undefined)?.kind === 'pet_metadata_change',
+  );
+
+  return { ...result, data };
+}
+
+export default { log, query, recordMetadataChange, getMetadataHistory, computeMetadataPatch };

@@ -2,7 +2,9 @@ import * as SecureStore from 'expo-secure-store';
 
 import {
   checkDrugInteractions,
+  checkInteractionsBeforeSave,
   findInteraction,
+  getInteractionSourceLabel,
   getSeverityLabel,
   isInteractionOverridden,
   recordVetOverride,
@@ -150,6 +152,52 @@ describe('drugInteractionService — Issue #335', () => {
       const result = await isInteractionOverridden('prednisone', 'carprofen');
       expect(result).not.toBeNull();
       expect(result?.vetId).toBe('vet-001');
+    });
+  });
+
+  describe('checkInteractionsBeforeSave — Issue #1363', () => {
+    it('blocks save on a severe interaction until a vet override is provided', async () => {
+      const blocked = await checkInteractionsBeforeSave('carprofen', ['prednisone']);
+      expect(blocked.hasInteractions).toBe(true);
+      expect(blocked.requiresVetOverride).toBe(true);
+      expect(blocked.blocked).toBe(true);
+      expect(blocked.canSave).toBe(false);
+      expect(mockSetItem).not.toHaveBeenCalled();
+    });
+
+    it('allows save on a severe interaction once a vet override is recorded', async () => {
+      const allowed = await checkInteractionsBeforeSave('carprofen', ['prednisone'], {
+        vetOverride: { vetId: 'vet-001', justification: 'Post-surgical pain control' },
+      });
+      expect(allowed.blocked).toBe(false);
+      expect(allowed.canSave).toBe(true);
+      expect(allowed.overriddenBy).toBe('vet-001');
+      expect(mockSetItem).toHaveBeenCalled();
+    });
+
+    it('warns but allows save on a moderate interaction', async () => {
+      const result = await checkInteractionsBeforeSave('phenobarbital', ['metronidazole']);
+      expect(result.hasModerateWarning).toBe(true);
+      expect(result.requiresVetOverride).toBe(false);
+      expect(result.blocked).toBe(false);
+      expect(result.canSave).toBe(true);
+    });
+
+    it('allows save with no interactions', async () => {
+      const result = await checkInteractionsBeforeSave('amoxicillin', ['phenobarbital']);
+      expect(result.hasInteractions).toBe(false);
+      expect(result.hasModerateWarning).toBe(false);
+      expect(result.blocked).toBe(false);
+      expect(result.canSave).toBe(true);
+    });
+
+    it('reports the interaction data source and check timestamp', async () => {
+      const result = await checkInteractionsBeforeSave('carprofen', ['prednisone']);
+      expect(result.source).toBe('local-database');
+      expect(result.checkedAt).toBeDefined();
+      expect(getInteractionSourceLabel(result.source, result.checkedAt)).toContain(
+        'Bundled interaction database',
+      );
     });
   });
 });

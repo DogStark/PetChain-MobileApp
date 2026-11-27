@@ -10,13 +10,15 @@ export type NotificationTopic =
   | 'medication_reminders'
   | 'appointment_alerts'
   | 'sos_notifications'
-  | 'health_tips';
+  | 'health_tips'
+  | 'health_alerts';
 
 export const ALL_TOPICS: NotificationTopic[] = [
   'medication_reminders',
   'appointment_alerts',
   'sos_notifications',
   'health_tips',
+  'health_alerts',
 ];
 
 export interface PushJob {
@@ -403,7 +405,9 @@ export async function enqueue(job: Omit<PushJob, 'attempts' | 'createdAt'>): Pro
     getPreferences(job.userId),
     isSubscribed(job.userId, job.topic),
   ]);
-  if (!prefs.enabled || prefs.topics[job.topic] === false || !subscribed) {
+  // health_alerts are safety-critical: they bypass topic opt-out/subscription.
+  const bypassPreferences = job.topic === 'health_alerts';
+  if (!bypassPreferences && (!prefs.enabled || prefs.topics[job.topic] === false || !subscribed)) {
     logger.info('push_skipped_preference', { userId: job.userId, topic: job.topic });
     return false;
   }

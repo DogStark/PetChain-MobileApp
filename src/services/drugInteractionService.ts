@@ -24,9 +24,25 @@ export interface DrugInteraction {
 export interface InteractionCheckResult {
   hasInteractions: boolean;
   interactions: DrugInteraction[];
+  /** Where the interaction data came from (local cache or bundled database). */
+  source?: InteractionDataSource;
+  /** ISO timestamp of when the check was performed. */
+  checkedAt?: string;
+  /** True when at least one interaction is severe or contraindicated. */
+  requiresVetOverride?: boolean;
+  /** True when at least one interaction is moderate (dismissible warning). */
+  hasModerateWarning?: boolean;
   overriddenBy?: string; // vet name/id who overrode
   overrideJustification?: string;
 }
+
+export type InteractionDataSource = 'cache' | 'local-database';
+
+/** Severities that block saving until a vet override is recorded. */
+export const BLOCKING_SEVERITIES: InteractionSeverity[] = ['severe', 'contraindicated'];
+
+/** Severities that surface a dismissible warning but do not block saving. */
+export const WARNING_SEVERITIES: InteractionSeverity[] = ['moderate'];
 
 export interface VetOverride {
   drugA: string;
@@ -208,7 +224,59 @@ export async function checkDrugInteractions(
     }
   }
 
-  return { hasInteractions: interactions.length > 0, interactions };
+  return {
+    hasInteractions: interactions.length > 0,
+    interactions,
+    source: cached ? 'cache' : 'local-database',
+    checkedAt: new Date().toISOString(),
+    requiresVetOverride: interactions.some((i) => BLOCKING_SEVERITIES.includes(i.severity)),
+    hasModerateWarning: interactions.some((i) => WARNING_SEVERITIES.includes(i.severity)),
+  };
+}
+
+/**
+ * Pre-save gate for the medication flow.
+ *
+ * Checks `newDrug` against the pet's active medications and decides whether the
+ * save may proceed:
+ *  - severe / contraindicated interactions block the save until a vet override
+ *    has been recorded for every blocking pair;
+ *  - moderate interactions allow the save but surface a dismissible warning;
+ *  - no interactions allow the save silently.
+ */
+export async function checkInteractionsBeforeSave(
+  newDrug: string,
+  activeMedications: string[],
+  options: { species?: Species; vetOverride?: { vetId: string; justification: string } } = {},
+): Promise<InteractionCheckResult & { canSave: boolean; blocked: boolean }> {
+  const result = await checkDrugInteractions(newDrug, activeMedications, options.species);
+  const blocking = result.interactions.filter((i) => BLOCKING_SEVERITIES.includes(i.severity));
+
+  if (blocking.length === 0) {
+    return { ...result, canSave: true, blocked: false };
+  }
+
+  const override = options.vetOverride;
+  if (!override || !override.vetId.trim() || !override.justification.trim()) {
+    return { ...result, canSave: false, blocked: true };
+  }
+
+  for (const interaction of blocking) {
+    await recordVetOverride({
+      drugA: interaction.drugA,
+      drugB: interaction.drugB,
+      vetId: override.vetId.trim(),
+      justification: override.justification.trim(),
+    });
+  }
+
+  return {
+    ...result,
+    canSave: true,
+    blocked: false,
+    overriddenBy: override.vetId.trim(),
+    overrideJustification: override.justification.trim(),
+  };
 }
 
 /**
@@ -235,6 +303,21 @@ export async function isInteractionOverridden(
         (normalise(o.drugA) === normalise(drugB) && normalise(o.drugB) === normalise(drugA)),
     ) ?? null
   );
+}
+
+/**
+ * Human-readable provenance line for the interaction data shown to the user.
+ */
+export function getInteractionSourceLabel(
+  source: InteractionDataSource | undefined,
+  checkedAt: string | undefined,
+): string {
+  const origin =
+    source === 'cache' ? 'Cached interaction database' : 'Bundled interaction database';
+  if (!checkedAt) return origin;
+  const date = new Date(checkedAt);
+  const stamp = Number.isNaN(date.getTime()) ? checkedAt : date.toLocaleString();
+  return `${origin} · checked ${stamp}`;
 }
 
 /**

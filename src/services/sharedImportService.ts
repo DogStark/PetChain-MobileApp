@@ -1,6 +1,10 @@
+import * as FileSystem from 'expo-file-system';
+
 import apiClient from './apiClient';
+import { validateAttachment } from './attachmentValidationService';
 import { cleanupTempFile, uploadDocument, type DocumentCategory } from './documentService';
 import {
+  MAX_MEDICAL_FILE_BYTES,
   validateMedicalImportFile,
   type AllowedMedicalMimeType,
 } from '../utils/medicalFileValidation';
@@ -107,12 +111,42 @@ export function quarantineSharedFile(
     return { ...base, status: 'rejected', reason: result.message, receivedAt: now };
   }
 
+  // Second gate: byte-level sniffing rejects executables and content whose real
+  // type disagrees with the declared one, even when the extension looks fine.
+  if (input.base64) {
+    const bytes = decodeBase64Bytes(input.base64);
+    const attachment = validateAttachment({
+      filename: input.name,
+      declaredContentType: result.resolvedType,
+      bytes,
+    });
+    if (!attachment.ok) {
+      return {
+        ...base,
+        status: 'rejected',
+        reason: attachment.reason ?? 'That file could not be verified.',
+        receivedAt: now,
+      };
+    }
+  }
+
   return {
     ...base,
     status: 'quarantined',
     mimeType: result.resolvedType,
     receivedAt: now,
   };
+}
+
+function decodeBase64Bytes(base64: string): Uint8Array {
+  const clean = base64.replace(/\s/g, '');
+  if (typeof atob === 'function') {
+    const binary = atob(clean);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+  return new Uint8Array(Buffer.from(clean, 'base64'));
 }
 
 export function isQuarantineStale(file: QuarantinedSharedFile, now: number = Date.now()): boolean {
@@ -202,4 +236,121 @@ export async function confirmSharedImport(
 /** Discard a shared file and remove its local copy. */
 export async function discardSharedFile(file: QuarantinedSharedFile): Promise<void> {
   await cleanupTempFile(file.uri);
+}
+
+// ─── Share extension handoff ──────────────────────────────────────────────────
+
+/**
+ * Deep link the iOS Share Extension / Android ACTION_SEND receiver uses to hand
+ * a shared file to the main app: `petchain://import?shareId=…&name=…&mime=…&uri=…`.
+ */
+export const SHARED_IMPORT_LINK_PATH = 'import';
+
+/** MIME types the share extension advertises and accepts. */
+export const SHARED_IMPORT_MIME_TYPES = [
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/heic',
+] as const;
+
+export interface SharedImportHandoff {
+  id: string;
+  name: string;
+  mimeType: string | null;
+  uri: string;
+}
+
+/** Build the handoff URL for a file shared from another app. */
+export function buildSharedImportLink(input: SharedImportHandoff): string {
+  const params = [
+    `shareId=${encodeURIComponent(input.id)}`,
+    `name=${encodeURIComponent(input.name)}`,
+    `uri=${encodeURIComponent(input.uri)}`,
+  ];
+  if (input.mimeType) params.push(`mime=${encodeURIComponent(input.mimeType)}`);
+  return `petchain://${SHARED_IMPORT_LINK_PATH}?${params.join('&')}`;
+}
+
+/**
+ * Parse a share-extension handoff URL. Returns null for anything that is not a
+ * well-formed import link so untrusted external input can never reach the
+ * importer with a half-populated payload.
+ */
+export function parseSharedImportLink(url: string): SharedImportHandoff | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const scheme = parsed.protocol.replace(':', '').toLowerCase();
+  if (scheme !== 'petchain' && scheme !== 'petchainapp') return null;
+  if (parsed.username || parsed.password || parsed.port) return null;
+
+  const path = `${parsed.hostname}/${parsed.pathname}`.replace(/^\/+|\/+$/g, '');
+  if (path !== SHARED_IMPORT_LINK_PATH) return null;
+
+  const id = parsed.searchParams.get('shareId') ?? '';
+  const name = parsed.searchParams.get('name') ?? '';
+  const uri = parsed.searchParams.get('uri') ?? '';
+  if (!id || !name || !uri) return null;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return null;
+  if (!/^(file|content):\/\//i.test(uri)) return null;
+
+  return { id, name, mimeType: parsed.searchParams.get('mime'), uri };
+}
+
+/**
+ * Read a shared file's size and leading bytes so it can be validated before any
+ * parser or upload sees it. Only the first bytes are read for the magic-byte
+ * check; the full file is never loaded into memory here.
+ */
+export async function readSharedFileForValidation(
+  uri: string,
+): Promise<{ size: number; base64: string | null }> {
+  const info = await FileSystem.getInfoAsync(uri);
+  if (!info.exists || info.isDirectory) {
+    return { size: 0, base64: null };
+  }
+  const size = info.size ?? 0;
+  if (size <= 0 || size > MAX_MEDICAL_FILE_BYTES) {
+    return { size, base64: null };
+  }
+  try {
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+      length: 64,
+      position: 0,
+    });
+    return { size, base64 };
+  } catch {
+    return { size, base64: null };
+  }
+}
+
+/**
+ * Entry point for the share extension handoff: parse the link, read the file,
+ * and quarantine it. The caller navigates to ImportRecordScreen with the
+ * returned file pre-loaded; nothing is imported until the user confirms.
+ */
+export async function receiveSharedImport(
+  url: string,
+  now: number = Date.now(),
+): Promise<QuarantinedSharedFile | null> {
+  const handoff = parseSharedImportLink(url);
+  if (!handoff) return null;
+
+  const { size, base64 } = await readSharedFileForValidation(handoff.uri);
+  return quarantineSharedFile(
+    {
+      id: handoff.id,
+      name: handoff.name,
+      size,
+      mimeType: handoff.mimeType,
+      uri: handoff.uri,
+      base64,
+    },
+    now,
+  );
 }

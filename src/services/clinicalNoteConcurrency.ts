@@ -132,3 +132,105 @@ export function appendAmendment(
 ): readonly NoteAmendment[] {
   return Object.freeze([...history, amendment]);
 }
+
+// ─── Client-generated version vectors (issue #1367) ──────────────────────────
+//
+// Offline edits cannot know the server's `version`, so each edit is tagged with
+// a version vector: a map of actor id → counter. Merging two vectors takes the
+// per-actor maximum, which lets the server (and the conflict UI) tell whether
+// one edit happened-before another or whether they are concurrent.
+
+/** Actor id → monotonically increasing counter for that actor. */
+export type VersionVector = Readonly<Record<string, number>>;
+
+/** How a concurrency conflict was settled. */
+export type ConflictResolutionChoice = 'mine' | 'theirs' | 'manual';
+
+/** Immutable record of a conflict resolution, for the audit trail. */
+export interface ConflictResolutionLog {
+  noteId: string;
+  /** Version the editor started from. */
+  baseVersion: number;
+  /** Version the server held when the conflict was detected. */
+  serverVersion: number;
+  choice: ConflictResolutionChoice;
+  /** Which side's text won, per conflicting field. */
+  winningVersion: 'mine' | 'theirs' | 'merged';
+  /** Id of the clinician who resolved the conflict. */
+  resolvedBy: string;
+  resolvedAt: string;
+  /** Version vector of the edit that was finally accepted. */
+  versionVector: VersionVector;
+  fields: SoapField[];
+}
+
+/** Returns a vector with `actorId`'s counter incremented by one. */
+export function incrementVersionVector(
+  vector: VersionVector | undefined,
+  actorId: string,
+): VersionVector {
+  return Object.freeze({ ...(vector ?? {}), [actorId]: (vector?.[actorId] ?? 0) + 1 });
+}
+
+/** Per-actor maximum of two vectors. */
+export function mergeVersionVectors(a: VersionVector, b: VersionVector): VersionVector {
+  const merged: Record<string, number> = { ...a };
+  for (const [actor, counter] of Object.entries(b)) {
+    merged[actor] = Math.max(merged[actor] ?? 0, counter);
+  }
+  return Object.freeze(merged);
+}
+
+/** True when `a` happened-before (or equals) `b` for every actor. */
+export function versionVectorDominates(a: VersionVector, b: VersionVector): boolean {
+  return Object.keys(a).every((actor) => (a[actor] ?? 0) >= (b[actor] ?? 0));
+}
+
+/** True when neither vector dominates the other — i.e. the edits are concurrent. */
+export function areVersionVectorsConcurrent(a: VersionVector, b: VersionVector): boolean {
+  return !versionVectorDominates(a, b) && !versionVectorDominates(b, a);
+}
+
+/**
+ * Builds the resolution log entry for a conflict. `winningVersion` is derived
+ * from the user's choice so the log always names the text that was kept.
+ */
+export function buildConflictResolutionLog(input: {
+  noteId: string;
+  baseVersion: number;
+  serverVersion: number;
+  choice: ConflictResolutionChoice;
+  resolvedBy: string;
+  versionVector: VersionVector;
+  fields: SoapField[];
+  resolvedAt?: string;
+}): ConflictResolutionLog {
+  const winningVersion =
+    input.choice === 'mine' ? 'mine' : input.choice === 'theirs' ? 'theirs' : 'merged';
+  return Object.freeze({
+    noteId: input.noteId,
+    baseVersion: input.baseVersion,
+    serverVersion: input.serverVersion,
+    choice: input.choice,
+    winningVersion,
+    resolvedBy: input.resolvedBy,
+    resolvedAt: input.resolvedAt ?? new Date().toISOString(),
+    versionVector: input.versionVector,
+    fields: [...input.fields],
+  });
+}
+
+/**
+ * Applies a resolution to the SOAP body. `mine`/`theirs` take that side
+ * wholesale; `manual` takes the clinician's hand-merged text.
+ */
+export function applyConflictResolution(
+  choice: ConflictResolutionChoice,
+  mine: SoapBody,
+  theirs: SoapBody,
+  merged?: SoapBody,
+): SoapBody {
+  if (choice === 'mine') return pickBody(mine);
+  if (choice === 'theirs') return pickBody(theirs);
+  return pickBody(merged ?? mine);
+}
