@@ -1,6 +1,6 @@
 -- Migration: 20260627000002_seed_notification_templates
--- Description: Seed English + Spanish templates for lost_pet_alert and
--- vaccination_transfer, used by sendNotification() in
+-- Description: Seed English, Spanish and Arabic templates for lost_pet_alert
+-- and vaccination_transfer, used by sendNotification() in
 -- notificationTemplateService.ts. Variables: {{petName}}.
 -- (lost_pet_alert currently has no variables but is included for parity
 -- with the locale-selection mechanism.)
@@ -39,6 +39,22 @@ VALUES
     '🐾 Recordatorios de vacunación transferidos',
     'Los recordatorios de vacunación de {{petName}} ya están activos en tu cuenta.',
     TRUE
+  ),
+  (
+    gen_random_uuid(),
+    'lost_pet_alert',
+    'ar',
+    'تنبيه حيوان أليف مفقود بالقرب منك',
+    'تم الإبلاغ عن حيوان أليف مفقود بالقرب منك. افتح التطبيق للتفاصيل.',
+    TRUE
+  ),
+  (
+    gen_random_uuid(),
+    'vaccination_transfer',
+    'ar',
+    '🐾 تم نقل تذكيرات التطعيم',
+    'تذكيرات التطعيم الخاصة بـ {{petName}} أصبحت نشطة الآن في حسابك.',
+    TRUE
   )
 ON CONFLICT (key, locale) DO NOTHING;
 
@@ -47,6 +63,8 @@ DELETE FROM notification_templates
 WHERE (key, locale) IN (
   ('lost_pet_alert', 'en'),
   ('lost_pet_alert', 'es'),
+  ('lost_pet_alert', 'ar'),
   ('vaccination_transfer', 'en'),
-  ('vaccination_transfer', 'es')
+  ('vaccination_transfer', 'es'),
+  ('vaccination_transfer', 'ar')
 );

@@ -28,11 +28,11 @@ const QRCodeDisplay: React.FC<Props> = ({ pet, size = 240 }) => {
   }, [pet]);
 
   if (error) {
-    return <Text style={styles.error}>{error}</Text>;
+    return <Text style={styles.error} accessibilityRole="alert">{error}</Text>;
   }
 
   if (!qrData) {
-    return <ActivityIndicator size="large" color="#4CAF50" />;
+    return <ActivityIndicator size="large" color="#4CAF50" accessibilityLabel="Loading QR code" />;
   }
 
   return (
@@ -40,7 +40,9 @@ const QRCodeDisplay: React.FC<Props> = ({ pet, size = 240 }) => {
       <Image
         source={{ uri: getQRImageUrl(qrData, size) }}
         style={{ width: size, height: size }}
+        accessibilityRole="image"
         accessibilityLabel={`${pet.name} PetChain QR code`}
+        accessibilityHint="Scan this code to open the pet's emergency profile"
       />
       <Text style={styles.caption}>Scan for {pet.name}'s emergency profile</Text>
     </View>

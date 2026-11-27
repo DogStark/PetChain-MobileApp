@@ -67,6 +67,7 @@
     "record_date": "Date",
     "record_type": "Type",
     "record_notes": "Notes",
+    "item_name": "Medical records",
     "vaccination": "Vaccination",
     "checkup": "Check-up",
     "surgery": "Surgery",
@@ -82,7 +83,8 @@
     "notes_label": "Notes",
     "upcoming": "Upcoming",
     "past": "Past",
-    "cancel_confirm": "Cancel this appointment?"
+    "cancel_confirm": "Cancel this appointment?",
+    "item_name": "Appointment"
   },
   "medication": {
     "title": "Medications",
@@ -93,7 +95,8 @@
     "frequency_label": "Frequency",
     "start_date_label": "Start date",
     "end_date_label": "End date",
-    "reminder": "Reminder set"
+    "reminder": "Reminder set",
+    "item_name": "Medication"
   },
   "qr": {
     "title": "QR Scanner",
@@ -120,6 +123,12 @@
     "back_button": "Go back",
     "loading_indicator": "Loading",
     "error_screen": "Error screen",
-    "pet_image": "Photo of {{name}}"
+    "pet_image": "Photo of {{name}}",
+    "announcements": {
+      "save_success": "{{item}} saved successfully.",
+      "save_error": "Could not save {{item}}. Please try again.",
+      "loading_complete": "{{item}} loaded.",
+      "loading_error": "Could not load {{item}}. Please try again."
+    }
   }
 }

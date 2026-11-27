@@ -1113,6 +1113,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginBottom: 10,
     fontSize: 14,
+    minHeight: 44,
     backgroundColor: '#fafafa',
   },
   textArea: { minHeight: 70, textAlignVertical: 'top' },
