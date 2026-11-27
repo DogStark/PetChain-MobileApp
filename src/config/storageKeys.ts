@@ -46,6 +46,8 @@ export const storageKeys = {
      * here.
      */
     pendingTransactions: '@stellar/pending_transactions',
+    /** Fiat on-ramp (SEP-24) deposits tracked for status polling (issue #1380). */
+    fiatOnRampTransactions: '@stellar/fiat_onramp_transactions',
   },
   travelPackingChecklist: {
     /** Cached list of packing checklist templates for the current user. */
