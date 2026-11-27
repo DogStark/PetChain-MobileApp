@@ -51,6 +51,7 @@
     "prepare": "husky",
     "codegen": "graphql-codegen --config codegen.ts",
     "migrations:validate": "tsx scripts/validate-migrations.ts",
+    "migrations:rollback": "tsx scripts/validate-migrations.ts --rollback",
     "check:empty-tests": "tsx scripts/check-empty-test-files.ts",
     "check:translations": "tsx scripts/check-translations.ts",
     "test:migrations": "tsx scripts/test-migrations.ts",
