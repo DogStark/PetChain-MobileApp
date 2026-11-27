@@ -119,25 +119,75 @@ export const publicRateLimiter: RateLimitRequestHandler = rateLimit({
 });
 
 // ---------------------------------------------------------------------------
-// Auth rate limiter — 5 req / min per IP (login, register — always IP-based)
+// Authentication endpoint limiters
 // ---------------------------------------------------------------------------
 
-export const authRateLimiter: RateLimitRequestHandler = rateLimit({
+function positiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const loginIpMax = positiveInt(process.env.AUTH_LOGIN_IP_MAX_ATTEMPTS, 10);
+const loginEmailMax = positiveInt(process.env.AUTH_LOGIN_EMAIL_MAX_ATTEMPTS, 5);
+const registerIpMax = positiveInt(process.env.AUTH_REGISTER_IP_MAX_ATTEMPTS, 5);
+
+export const loginIpRateLimiter: RateLimitRequestHandler = rateLimit({
   ...sharedOptions,
   windowMs: 60 * 1000,
-  max: 5,
+  max: loginIpMax,
   keyGenerator: ipKey,
-  store: makeStore('rl:auth:'),
+  store: makeStore('rl:auth:login:ip:'),
   handler: (req: Request, res: Response) => {
-    trackViolation(`auth:${ipKey(req)}`);
+    trackViolation(`auth:login:ip:${ipKey(req)}`);
     res.setHeader('Retry-After', 60);
     res.status(429).json({
       error: 'TOO_MANY_REQUESTS',
-      message: 'Too many authentication attempts. Please wait 1 minute.',
+      message: 'Too many login attempts from this IP. Please wait 1 minute.',
       retryAfter: 60,
     });
   },
 });
+
+export const loginEmailRateLimiter: RateLimitRequestHandler = rateLimit({
+  ...sharedOptions,
+  windowMs: 60 * 1000,
+  max: loginEmailMax,
+  keyGenerator: (req: Request) => {
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    return `email:${email || 'missing'}`;
+  },
+  store: makeStore('rl:auth:login:email:'),
+  handler: (req: Request, res: Response) => {
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    trackViolation(`auth:login:email:${email || 'missing'}`);
+    res.setHeader('Retry-After', 60);
+    res.status(429).json({
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Too many login attempts for this email. Please wait 1 minute.',
+      retryAfter: 60,
+    });
+  },
+});
+
+export const registerIpRateLimiter: RateLimitRequestHandler = rateLimit({
+  ...sharedOptions,
+  windowMs: 60 * 60 * 1000,
+  max: registerIpMax,
+  keyGenerator: ipKey,
+  store: makeStore('rl:auth:register:ip:'),
+  handler: (req: Request, res: Response) => {
+    trackViolation(`auth:register:ip:${ipKey(req)}`);
+    res.setHeader('Retry-After', 3600);
+    res.status(429).json({
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Too many registration attempts from this IP. Please wait 1 hour.',
+      retryAfter: 3600,
+    });
+  },
+});
+
+/** @deprecated Use loginIpRateLimiter, loginEmailRateLimiter, or registerIpRateLimiter. */
+export const authRateLimiter: RateLimitRequestHandler = loginIpRateLimiter;
 
 // ---------------------------------------------------------------------------
 // Read rate limiter — 200 req / min per user (fallback to IP)
