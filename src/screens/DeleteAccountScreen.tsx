@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   StyleSheet,
   Text,
   TextInput,
@@ -9,7 +10,12 @@ import {
   View,
 } from 'react-native';
 
-import { deleteAccount } from '../services/userService';
+import {
+  confirmExportDownloaded,
+  requestPortabilityExport,
+  type PortabilityExport,
+} from '../services/complianceService';
+import { deleteAccount, getUserProfile } from '../services/userService';
 
 interface Props {
   onBack: () => void;
@@ -18,11 +24,38 @@ interface Props {
 
 const CONFIRM_WORD = 'DELETE';
 
+const formatDateTime = (iso: string): string => {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+};
+
 const DeleteAccountScreen: React.FC<Props> = ({ onBack, onDeleted }) => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportInfo, setExportInfo] = useState<PortabilityExport | null>(null);
+  const [exportDownloaded, setExportDownloaded] = useState(false);
 
   const confirmed = input.trim() === CONFIRM_WORD;
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const profile = await getUserProfile();
+      if (!profile?.id) {
+        throw new Error('No profile available');
+      }
+      const result = await requestPortabilityExport(profile.id);
+      setExportInfo(result);
+      await Linking.openURL(result.downloadUrl);
+      await confirmExportDownloaded(profile.id);
+      setExportDownloaded(true);
+    } catch {
+      Alert.alert('Export failed', 'Could not generate your data export. Please try again.');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const handleDelete = () => {
     Alert.alert(
@@ -82,6 +115,39 @@ const DeleteAccountScreen: React.FC<Props> = ({ onBack, onDeleted }) => {
           ))}
         </View>
 
+        <View style={styles.exportCard}>
+          <Text style={styles.exportTitle}>1. Download your data</Text>
+          <Text style={styles.exportBody}>
+            Before deleting, download a copy of your profile, pets, medical records, medications and
+            appointments. The download link is signed and stays valid for 48 hours.
+          </Text>
+          <TouchableOpacity
+            style={[styles.exportBtn, exporting && styles.exportBtnDisabled]}
+            onPress={() => void handleExport()}
+            disabled={exporting}
+            accessibilityRole="button"
+            accessibilityLabel="Download my data export"
+          >
+            {exporting ? (
+              <ActivityIndicator color="#2d3748" />
+            ) : (
+              <Text style={styles.exportBtnText}>
+                {exportInfo ? 'Download Export Again' : 'Download My Data'}
+              </Text>
+            )}
+          </TouchableOpacity>
+          {exportInfo && (
+            <Text style={styles.exportMeta}>
+              Link expires {formatDateTime(exportInfo.expiresAt)}
+            </Text>
+          )}
+          {exportDownloaded && (
+            <Text style={styles.exportMeta}>
+              Export downloaded. Deletion can only run after a 24-hour cooling-off period.
+            </Text>
+          )}
+        </View>
+
         <View style={styles.confirmCard}>
           <Text style={styles.confirmLabel}>
             Type <Text style={styles.confirmWord}>{CONFIRM_WORD}</Text> to confirm
@@ -95,12 +161,20 @@ const DeleteAccountScreen: React.FC<Props> = ({ onBack, onDeleted }) => {
             autoCorrect={false}
             accessibilityLabel="Type DELETE to confirm account deletion"
           />
+          {!exportDownloaded && (
+            <Text style={styles.exportHint}>
+              Download your data export first to enable deletion.
+            </Text>
+          )}
         </View>
 
         <TouchableOpacity
-          style={[styles.deleteBtn, (!confirmed || loading) && styles.deleteBtnDisabled]}
+          style={[
+            styles.deleteBtn,
+            (!confirmed || loading || !exportDownloaded) && styles.deleteBtnDisabled,
+          ]}
           onPress={handleDelete}
-          disabled={!confirmed || loading}
+          disabled={!confirmed || loading || !exportDownloaded}
           accessibilityRole="button"
           accessibilityLabel="Delete account permanently"
         >
@@ -169,6 +243,28 @@ const styles = StyleSheet.create({
   },
   confirmLabel: { fontSize: 14, color: '#555' },
   confirmWord: { fontWeight: '700', color: '#c62828' },
+  exportCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+    gap: 10,
+  },
+  exportTitle: { fontSize: 15, fontWeight: '700', color: '#1a1a1a' },
+  exportBody: { fontSize: 13, color: '#555', lineHeight: 19 },
+  exportBtn: {
+    backgroundColor: '#edf2f7',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  exportBtnDisabled: { opacity: 0.5 },
+  exportBtnText: { color: '#2d3748', fontWeight: '600', fontSize: 15 },
+  exportMeta: { fontSize: 12, color: '#666' },
+  exportHint: { fontSize: 12, color: '#b26a00', fontWeight: '600' },
   input: {
     borderWidth: 1.5,
     borderColor: '#ddd',

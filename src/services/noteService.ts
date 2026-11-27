@@ -3,10 +3,26 @@ import {
   NoteConcurrencyError,
   assertUpdatable,
   type SoapBody,
+  type VersionVector,
 } from './clinicalNoteConcurrency';
 import { deleteSoapDraft, getSoapDraft, upsertSoapDraft, type SoapNoteDraft } from './localDB';
 
 export type { SoapNoteDraft };
+
+export type {
+  ConflictResolutionChoice,
+  ConflictResolutionLog,
+  FieldConflict,
+  SoapBody,
+  SoapField,
+  VersionVector,
+} from './clinicalNoteConcurrency';
+export {
+  applyConflictResolution,
+  buildConflictResolutionLog,
+  incrementVersionVector,
+  mergeVersionVectors,
+} from './clinicalNoteConcurrency';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -67,6 +83,8 @@ export interface UpdateNotePayload extends CreateNotePayload {
   baseVersion: number;
   /** The note body as it was when editing began — used to compute per-field conflicts. */
   previousBody?: SoapBody;
+  /** Client-generated version vector tagging an offline edit (issue #1367). */
+  versionVector?: VersionVector;
 }
 
 /**
@@ -136,4 +154,14 @@ export async function loadDraft(petId: string, vetId: string): Promise<SoapNoteD
 /** Remove the local draft after submit or explicit discard. */
 export async function clearDraft(petId: string, vetId: string): Promise<void> {
   await deleteSoapDraft(petId, vetId);
+}
+
+// ─── Conflict resolution logging (issue #1367) ───────────────────────────────
+
+/**
+ * POST /api/notes/:id/conflict-resolutions — records who resolved a save
+ * conflict, which side won and the version vector of the accepted edit.
+ */
+export async function logConflictResolution(log: ConflictResolutionLog): Promise<void> {
+  await api.post(`/notes/${log.noteId}/conflict-resolutions`, log);
 }
