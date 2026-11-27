@@ -25,6 +25,30 @@ tags:
 # ── Shared components ──────────────────────────────────────────────────────────
 components:
   schemas:
+    HealthDependency:
+      type: object
+      required: [status, latency_ms, last_checked]
+      properties:
+        status: { type: string, enum: [ok, degraded, down] }
+        latency_ms: { type: integer }
+        last_checked: { type: string, format: date-time }
+        error: { type: string }
+    HealthReport:
+      type: object
+      required: [status, timestamp, dependencies]
+      properties:
+        ok: { type: boolean }
+        service: { type: string }
+        status: { type: string, enum: [ok, degraded, down] }
+        timestamp: { type: string, format: date-time }
+        dependencies:
+          type: object
+          required: [db, redis, stellar, push]
+          properties:
+            db: { $ref: '#/components/schemas/HealthDependency' }
+            redis: { $ref: '#/components/schemas/HealthDependency' }
+            stellar: { $ref: '#/components/schemas/HealthDependency' }
+            push: { $ref: '#/components/schemas/HealthDependency' }
     # v1 Pet
     PetV1:
       type: object
@@ -135,6 +159,28 @@ paths:
                   ok: { type: boolean }
                   version: { type: string }
                   timestamp: { type: string }
+
+  /api/health:
+    get:
+      summary: Structured health check with per-dependency status
+      description: >
+        Probes db, redis, stellar and push in parallel. Overall status is
+        `degraded` when a non-critical dependency is down and `down` only when
+        the database is unreachable. Responds within 500ms even if a probe times out.
+      tags: [health]
+      responses:
+        '200':
+          description: Service healthy or degraded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthReport'
+        '503':
+          description: Database unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthReport'
 
   /pets:
     get:

@@ -4,6 +4,10 @@ process.env.NODE_ENV = 'test';
 // that updates are expected to be wrapped in act(), suppressing spurious
 // "not configured to support act()" warnings and making waitFor() reliable.
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+// jest-axe matchers (toHaveNoViolations) for accessibility audits — Issue #1356.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { toHaveNoViolations } = require('jest-axe');
+expect.extend(toHaveNoViolations);
 process.env.STELLAR_NETWORK = 'testnet';
 process.env.JWT_SECRET = 'test-secret-key';
 
