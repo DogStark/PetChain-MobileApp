@@ -1,5 +1,5 @@
 -- Migration: 20260627000002_seed_notification_templates
--- Description: Seed English + Spanish templates for lost_pet_alert,
+-- Description: Seed English, Spanish and Arabic templates for lost_pet_alert,
 -- vaccination_transfer and health_threshold_breach, used by sendNotification()
 -- in notificationTemplateService.ts. Variables: {{petName}} (and
 -- {{metric}}, {{value}}, {{threshold}} for health_threshold_breach).
@@ -51,10 +51,47 @@ VALUES
   ),
   (
     gen_random_uuid(),
+    'lost_pet_alert',
+    'ar',
+    'تنبيه حيوان أليف مفقود بالقرب منك',
+    'تم الإبلاغ عن حيوان أليف مفقود بالقرب منك. افتح التطبيق للتفاصيل.',
+    TRUE
+  ),
+  (
+    gen_random_uuid(),
     'health_threshold_breach',
     'es',
     '⚠️ Alerta de salud para {{petName}}',
     'La lectura de {{metric}} de {{petName}} ({{value}}) está fuera del rango configurado ({{threshold}}). Revisa sus datos de salud.',
+    TRUE
+  ),
+  (
+    gen_random_uuid(),
+    'vaccination_transfer',
+    'ar',
+    '🐾 تم نقل تذكيرات التطعيم',
+    'تذكيرات التطعيم الخاصة بـ {{petName}} أصبحت نشطة الآن في حسابك.',
+    TRUE
+  )
+ON CONFLICT (key, locale) DO NOTHING;
+
+-
+    TRUE
+  ),
+  (
+    gen_random_uuid(),
+    'health_threshold_breach',
+    'en',
+    '⚠️ Health alert for {{petName}}',
+    '{{petName}}''s {{metric}} reading of {{value}} is outside the configured range ({{threshold}}). Please review their health data.',
+    TRUE
+  ),
+  (
+    gen_random_uuid(),
+    'lost_pet_alert',
+    'ar',
+    'تنبيه حيوان أليف مفقود بالقرب منك',
+    'تم الإبلاغ عن حيوان أليف مفقود بالقرب منك. افتح التطبيق للتفاصيل.',
     TRUE
   )
 ON CONFLICT (key, locale) DO NOTHING;
@@ -64,8 +101,10 @@ DELETE FROM notification_templates
 WHERE (key, locale) IN (
   ('lost_pet_alert', 'en'),
   ('lost_pet_alert', 'es'),
+  ('lost_pet_alert', 'ar'),
   ('vaccination_transfer', 'en'),
   ('vaccination_transfer', 'es'),
   ('health_threshold_breach', 'en'),
-  ('health_threshold_breach', 'es')
+  ('health_threshold_breach', 'es'),
+  ('vaccination_transfer', 'ar')
 );

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import {
+  AccessibilityInfo,
   ActivityIndicator,
   Alert,
   Image,
@@ -11,6 +12,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useTranslation } from 'react-i18next';
 
 import { getPetById } from '../services/petService';
 import { generateAppointmentCheckinQRCode } from '../services/qrService';
@@ -28,6 +30,8 @@ interface AppointmentDetailScreenProps {
 
 const AppointmentDetailScreen: React.FC<AppointmentDetailScreenProps> = ({ route }) => {
   const { appointmentId, petId, appointmentTitle, appointmentDate } = route.params;
+  const { t } = useTranslation();
+  const itemName = t('appointments.item_name');
 
   const [loading, setLoading] = useState(false);
   const [qrUrl, setQrUrl] = useState<string | null>(null);
@@ -47,10 +51,19 @@ const AppointmentDetailScreen: React.FC<AppointmentDetailScreenProps> = ({ route
       setQrPayload(payload);
       setQrUrl(imageUrl);
       setModalVisible(true);
+      AccessibilityInfo.announceForAccessibility(
+        t('accessibility.announcements.save_success', { item: itemName }),
+      );
     } catch (err) {
       Alert.alert('Unable to generate QR', String(err));
+      AccessibilityInfo.announceForAccessibility(
+        t('accessibility.announcements.save_error', { item: itemName }),
+      );
     } finally {
       setLoading(false);
+      AccessibilityInfo.announceForAccessibility(
+        t('accessibility.announcements.loading_complete', { item: itemName }),
+      );
     }
   };
 

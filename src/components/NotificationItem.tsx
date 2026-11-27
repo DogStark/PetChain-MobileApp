@@ -27,6 +27,7 @@ const CATEGORY_META: Record<NotificationCategory, { icon: string; label: string 
   appointment: { icon: '📅', label: 'Appointment' },
   sos: { icon: '🆘', label: 'Emergency' },
   system: { icon: '🔔', label: 'System' },
+  milestone: { icon: '🏥', label: 'Health milestone' },
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

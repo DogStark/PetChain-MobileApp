@@ -44,7 +44,9 @@ import usersRouter from './routes/users';
 import vaccinationsRouter from './routes/vaccinations';
 import vetsRouter from './routes/vets';
 import vitalsRouter from './routes/vitals';
+import webhooksRouter from './routes/webhooks';
 import { getPoolStats } from '../config/database';
+import { checkHealth } from './health';
 import { attachAudit } from '../middleware/auditLog';
 import { authRateLimiter, dataRateLimiter, publicRateLimiter } from '../middleware/rateLimiter';
 import activityRouter from '../src/routes/activity';
@@ -131,16 +133,19 @@ export function createApp(): Express {
   });
 
   // --- Health & readiness probes (unauthenticated, exempt from rate limiting) --
-  api.get('/health', (_req, res) => {
+  api.get('/health', async (_req, res) => {
     const pool = getPoolStats();
     if (pool.waiting > 5) {
       console.warn(`[db] WARN: pool waiting count is ${pool.waiting}`);
     }
-    res.json({
-      ok: true,
+    const report = await checkHealth();
+    res.status(report.status === 'down' ? 503 : 200).json({
+      ok: report.status !== 'down',
       service: 'petchain-api',
-      timestamp: new Date().toISOString(),
+      status: report.status,
+      timestamp: report.timestamp,
       pool,
+      dependencies: report.dependencies,
     });
   });
 
@@ -206,6 +211,7 @@ export function createApp(): Express {
   api.use('/notifications', dataRateLimiter, notificationsRouter);
   api.use('/notification-templates', dataRateLimiter, notificationTemplatesRouter);
   api.use('/reminders', remindersRouter);
+  api.use('/webhooks', dataRateLimiter, webhooksRouter);
 
   app.use('/api', api);
 

@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Writable } from 'stream';
 
 import archiver from 'archiver';
@@ -29,6 +30,70 @@ export interface DataExportRequest {
 
 // In-memory export request queue (replace with database in production)
 const exportRequests = new Map<string, DataExportRequest>();
+
+// Generated ZIP archives keyed by request id (replace with object storage in production)
+const exportArchives = new Map<string, Buffer>();
+
+const EXPORT_SIGNING_SECRET =
+  process.env.EXPORT_SIGNING_SECRET ?? process.env.JWT_SECRET ?? 'petchain-dev-export-secret';
+const EXPORT_TTL_MS = 48 * 60 * 60 * 1000; // 48 hours
+const LARGE_EXPORT_THRESHOLD = 100; // total related rows above which export is async
+
+function signExportToken(requestId: string, expiresAt: string): string {
+  return crypto
+    .createHmac('sha256', EXPORT_SIGNING_SECRET)
+    .update(`${requestId}:${expiresAt}`)
+    .digest('hex');
+}
+
+function buildSignedDownloadUrl(requestId: string, expiresAt: string): string {
+  const token = signExportToken(requestId, expiresAt);
+  return `/api/users/export/${requestId}/download?expires=${encodeURIComponent(expiresAt)}&token=${token}`;
+}
+
+/**
+ * Verify a signed download token for an export request.
+ */
+export function verifyExportToken(requestId: string, expiresAt: string, token: string): boolean {
+  if (!expiresAt || !token) return false;
+  if (new Date(expiresAt).getTime() < Date.now()) return false;
+  const expected = signExportToken(requestId, expiresAt);
+  const a = Buffer.from(expected);
+  const b = Buffer.from(token);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * Retrieve a generated export archive (undefined if missing or expired).
+ */
+export function getExportArchive(requestId: string): Buffer | undefined {
+  const request = exportRequests.get(requestId);
+  if (!request || request.status !== 'completed') return undefined;
+  if (request.expiresAt && new Date(request.expiresAt).getTime() < Date.now()) return undefined;
+  return exportArchives.get(requestId);
+}
+
+/**
+ * Count the rows that would be included in a user's export.
+ */
+export function countExportRows(userId: string): number {
+  const data = exportUserData(userId);
+  return (
+    data.pets.length +
+    data.medicalRecords.length +
+    data.appointments.length +
+    data.medications.length +
+    data.payments.length +
+    data.familySharing.length
+  );
+}
+
+/**
+ * Whether the user's export should be generated asynchronously.
+ */
+export function isLargeExport(userId: string): boolean {
+  return countExportRows(userId) > LARGE_EXPORT_THRESHOLD;
+}
 
 export function exportUserData(userId: string): UserDataExport {
   const user = store.users.get(userId);
@@ -115,10 +180,11 @@ async function processDataExport(requestId: string, userEmail: string): Promise<
 
     // Create ZIP archive (in production, upload to S3 or similar)
     const zipBuffer = await createZipArchive(data, pdfBuffers);
+    exportArchives.set(requestId, zipBuffer);
 
     // In production: upload to S3 and get signed URL
-    const downloadUrl = `/api/privacy/export/${requestId}/download`;
-    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(); // 48 hours
+    const expiresAt = new Date(Date.now() + EXPORT_TTL_MS).toISOString();
+    const downloadUrl = buildSignedDownloadUrl(requestId, expiresAt);
 
     request.status = 'completed';
     request.completedAt = new Date().toISOString();
@@ -196,6 +262,27 @@ async function createZipArchive(
 
     archive.finalize();
   });
+}
+
+/**
+ * Generate a ZIP export synchronously (used for small exports).
+ */
+export async function generateExportArchive(userId: string): Promise<Buffer> {
+  const data = exportUserData(userId);
+  const pdfBuffers: Record<string, Buffer> = {};
+  for (const pet of data.pets as Array<{ id: string; name: string }>) {
+    pdfBuffers[pet.id] = await generatePetPDF(pet, data);
+  }
+  return createZipArchive(data, pdfBuffers);
+}
+
+/**
+ * Create a signed download URL for a completed export request.
+ */
+export function createSignedDownloadUrl(requestId: string): string | undefined {
+  const request = exportRequests.get(requestId);
+  if (!request || request.status !== 'completed' || !request.expiresAt) return undefined;
+  return buildSignedDownloadUrl(requestId, request.expiresAt);
 }
 
 /**

@@ -67,6 +67,7 @@
     "record_date": "Fecha",
     "record_type": "Tipo",
     "record_notes": "Notas",
+    "item_name": "Registros médicos",
     "vaccination": "Vacunación",
     "checkup": "Revisión",
     "surgery": "Cirugía",
@@ -82,7 +83,8 @@
     "notes_label": "Notas",
     "upcoming": "Próximas",
     "past": "Pasadas",
-    "cancel_confirm": "¿Cancelar esta cita?"
+    "cancel_confirm": "¿Cancelar esta cita?",
+    "item_name": "Cita"
   },
   "medication": {
     "title": "Medicamentos",
@@ -93,7 +95,8 @@
     "frequency_label": "Frecuencia",
     "start_date_label": "Fecha de inicio",
     "end_date_label": "Fecha de fin",
-    "reminder": "Recordatorio activado"
+    "reminder": "Recordatorio activado",
+    "item_name": "Medicamento"
   },
   "qr": {
     "title": "Escáner QR",
@@ -120,6 +123,12 @@
     "back_button": "Volver",
     "loading_indicator": "Cargando",
     "error_screen": "Pantalla de error",
-    "pet_image": "Foto de {{name}}"
+    "pet_image": "Foto de {{name}}",
+    "announcements": {
+      "save_success": "{{item}} guardado correctamente.",
+      "save_error": "No se pudo guardar {{item}}. Inténtalo de nuevo.",
+      "loading_complete": "{{item}} cargado.",
+      "loading_error": "No se pudo cargar {{item}}. Inténtalo de nuevo."
+    }
   }
 }

@@ -19,6 +19,9 @@ import { OptimizedImage } from './OptimizedImage';
  * | `uri` | `string` | — | Full-resolution image URI |
  * | `thumbnailUri` | `string` | — | Low-res thumbnail shown first |
  * | `useThumbnailFirst` | `boolean` | `true` | Show thumbnail while loading |
+ * | `blurhash` | `string` | — | Tiny base64 data URI shown blurred while loading |
+ * | `visible` | `boolean` | `true` | When `false`, the image is not fetched (lazy loading) |
+ * | `placeholderBlurRadius` | `number` | `12` | Blur radius for the placeholder |
  * | `style` | `StyleProp<ViewStyle>` | — | Container / image style |
  *
  * All other `ImageProps` are forwarded to the underlying `<Image>`.
@@ -47,6 +50,9 @@ const meta: Meta<typeof OptimizedImage> = {
     uri: { control: 'text' },
     thumbnailUri: { control: 'text' },
     useThumbnailFirst: { control: 'boolean' },
+    blurhash: { control: 'text' },
+    visible: { control: 'boolean' },
+    placeholderBlurRadius: { control: 'number' },
   },
 };
 

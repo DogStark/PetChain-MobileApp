@@ -130,6 +130,32 @@ function PetNavigator() {
                 })
               }
               onViewProfile={(petId) => navigation.navigate('PetProfile', { petId })}
+              onOpenTimelineEntry={(entry) => {
+                if (entry.type === 'record') {
+                  navigation.navigate('MedicalRecordViewer', { petId: route.params.petId });
+                  return;
+                }
+                if (entry.type === 'appointment') {
+                  navigation.navigate('AuditHistory', {
+                    entityType: 'appointment',
+                    entityId: entry.entityId,
+                    title: entry.title,
+                  });
+                  return;
+                }
+                if (entry.type === 'medication') {
+                  navigation.navigate('AuditHistory', {
+                    entityType: 'medication',
+                    entityId: entry.entityId,
+                    title: entry.title,
+                  });
+                  return;
+                }
+                navigation.navigate('PetHealthMetrics', {
+                  petId: route.params.petId,
+                  petName: route.params.petId,
+                });
+              }}
             />
           </LazyScreen>
         )}

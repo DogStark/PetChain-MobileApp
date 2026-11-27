@@ -40,6 +40,7 @@ import {
   type NotificationFilter,
 } from '../services/notificationStore';
 import { getAllPets, type Pet } from '../services/petService';
+import { scheduleMilestoneReminders } from '../services/vaccinationReminderService';
 
 type ListItem =
   | { type: 'header'; id: string; petId: string; unreadCount: number; isCollapsed: boolean }
@@ -156,6 +157,7 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: 'appointment', label: '📅 Appts' },
   { key: 'sos', label: '🆘 SOS' },
   { key: 'system', label: '🔔 System' },
+  { key: 'milestone', label: '🏥 Milestones' },
 ];
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -176,6 +178,8 @@ export default function NotificationCenterScreen() {
     minLoadingTime: 300,
   });
 
+  const loadRef = useRef<((isRefresh?: boolean) => Promise<void>) | null>(null);
+
   useEffect(() => {
     AsyncStorage.getItem('notification_group_by_pet')
       .then((val) => {
@@ -189,6 +193,20 @@ export default function NotificationCenterScreen() {
         const map: Record<string, Pet> = {};
         petList.forEach((p) => (map[p.id] = p));
         setPets(map);
+
+        // Surface age-based health milestone reminders for each pet.
+        void Promise.all(
+          petList.map((p) =>
+            scheduleMilestoneReminders({
+              id: p.id,
+              name: p.name,
+              species: p.species,
+              dateOfBirth: p.dateOfBirth,
+            }).catch(() => []),
+          ),
+        ).then(() => {
+          if (isMounted.current) void loadRef.current?.(true);
+        });
       })
       .catch(() => {});
 
@@ -292,6 +310,10 @@ export default function NotificationCenterScreen() {
     },
     [state.filter, state.notifications.length, showToast],
   );
+
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
 
   useEffect(() => {
     void load();

@@ -72,4 +72,55 @@ describe('authenticateApiKey middleware', () => {
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('API_KEY_EXPIRED');
   });
+
+  it('enforces the per-key rate limit with 429 and Retry-After', async () => {
+    apiKeyService.resetApiKeyStore();
+    const { secret: limitedSecret } = await apiKeyService.createApiKey(
+      { name: 'Limited key', scopes: ['pets:read'], rateLimitPerMinute: 2 },
+      'admin-1',
+    );
+
+    const first = await request(app).get('/protected').set('X-Api-Key', limitedSecret);
+    const second = await request(app).get('/protected').set('X-Api-Key', limitedSecret);
+    const third = await request(app).get('/protected').set('X-Api-Key', limitedSecret);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(third.status).toBe(429);
+    expect(third.body.error.code).toBe('RATE_LIMIT_EXCEEDED');
+    expect(Number(third.headers['retry-after'])).toBeGreaterThan(0);
+    expect(third.headers['x-ratelimit-limit']).toBe('2');
+  });
+
+  it('counts key-level limits in Redis separately from IP limits', async () => {
+    apiKeyService.resetApiKeyStore();
+    const counters = new Map<string, number>();
+    const redis = {
+      incr: async (key: string) => {
+        const next = (counters.get(key) ?? 0) + 1;
+        counters.set(key, next);
+        return next;
+      },
+      expire: async () => 1,
+      ttl: async () => 42,
+    };
+    apiKeyService.setRateLimitRedis(redis);
+
+    try {
+      const { secret: limitedSecret } = await apiKeyService.createApiKey(
+        { name: 'Redis key', scopes: ['pets:read'], rateLimitPerMinute: 1 },
+        'admin-1',
+      );
+
+      const first = await request(app).get('/protected').set('X-Api-Key', limitedSecret);
+      const second = await request(app).get('/protected').set('X-Api-Key', limitedSecret);
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(429);
+      expect(second.headers['retry-after']).toBe('42');
+      expect([...counters.keys()].every((k) => k.startsWith('rl:apikey:'))).toBe(true);
+    } finally {
+      apiKeyService.setRateLimitRedis(null);
+    }
+  });
 });

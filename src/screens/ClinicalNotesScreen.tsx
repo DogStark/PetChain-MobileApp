@@ -534,6 +534,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 15,
+    minHeight: 44,
     marginBottom: 12,
     color: '#111827',
   },

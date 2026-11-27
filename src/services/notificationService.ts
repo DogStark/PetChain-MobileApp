@@ -147,6 +147,9 @@ const ACTION_MARK_AS_READ = 'MARK_AS_READ';
 const ACTION_MARK_AS_TAKEN = 'MARK_AS_TAKEN';
 const ACTION_SNOOZE_30MIN = 'SNOOZE_30MIN';
 const ACTION_SKIP_DOSE = 'SKIP_DOSE';
+const ACTION_SNOOZE_1H = 'SNOOZE_1H';
+const ACTION_RESCHEDULE = 'RESCHEDULE';
+const APPOINTMENT_SNOOZE_DELAY_MS = 60 * 60 * 1000;
 
 // Session-scoped set to track notification IDs that have already triggered navigation.
 // Ensures cold-start and listener paths don't both navigate for the same notification.
@@ -355,9 +358,28 @@ export const registerNotificationActions = async (): Promise<void> => {
     },
   ];
 
+  const appointmentActions = [
+    {
+      identifier: ACTION_SNOOZE_1H,
+      buttonTitle: 'Snooze (1h)',
+      options: { opensAppToForeground: false },
+    },
+    {
+      identifier: ACTION_RESCHEDULE,
+      buttonTitle: 'Reschedule',
+      options: { opensAppToForeground: true },
+    },
+    {
+      identifier: ACTION_OPEN,
+      buttonTitle: 'Open',
+      options: { opensAppToForeground: true },
+    },
+  ];
+
   await Promise.all([
     Notifications.setNotificationCategoryAsync('medication', medicationActions),
-    ...['appointment', 'vaccination', 'alert', 'scheduled'].map((category) =>
+    Notifications.setNotificationCategoryAsync('appointment', appointmentActions),
+    ...['vaccination', 'alert', 'scheduled'].map((category) =>
       Notifications.setNotificationCategoryAsync(category, defaultActions),
     ),
   ]);
@@ -402,6 +424,23 @@ export const snooze = async (
 export const openApp = async (notification: Notifications.Notification): Promise<void> => {
   await markAsRead(notification.request.identifier);
   await Linking.openURL(getNotificationUrl(notification.request.content.data));
+};
+
+/** Deep link straight to the appointment reschedule screen. */
+export const getAppointmentRescheduleUrl = (appointmentId: string): string =>
+  `petchain://appointments/${encodeURIComponent(appointmentId)}?reschedule=true`;
+
+export const openAppointmentReschedule = async (
+  notification: Notifications.Notification,
+): Promise<void> => {
+  const appointmentId = notification.request.content.data?.appointmentId;
+  if (typeof appointmentId !== 'string' || appointmentId.length === 0) {
+    await openApp(notification);
+    return;
+  }
+
+  await markAsRead(notification.request.identifier);
+  await Linking.openURL(getAppointmentRescheduleUrl(appointmentId));
 };
 
 // ─── Deep Link Builders & Validation ──────────────────────────────────────────
@@ -624,6 +663,20 @@ async function handleSnooze30Min(notification: Notifications.Notification): Prom
   await markActionAsProcessed(notificationId, 'SNOOZE_30MIN');
 }
 
+async function handleSnooze1h(notification: Notifications.Notification): Promise<void> {
+  const notificationId = notification.request.identifier;
+
+  // Check idempotency: skip if action already processed recently
+  if (await isActionAlreadyProcessed(notificationId, ACTION_SNOOZE_1H)) {
+    return;
+  }
+
+  await snooze(notification, APPOINTMENT_SNOOZE_DELAY_MS);
+
+  // Mark action as processed after successful snooze
+  await markActionAsProcessed(notificationId, ACTION_SNOOZE_1H);
+}
+
 async function handleSkipDose(notification: Notifications.Notification): Promise<void> {
   const notificationId = notification.request.identifier;
 
@@ -670,6 +723,16 @@ export const handleNotificationAction = async (
 
   if (actionIdentifier === ACTION_SKIP_DOSE) {
     await handleSkipDose(notification);
+    return;
+  }
+
+  if (actionIdentifier === ACTION_SNOOZE_1H) {
+    await handleSnooze1h(notification);
+    return;
+  }
+
+  if (actionIdentifier === ACTION_RESCHEDULE) {
+    await openAppointmentReschedule(notification);
     return;
   }
 

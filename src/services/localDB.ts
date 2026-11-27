@@ -857,6 +857,8 @@ export interface SoapNoteDraft {
   assessment: string;
   plan: string;
   savedAt: string; // ISO string
+  /** Client-generated version vector tagging this offline edit (issue #1367). */
+  versionVector?: Record<string, number>;
 }
 
 export async function upsertSoapDraft(draft: SoapNoteDraft): Promise<void> {

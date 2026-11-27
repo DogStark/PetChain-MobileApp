@@ -24,6 +24,26 @@ export interface SeriesPoint {
 
 export type Trend = 'rising' | 'falling' | 'stable' | 'not enough data';
 
+/** User-facing trend wording for health charts (improving / declining / stable). */
+export type HealthTrend = 'improving' | 'declining' | 'stable' | 'not enough data';
+
+/**
+ * Map a directional trend to health-oriented wording. For health metrics a
+ * rising value is not always "good", so callers may invert via `higherIsBetter`.
+ */
+export function toHealthTrend(trend: Trend, higherIsBetter = true): HealthTrend {
+  switch (trend) {
+    case 'rising':
+      return higherIsBetter ? 'improving' : 'declining';
+    case 'falling':
+      return higherIsBetter ? 'declining' : 'improving';
+    case 'stable':
+      return 'stable';
+    default:
+      return 'not enough data';
+  }
+}
+
 export interface ChartSummaryOptions {
   /** e.g. "Weight", "Resting heart rate" */
   metricName: string;
@@ -39,6 +59,8 @@ export interface ChartSummaryOptions {
   permissions?: string[];
   /** Required permission to view the chart (defaults to "health:read") */
   requiredPermission?: string;
+  /** Whether a rising value is a good outcome (defaults to true) */
+  higherIsBetter?: boolean;
 }
 
 export interface AccessibleChartTableRow {
@@ -105,6 +127,7 @@ export function buildChartSummary(
     stale = false,
     permissions,
     requiredPermission = 'health:read',
+    higherIsBetter = true,
   }: ChartSummaryOptions,
 ): string {
   if (!hasRequiredPermission(permissions, requiredPermission)) {
@@ -141,7 +164,7 @@ export function buildChartSummary(
   const min = round(Math.min(...values));
   const max = round(Math.max(...values));
   const latest = round(values[values.length - 1]);
-  const trend = describeTrend(validPoints, stableEpsilon);
+  const trend = toHealthTrend(describeTrend(validPoints, stableEpsilon), higherIsBetter);
 
   return (
     `${metricName} chart${scope}. ${validPoints.length} ` +
@@ -231,6 +254,56 @@ export function buildAccessibleChartTable(
       deltaText,
       spokenRow,
     };
+  });
+}
+
+/** Minimal shape shared by HealthScoreDataPoint and WeightDataPoint. */
+export interface HealthChartDataPoint {
+  date: string;
+  value: number;
+}
+
+export interface HealthChartSeriesOptions {
+  /** e.g. "Health score", "Weight" */
+  metricName: string;
+  /** Unit appended to spoken values, e.g. "kg", "points" */
+  unit?: string;
+  /** Human phrase for the active filter, e.g. "last 3 months" */
+  rangeLabel?: string;
+}
+
+/**
+ * Convert raw health-chart data points into SeriesPoint[] for the summary and
+ * data-table helpers. Points with non-finite values are dropped; labels are
+ * normalised to a trimmed date string.
+ */
+export function toSeriesPoints(
+  points: HealthChartDataPoint[],
+  { unit, rangeLabel }: HealthChartSeriesOptions,
+): SeriesPoint[] {
+  void rangeLabel;
+  return points
+    .filter((p) => Number.isFinite(p.value))
+    .map((p) => ({
+      label: (p.date || 'Unknown date').trim(),
+      value: p.value,
+      unit,
+    }));
+}
+
+/**
+ * Convenience wrapper: build the one-line summary directly from raw health
+ * chart data points, applying metric name, unit, and range label.
+ */
+export function buildHealthChartSummary(
+  points: HealthChartDataPoint[],
+  options: HealthChartSeriesOptions & Omit<ChartSummaryOptions, 'metricName' | 'rangeLabel'>,
+): string {
+  const { metricName, unit, rangeLabel, ...rest } = options;
+  return buildChartSummary(toSeriesPoints(points, { metricName, unit, rangeLabel }), {
+    metricName,
+    rangeLabel,
+    ...rest,
   });
 }
 
