@@ -7,9 +7,9 @@ import {
   getDoseLogs as dbGetDoseLogs,
   addDoseLog as dbAddDoseLog,
 } from './localDB';
-import type { Medication, RefillStatus } from '../models/Medication';
+import type { Medication, RefillRequest, RefillRequestStatus, RefillStatus } from '../models/Medication';
 
-export type { Medication, RefillStatus };
+export type { Medication, RefillRequest, RefillRequestStatus, RefillStatus };
 
 /**
  * Explicit dose state machine (#1049).
@@ -173,6 +173,133 @@ export async function saveMedication(med: Medication): Promise<void> {
 
 export async function deleteMedication(id: string): Promise<void> {
   await deleteMedicationById(id);
+}
+
+// ── Refill requests (#1346) ──────────────────────────────────────────────────
+
+/** Allowed refill-request transitions. Anything else is rejected. */
+const REFILL_TRANSITIONS: Record<RefillRequestStatus, RefillRequestStatus[]> = {
+  pending: ['approved', 'rejected'],
+  approved: ['dispensed'],
+  rejected: [],
+  dispensed: [],
+};
+
+/** True when a refill request may move from `from` to `to`. */
+export function canTransitionRefillRequest(
+  from: RefillRequestStatus,
+  to: RefillRequestStatus,
+): boolean {
+  return REFILL_TRANSITIONS[from].includes(to);
+}
+
+/** True when the medication is active and therefore eligible for a refill request. */
+export function isRefillEligible(med: Medication): boolean {
+  return (med.status ?? 'active') === 'active';
+}
+
+/** True when the medication already has an open (pending or approved) request. */
+export function hasOpenRefillRequest(
+  medicationId: string,
+  requests: RefillRequest[],
+): boolean {
+  return requests.some(
+    (request) =>
+      request.medicationId === medicationId &&
+      (request.status === 'pending' || request.status === 'approved'),
+  );
+}
+
+/**
+ * Submit a refill request for an active medication. Only one open request per
+ * medication is allowed so the vet queue cannot be flooded.
+ */
+export async function requestRefill(
+  medicationId: string,
+  note?: string,
+): Promise<RefillRequest> {
+  const medications = await getMedications();
+  const medication = medications.find((med) => med.id === medicationId);
+  if (!medication) throw new Error('Medication not found');
+  if (!isRefillEligible(medication)) {
+    throw new Error('Only active medications can be refilled');
+  }
+
+  const requests = await getRefillRequests();
+  if (hasOpenRefillRequest(medicationId, requests)) {
+    throw new Error('A refill request is already in progress');
+  }
+
+  const now = new Date().toISOString();
+  const request: RefillRequest = {
+    id: `refill-${medicationId}-${Date.now()}`,
+    medicationId,
+    petId: medication.petId,
+    status: 'pending',
+    requestedAt: now,
+    updatedAt: now,
+    ...(note?.trim() ? { note: note.trim() } : {}),
+  };
+  await upsertRefillRequest(request);
+  return request;
+}
+
+/** List refill requests, newest first, optionally filtered by medication. */
+export async function getRefillRequests(medicationId?: string): Promise<RefillRequest[]> {
+  const requests = await dbGetRefillRequests<RefillRequest>();
+  return requests
+    .filter((request) => (medicationId ? request.medicationId === medicationId : true))
+    .sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
+}
+
+/**
+ * Move a refill request to its next status. Approving a request also starts the
+ * next medication cycle (new start date, supply reset to the previous total).
+ */
+export async function updateRefillRequestStatus(
+  requestId: string,
+  status: RefillRequestStatus,
+  options: { rejectionReason?: string } = {},
+): Promise<RefillRequest> {
+  const requests = await getRefillRequests();
+  const request = requests.find((entry) => entry.id === requestId);
+  if (!request) throw new Error('Refill request not found');
+  if (!canTransitionRefillRequest(request.status, status)) {
+    throw new Error(`Cannot move refill request from ${request.status} to ${status}`);
+  }
+
+  const now = new Date().toISOString();
+  const next: RefillRequest = {
+    ...request,
+    status,
+    updatedAt: now,
+    ...(status === 'rejected' && options.rejectionReason
+      ? { rejectionReason: options.rejectionReason }
+      : {}),
+  };
+
+  if (status === 'approved') {
+    const medications = await getMedications();
+    const medication = medications.find((med) => med.id === request.medicationId);
+    if (medication) {
+      const startDate = now.slice(0, 10);
+      const supply = medication.totalPills ?? medication.currentSupply ?? medication.remainingPills;
+      const nextCycle: Medication = {
+        ...medication,
+        startDate,
+        lastRefillDate: startDate,
+        ...(supply !== undefined
+          ? { currentSupply: supply, remainingPills: supply }
+          : {}),
+        refillThresholdNotifiedAt: undefined,
+      };
+      await saveMedication(nextCycle);
+      next.nextCycleStartDate = startDate;
+    }
+  }
+
+  await upsertRefillRequest(next);
+  return next;
 }
 
 export async function getDoseLogs(): Promise<DoseLog[]> {
