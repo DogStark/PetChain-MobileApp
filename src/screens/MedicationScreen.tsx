@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 
+import { searchDrugs, type DrugSearchResult } from '../../backend/services/drugDatabaseService';
 import { EmptyState } from '../components/EmptyState';
 import MultiStepFormHeader from '../components/MultiStepFormHeader';
 import { SkeletonCard } from '../components/SkeletonCard';
@@ -107,6 +108,7 @@ const MedicationScreen: React.FC = () => {
   const [vetId, setVetId] = useState('');
   const [overrideJustification, setOverrideJustification] = useState('');
   const [contraindicatedAcknowledged, setContraindicatedAcknowledged] = useState(false);
+  const [drugSuggestions, setDrugSuggestions] = useState<DrugSearchResult[]>([]);
   // Refill modal state
   const [refillModalVisible, setRefillModalVisible] = useState(false);
   const [refillTargetMed, setRefillTargetMed] = useState<Medication | null>(null);
@@ -186,7 +188,24 @@ const MedicationScreen: React.FC = () => {
   );
   const closeModal = () => {
     setModalVisible(false);
+    setDrugSuggestions([]);
     resetFormSteps();
+  };
+
+  const handleNameChange = (value: string) => {
+    setForm((f) => ({ ...f, name: value }));
+    setDrugSuggestions(searchDrugs(value));
+  };
+
+  const handleSelectDrug = (result: DrugSearchResult) => {
+    const { drug, dosageOptions, frequencyOptions } = result;
+    setDrugSuggestions([]);
+    setForm((f) => ({
+      ...f,
+      name: drug.name,
+      dosage: dosageOptions[0] ?? f.dosage,
+      frequency: frequencyOptions[0] ?? f.frequency,
+    }));
   };
 
   const validateMedicationStep = (): boolean => {
@@ -608,9 +627,30 @@ const MedicationScreen: React.FC = () => {
             <>
               {renderFormInput('name', 'Medication name *', {
                 value: form.name,
-                onChangeText: (v) => setForm((f) => ({ ...f, name: v })),
+                onChangeText: handleNameChange,
                 isFirstInteractive: true,
               })}
+              {drugSuggestions.length > 0 && (
+                <View style={styles.suggestions}>
+                  {drugSuggestions.map((result) => (
+                    <TouchableOpacity
+                      key={result.drug.id}
+                      style={styles.suggestionRow}
+                      onPress={() => handleSelectDrug(result)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Use ${result.drug.name}`}
+                    >
+                      <Text style={styles.suggestionName}>{result.drug.name}</Text>
+                      <Text style={styles.suggestionMeta}>
+                        {result.drug.drugClass}
+                        {result.dosageOptions.length > 0
+                          ? ` · ${result.dosageOptions.join(' / ')}`
+                          : ''}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
               {renderFormInput('dosage', 'Dosage (e.g. 5mg) *', {
                 value: form.dosage,
                 onChangeText: (v) => setForm((f) => ({ ...f, dosage: v })),
@@ -1113,9 +1153,27 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginBottom: 10,
     fontSize: 14,
+    minHeight: 44,
     backgroundColor: '#fafafa',
   },
   textArea: { minHeight: 70, textAlignVertical: 'top' },
+  suggestions: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    marginTop: -6,
+    marginBottom: 10,
+    backgroundColor: '#fff',
+    overflow: 'hidden',
+  },
+  suggestionRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#eee',
+  },
+  suggestionName: { fontSize: 14, fontWeight: '600', color: '#1a1a1a' },
+  suggestionMeta: { fontSize: 12, color: '#666', marginTop: 2 },
   modalActions: { flexDirection: 'row', gap: 10, marginTop: 4 },
   cancelBtn: {
     flex: 1,

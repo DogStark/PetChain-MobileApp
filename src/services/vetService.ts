@@ -32,8 +32,12 @@ export interface VetMessage {
 export interface SearchVetsParams {
   lat?: number;
   lng?: number;
+  /** Search radius in kilometers. */
   radius?: number;
+  /** Single specialty filter (legacy). Prefer `specialties`. */
   specialty?: string;
+  /** Multi-select specialty filter; joined into the `specialty` query param. */
+  specialties?: string[];
   available?: boolean;
 }
 
@@ -42,14 +46,53 @@ export async function searchVets(params: SearchVetsParams): Promise<VetProfile[]
   if (params.lat !== undefined) query.set('lat', String(params.lat));
   if (params.lng !== undefined) query.set('lng', String(params.lng));
   if (params.radius !== undefined) query.set('radius', String(params.radius));
-  if (params.specialty) query.set('specialty', params.specialty);
+  const specialties = params.specialties?.filter((s) => !!s) ?? [];
+  if (specialties.length > 0) {
+    query.set('specialty', specialties.join(','));
+  } else if (params.specialty) {
+    query.set('specialty', params.specialty);
+  }
   if (params.available !== undefined) query.set('available', String(params.available));
 
   const res = await resilientRequest<{ data: VetProfile[] }>({
     method: 'GET',
     url: `/vets?${query.toString()}`,
   });
-  return res.data.data;
+  // Ensure distance is present so callers can sort by distance by default.
+  return res.data.data.map((vet) => ({
+    ...vet,
+    distance: vet.distance ?? computeDistanceKm(params.lat, params.lng, vet.lat, vet.lng),
+  }));
+}
+
+function computeDistanceKm(
+  lat1?: number,
+  lng1?: number,
+  lat2?: number,
+  lng2?: number,
+): number | undefined {
+  if (lat1 === undefined || lng1 === undefined || lat2 === undefined || lng2 === undefined) {
+    return undefined;
+  }
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const R = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+export async function getVetSpecialties(): Promise<string[]> {
+  const res = await resilientRequest<{ data: VetProfile[] }>({
+    method: 'GET',
+    url: '/vets/specialties',
+  });
+  const fromProfiles = res.data.data
+    .map((vet) => vet.specialty)
+    .filter((s): s is string => !!s);
+  return Array.from(new Set(fromProfiles)).sort();
 }
 
 export async function getVetProfile(vetId: string): Promise<VetProfile> {

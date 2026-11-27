@@ -5,19 +5,20 @@ import { randomUUID } from 'crypto';
 import express from 'express';
 
 import { logAuditTrail } from '../../middleware/auditLogger';
-import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
+import { authenticateJWT, optionalAuth, type AuthenticatedRequest } from '../../middleware/auth';
 import {
   petProfileCacheMiddleware,
   petsByOwnerCacheMiddleware,
 } from '../../middleware/cacheMiddleware';
 import { UserRole } from '../../models/UserRole';
 import { invalidatePet } from '../../services/cacheService';
+import auditLogService from '../../services/auditLogService';
 import paymentService from '../../services/paymentService';
 import { issuePetAsset, transferPetAsset } from '../../services/stellarAssetService';
 import { petRepository } from '../../src/repositories/petRepository';
 import { type DBPet } from '../../src/repositories/petRepository';
 import { userRepository } from '../../src/repositories/userRepository';
-import { ok, sendError } from '../response';
+import { ok, errBody, sendError } from '../response';
 import { type StoredMedicalRecord, type StoredPet, store } from '../store';
 
 const router = express.Router();
@@ -25,8 +26,49 @@ const QR_SECRET = process.env.QR_SIGNING_SECRET ?? 'petchain-dev-qr-secret';
 const ALLERGY_CORRECTION_STATUSES = ['pending', 'approved', 'rejected'] as const;
 type AllergyCorrectionStatus = (typeof ALLERGY_CORRECTION_STATUSES)[number];
 
+const QR_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+
 function signPetIdentity(petId: string, issuedAt: string): string {
   return crypto.createHmac('sha256', QR_SECRET).update(`${petId}:${issuedAt}`).digest('hex');
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
+}
+
+type QrTokenStatus = 'valid' | 'tampered' | 'expired';
+
+function verifyQrToken(token: string): {
+  status: QrTokenStatus;
+  petId?: string;
+  issuedAt?: string;
+  expiresAt?: string;
+} {
+  const parts = token.split('.');
+  if (parts.length !== 3) return { status: 'tampered' };
+  const [petId, issuedAt, signature] = parts;
+  if (!petId || !issuedAt || !signature) return { status: 'tampered' };
+  if (!safeEqual(signature, signPetIdentity(petId, issuedAt))) return { status: 'tampered' };
+
+  const issuedMs = new Date(issuedAt).getTime();
+  if (Number.isNaN(issuedMs)) return { status: 'tampered' };
+
+  const expiresAt = new Date(issuedMs + QR_TOKEN_TTL_MS).toISOString();
+  if (Date.now() > issuedMs + QR_TOKEN_TTL_MS) return { status: 'expired', petId, issuedAt, expiresAt };
+  return { status: 'valid', petId, issuedAt, expiresAt };
+}
+
+function publicPetProfile(pet: StoredPet | DBPet) {
+  return {
+    id: pet.id,
+    name: pet.name,
+    species: pet.species,
+    breed: pet.breed,
+    photoUrl: 'photo_url' in pet ? pet.photo_url : (pet as StoredPet).photoUrl,
+    microchipId: 'microchip_id' in pet ? pet.microchip_id : (pet as StoredPet).microchipId,
+  };
 }
 
 function activeQrForPet(petId: string) {
@@ -223,6 +265,50 @@ router.get('/owner/:ownerId', petsByOwnerCacheMiddleware(), (req: AuthenticatedR
     .filter((p) => isPetOwner(req.params.ownerId, p))
     .map(toPetResponse);
   return res.json(ok(list));
+});
+
+router.post('/qr/validate', optionalAuth, async (req: AuthenticatedRequest, res) => {
+  const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+  if (!token) return sendError(res, 400, 'VALIDATION_ERROR', 'A QR token is required');
+
+  const result = verifyQrToken(token);
+
+  if (result.status === 'tampered') {
+    auditLogService.log({
+      actorId: req.user?.id ?? 'anonymous',
+      actorEmail: req.user?.email,
+      role: req.user?.role,
+      action: 'qr.token_tampered',
+      resourceType: 'qr_token',
+      resourceId: token.slice(0, 128),
+      meta: { reason: 'signature_mismatch' },
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+      outcome: 'denied',
+    });
+    return sendError(res, 400, 'QR_TAMPERED', 'QR token integrity check failed');
+  }
+
+  if (result.status === 'expired') {
+    return res.status(410).json({
+      ...errBody('QR_EXPIRED', 'QR token has expired', { expiresAt: result.expiresAt }),
+      status: 'expired',
+      expiresAt: result.expiresAt,
+    });
+  }
+
+  const pet =
+    (await petRepository.findById(result.petId!)) || store.pets.get(result.petId!) || undefined;
+  if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found for QR token');
+
+  return res.json(
+    ok({
+      status: 'valid',
+      expiresAt: result.expiresAt,
+      issuedAt: result.issuedAt,
+      pet: publicPetProfile(pet),
+    }),
+  );
 });
 
 router.get('/qr/:qrCode', async (req, res) => {

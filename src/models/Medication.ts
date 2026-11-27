@@ -56,6 +56,29 @@ export interface ReminderSchedule {
  */
 export type RefillStatus = 'ok' | 'warning' | 'urgent' | 'out' | 'unknown';
 
+/**
+ * Lifecycle of a medication refill request (#1346):
+ *
+ *   pending ──approve──▶ approved ──dispense──▶ dispensed
+ *      └────reject────▶ rejected
+ */
+export type RefillRequestStatus = 'pending' | 'approved' | 'rejected' | 'dispensed';
+
+export interface RefillRequest {
+  id: string;
+  medicationId: string;
+  petId: string;
+  status: RefillRequestStatus;
+  requestedAt: string; // ISO string
+  updatedAt: string; // ISO string
+  /** Free-form note supplied by the owner when requesting. */
+  note?: string;
+  /** Reason supplied by the vet when rejecting. */
+  rejectionReason?: string;
+  /** ISO date of the medication cycle created when the request was approved. */
+  nextCycleStartDate?: string;
+}
+
 export interface Medication {
   id: string;
   petId: string;

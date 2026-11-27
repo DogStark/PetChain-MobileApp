@@ -3,7 +3,7 @@ import { getSession } from '../services/authService';
 
 export type ParsedDeepLink =
   | { route: 'PetDetail'; params: { petId: string } }
-  | { route: 'Appointments'; params: { appointmentId: string } }
+  | { route: 'Appointments'; params: { appointmentId: string; reschedule?: boolean } }
   | { route: 'Emergency'; params: { sosId: string } }
   | { route: 'DoseConfirmation'; params: { petId: string; medicationId: string } }
   | { route: 'PetCareTask'; params: { petId: string; taskId: string } };
@@ -45,7 +45,14 @@ export function parseDeepLink(url: string): ParsedDeepLink | null {
     segments[0] === 'appointments' &&
     SAFE_ID.test(segments[1])
   ) {
-    return { route: 'Appointments', params: { appointmentId: segments[1] } };
+    // Issue #1401: `?reschedule=true` opens the reschedule screen directly.
+    const reschedule = parsed.queryParams?.reschedule === 'true';
+    return {
+      route: 'Appointments',
+      params: reschedule
+        ? { appointmentId: segments[1], reschedule: true }
+        : { appointmentId: segments[1] },
+    };
   }
   if (segments.length === 2 && segments[0] === 'sos' && SAFE_ID.test(segments[1])) {
     return { route: 'Emergency', params: { sosId: segments[1] } };

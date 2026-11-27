@@ -13,6 +13,11 @@ import Svg, {
 
 import { useAppTheme } from '../theme';
 import { assertHomogeneousBiomarker, IncompatibleSeriesError } from './chartUnits';
+import {
+  buildChartSummary,
+  buildChartDataTable,
+  buildAccessibleChartTable,
+} from '../utils/a11yChartSummary';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -155,6 +160,48 @@ const HealthScoreChart: React.FC<Props> = ({
 
   const trendDescription = useMemo(() => describeTrend(filteredData), [filteredData]);
 
+  const rangeLabel = useMemo(() => {
+    switch (selectedRange) {
+      case '30D':
+        return 'last 30 days';
+      case '90D':
+        return 'last 90 days';
+      case '1Y':
+        return 'last year';
+      default:
+        return selectedRange;
+    }
+  }, [selectedRange]);
+
+  const a11ySummary = useMemo(
+    () =>
+      buildChartSummary({
+        metric: 'Health score',
+        rangeLabel,
+        data: filteredData.map((d) => ({ date: d.date, value: d.score })),
+      }),
+    [filteredData, rangeLabel],
+  );
+
+  const a11yRows = useMemo(
+    () =>
+      buildChartDataTable({
+        metric: 'Health score',
+        data: filteredData.map((d) => ({ date: d.date, value: d.score })),
+      }),
+    [filteredData],
+  );
+
+  const accessibleTable = useMemo(
+    () =>
+      buildAccessibleChartTable({
+        metric: 'Health score',
+        rangeLabel,
+        data: filteredData.map((d) => ({ date: d.date, value: d.score })),
+      }),
+    [filteredData, rangeLabel],
+  );
+
   // Refuse to aggregate a series that mixes biomarkers or units (issue #968).
   const incompatibleSeriesMessage = useMemo(() => {
     try {
@@ -262,7 +309,12 @@ const HealthScoreChart: React.FC<Props> = ({
       </View>
 
       {/* Chart */}
-      <View style={styles.chartContainer}>
+      <View
+        style={styles.chartContainer}
+        accessible
+        accessibilityRole="image"
+        accessibilityLabel={a11ySummary}
+      >
         <Svg width={chartWidth} height={height}>
           <Defs>
             <LinearGradient id="scoreGradient" x1="0" y1="0" x2="0" y2="1">
@@ -429,11 +481,26 @@ const HealthScoreChart: React.FC<Props> = ({
         )}
       </View>
 
-      {/* Trend summary */}
+      {/* Accessible per-point list for screen readers */}
       <View
-        style={[styles.trendSummary, { backgroundColor: colors.subtle }]}
-        accessibilityLabel={`Health score trend is ${trendDescription}`}
+        style={styles.a11yList}
+        accessibilityRole="list"
+        accessibilityLabel={accessibleTable.label}
       >
+        {a11yRows.map((row, idx) => (
+          <Text
+            key={`a11y-row-${idx}`}
+            style={[styles.a11yRow, { color: colors.text }]}
+            accessibilityRole="text"
+            accessibilityLabel={row.accessibilityLabel}
+          >
+            {row.text}
+          </Text>
+        ))}
+      </View>
+
+      {/* Trend summary */}
+      <View style={[styles.trendSummary, { backgroundColor: colors.subtle }]}>
         <Text style={[styles.trendText, { color: colors.secondaryText }]}>
           📊 Trend: <Text style={{ fontWeight: '700' }}>{trendDescription}</Text>
         </Text>
@@ -518,6 +585,13 @@ const styles = StyleSheet.create({
   tooltipDetail: {
     fontSize: 11,
     marginTop: 4,
+  },
+  a11yList: {
+    marginTop: 12,
+  },
+  a11yRow: {
+    fontSize: 13,
+    paddingVertical: 2,
   },
   trendSummary: {
     marginTop: 12,

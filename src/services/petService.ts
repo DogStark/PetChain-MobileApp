@@ -509,6 +509,126 @@ export async function uploadPetPhoto(
   }
 }
 
+// ─────────────────────────────────────────────
+// BULK ACTIONS (multi-select on PetListScreen)
+// ─────────────────────────────────────────────
+
+export type PetBulkAction = 'export' | 'share' | 'archive';
+
+export interface PetBulkResult {
+  action: PetBulkAction;
+  succeeded: string[];
+  failed: { petId: string; error: string }[];
+}
+
+export interface PetBulkExport {
+  /** Combined JSON payload of every selected pet profile. */
+  json: string;
+  /** Suggested file name for the combined export. */
+  fileName: string;
+  petCount: number;
+}
+
+function normalizePetIds(petIds: string[]): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const raw of petIds) {
+    const id = typeof raw === 'string' ? raw.trim() : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * Build a combined export document for the given pets. Records are read from
+ * the local cache first so the export works offline, falling back to the API.
+ */
+export async function exportPetsBulk(petIds: string[]): Promise<PetBulkExport> {
+  const ids = normalizePetIds(petIds);
+  if (ids.length === 0) {
+    const err = new PetServiceError('Select at least one pet to export', 'NO_PETS_SELECTED');
+    logPetError(err, { service: 'petService', action: 'bulk_export_validation' });
+    throw err;
+  }
+
+  const cachedList = await getCachedPets();
+  const pets: Pet[] = [];
+  for (const id of ids) {
+    const cached = cachedList.find((pet) => pet.id === id) ?? (await getCachedPet(id));
+    if (cached) {
+      pets.push(cached);
+      continue;
+    }
+    try {
+      pets.push(await getPetById(id));
+    } catch (error) {
+      throw toPetServiceError(error, { action: 'bulk_export', petId: id });
+    }
+  }
+
+  const json = JSON.stringify(
+    {
+      exportedAt: new Date().toISOString(),
+      petCount: pets.length,
+      pets,
+    },
+    null,
+    2,
+  );
+
+  return {
+    json,
+    fileName: `petchain-pets-export-${Date.now()}.json`,
+    petCount: pets.length,
+  };
+}
+
+/** Build a shareable text summary of the selected pet profiles. */
+export async function buildPetsShareMessage(petIds: string[]): Promise<string> {
+  const ids = normalizePetIds(petIds);
+  if (ids.length === 0) {
+    const err = new PetServiceError('Select at least one pet to share', 'NO_PETS_SELECTED');
+    logPetError(err, { service: 'petService', action: 'bulk_share_validation' });
+    throw err;
+  }
+
+  const cachedList = await getCachedPets();
+  const lines = ids.map((id) => {
+    const pet = cachedList.find((item) => item.id === id);
+    if (!pet) return `• ${id}`;
+    const details = [pet.species, pet.breed].filter(Boolean).join(' · ');
+    return `• ${pet.name}${details ? ` (${details})` : ''}`;
+  });
+
+  return ['PetChain pet profiles', ...lines].join('\n');
+}
+
+/** Archive (soft-delete) every selected pet, reporting per-pet failures. */
+export async function archivePetsBulk(petIds: string[]): Promise<PetBulkResult> {
+  const ids = normalizePetIds(petIds);
+  if (ids.length === 0) {
+    const err = new PetServiceError('Select at least one pet to archive', 'NO_PETS_SELECTED');
+    logPetError(err, { service: 'petService', action: 'bulk_archive_validation' });
+    throw err;
+  }
+
+  const result: PetBulkResult = { action: 'archive', succeeded: [], failed: [] };
+  for (const id of ids) {
+    try {
+      await deletePet(id);
+      result.succeeded.push(id);
+    } catch (error) {
+      result.failed.push({
+        petId: id,
+        error: error instanceof Error ? error.message : 'Archive failed',
+      });
+    }
+  }
+  return result;
+}
+
 // Default export for screens that import petService as default
 const petService = {
   getPets,
@@ -520,6 +640,9 @@ const petService = {
   updatePet,
   deletePet,
   uploadPetPhoto,
+  exportPetsBulk,
+  buildPetsShareMessage,
+  archivePetsBulk,
 };
 
 export default petService;

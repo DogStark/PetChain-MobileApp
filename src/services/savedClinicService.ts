@@ -15,6 +15,7 @@ import {
   formatLastRefreshed,
   readCache,
   readThroughCache,
+  writeCache,
   type ServerReadResult,
 } from './offlineServerCache';
 
@@ -27,6 +28,8 @@ export interface SavedClinic {
   longitude?: number;
   /** Free-text directions written by the user, e.g. "parking at rear". */
   navigationNote?: string;
+  /** Human-readable opening hours, e.g. "Mon–Fri 08:00–18:00". */
+  openingHours?: string;
 }
 
 export interface SavedClinicEntry {
@@ -68,6 +71,7 @@ function normalizeClinic(raw: unknown): SavedClinic | null {
     phone: typeof v.phone === 'string' ? v.phone : undefined,
     latitude: typeof v.latitude === 'number' ? v.latitude : undefined,
     longitude: typeof v.longitude === 'number' ? v.longitude : undefined,
+    openingHours: typeof v.openingHours === 'string' ? v.openingHours : undefined,
   };
 }
 
@@ -105,6 +109,22 @@ export async function removeSavedClinic(clinicId: string): Promise<void> {
   await writeIndex((await readIndex()).filter((id) => id !== clinicId));
   await clearCache(clinicKey(clinicId));
   await clearCache(noteKey(clinicId));
+}
+
+/** Whether a clinic is currently bookmarked. Reads local storage only. */
+export async function isClinicSaved(clinicId: string): Promise<boolean> {
+  return (await readIndex()).includes(clinicId);
+}
+
+/**
+ * Bookmarks a clinic from details already held by the caller (e.g. a directory
+ * result), so saving works without a network round-trip.
+ */
+export async function saveClinicLocally(clinic: SavedClinic): Promise<void> {
+  const normalized = normalizeClinic(clinic);
+  if (!normalized) return;
+  await writeCache(clinicKey(normalized.id), normalized);
+  await writeIndex([...(await readIndex()), normalized.id]);
 }
 
 export async function setNavigationNote(clinicId: string, note: string): Promise<void> {

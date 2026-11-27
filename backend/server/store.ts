@@ -186,6 +186,18 @@ export interface StoredReferralCredit {
   awardedAt: string;
 }
 
+export interface StoredReferralRedemption {
+  id: string;
+  userId: string;
+  idempotencyKey: string;
+  requestedAmount: number;
+  appliedAmount: number;
+  invoiceTotal: number;
+  invoiceRemaining: number;
+  creditIds: string[];
+  createdAt: string;
+}
+
 export interface StoredPayment {
   id: string;
   userId: string;
@@ -335,6 +347,7 @@ const apiKeyUsage: ApiKeyUsageRecord[] = [];
 const referralCodes = new Map<string, StoredReferralCode>();
 const referrals = new Map<string, StoredReferral>();
 const referralCredits = new Map<string, StoredReferralCredit>();
+const referralRedemptions = new Map<string, StoredReferralRedemption>();
 const payments = new Map<string, StoredPayment>();
 const familySharing = new Map<string, StoredFamilySharing>();
 /** Joint owners keyed by `${petId}:${userId}` (#1388). */
@@ -356,6 +369,7 @@ export const store = {
   referralCodes,
   referrals,
   referralCredits,
+  referralRedemptions,
   payments,
   familySharing,
   petJointOwners,

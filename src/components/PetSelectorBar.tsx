@@ -28,7 +28,12 @@ const PetSelectorBar: React.FC<Props> = ({ onAddPet }) => {
   if (loading && pets.length === 0) {
     return (
       <View style={styles.loadingRow}>
-        <ActivityIndicator size="small" color="#4CAF50" />
+        <ActivityIndicator
+          size="small"
+          color="#4CAF50"
+          accessibilityRole="progressbar"
+          accessibilityLabel="Loading pets"
+        />
       </View>
     );
   }
@@ -51,6 +56,7 @@ const PetSelectorBar: React.FC<Props> = ({ onAddPet }) => {
               accessibilityRole="tab"
               accessibilityState={{ selected: isActive }}
               accessibilityLabel={`Select ${pet.name}`}
+              accessibilityHint="Switches the active pet"
             >
               <Text style={styles.chipEmoji}>
                 {pet.species === 'dog'
@@ -74,6 +80,7 @@ const PetSelectorBar: React.FC<Props> = ({ onAddPet }) => {
             onPress={onAddPet}
             accessibilityRole="button"
             accessibilityLabel="Add new pet"
+            accessibilityHint="Opens the add pet form"
           >
             <Text style={styles.addChipText}>+ Add</Text>
           </TouchableOpacity>

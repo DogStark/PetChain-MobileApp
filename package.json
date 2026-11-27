@@ -51,6 +51,7 @@
     "prepare": "husky",
     "codegen": "graphql-codegen --config codegen.ts",
     "migrations:validate": "tsx scripts/validate-migrations.ts",
+    "migrations:rollback": "tsx scripts/validate-migrations.ts --rollback",
     "check:empty-tests": "tsx scripts/check-empty-test-files.ts",
     "check:translations": "tsx scripts/check-translations.ts",
     "test:migrations": "tsx scripts/test-migrations.ts",
@@ -66,7 +67,9 @@
     "server": "tsx backend/server/index.ts",
     "dev:docker": "docker-compose up",
     "audit:high": "npm audit --audit-level=high",
-    "storybook:ci": "npx sb-rn-get-stories"
+    "storybook:ci": "npx sb-rn-get-stories",
+    "chromatic": "chromatic --exit-zero-on-changes",
+    "chromatic:ci": "chromatic --ci --exit-zero-on-changes"
   },
   "lint-staged": {
     "{src,backend}/**/*.{ts,tsx,js,jsx}": [
@@ -185,6 +188,7 @@
     "@commitlint/config-conventional": "^21.2.0",
     "@eslint/js": "9.26.0",
     "@graphql-codegen/cli": "^7.1.1",
+    "@graphql-codegen/persisted-query-map": "^1.0.0",
     "@graphql-codegen/typescript": "^6.0.2",
     "@graphql-codegen/typescript-operations": "^6.0.3",
     "@graphql-codegen/typescript-resolvers": "^6.0.2",
@@ -212,6 +216,7 @@
     "@types/ws": "^8.18.1",
     "axios-mock-adapter": "^2.1.0",
     "babel-plugin-react-native-web": "^4.19.13",
+    "chromatic": "^11.27.0",
     "eslint": "9.26.0",
     "eslint-config-expo": "^9.0.0",
     "eslint-config-prettier": "^10.1.8",

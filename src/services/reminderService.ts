@@ -1,6 +1,7 @@
 import * as Notifications from 'expo-notifications';
 
 import apiClient from './apiClient';
+import { addNotification } from './notificationStore';
 import {
   describeNotificationDeliveryState,
   getNotificationPermissionState,
@@ -98,7 +99,61 @@ export function reconciledNow(): number {
   return Date.now() + (cachedReconciliation?.offsetMs ?? 0);
 }
 
+export interface CreateReminderInput {
+  /** Stable identifier so repeated syncs do not duplicate the reminder. */
+  id: string;
+  title: string;
+  body: string;
+  /** When the reminder should fire (Unix ms). */
+  scheduledAt: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CreatedReminder {
+  id: string;
+  scheduledAt: number;
+}
+
 export const reminderService = {
+  /**
+   * Persist a reminder in the in-app notification store and schedule a local
+   * notification for it. Reminders in the past are stored but not scheduled.
+   */
+  async createReminder(input: CreateReminderInput): Promise<CreatedReminder> {
+    if (!input.id.trim()) throw new Error('A reminder id is required');
+    if (!Number.isFinite(input.scheduledAt)) throw new Error('A valid reminder date is required');
+
+    await addNotification({
+      id: input.id,
+      category: 'milestone',
+      title: input.title,
+      body: input.body,
+      createdAt: Date.now(),
+      metadata: input.metadata,
+      navPayload: { screen: 'NotificationCenter' },
+    });
+
+    if (input.scheduledAt > Date.now()) {
+      try {
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: input.title,
+            body: input.body,
+            data: { reminderId: input.id, ...(input.metadata ?? {}) },
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.DATE,
+            date: new Date(input.scheduledAt),
+          },
+        });
+      } catch {
+        // The in-app notification is still available if scheduling fails.
+      }
+    }
+
+    return { id: input.id, scheduledAt: input.scheduledAt };
+  },
+
   async snooze(
     reminderId: string,
     durationMinutes: SnoozeDuration,

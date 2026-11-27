@@ -259,6 +259,33 @@ describe('sendNotification', () => {
     );
   });
 
+  it('selects the Arabic template for an ar user', async () => {
+    mockUserThenTemplate('ar', [
+      makeRow({
+        key: 'vaccination_transfer',
+        locale: 'ar',
+        title: '🐾 تم نقل تذكيرات التطعيم',
+        body: 'تذكيرات التطعيم الخاصة بـ {{petName}} أصبحت نشطة الآن في حسابك.',
+      }),
+    ]);
+
+    const result = await sendNotification(
+      'user-ar',
+      'vaccination_transfer',
+      { petName: 'Rex' },
+      { topic: 'health_tips' },
+    );
+
+    expect(result.locale).toBe('ar');
+    expect(mockSendToUser).toHaveBeenCalledWith(
+      'user-ar',
+      'health_tips',
+      '🐾 تم نقل تذكيرات التطعيم',
+      'تذكيرات التطعيم الخاصة بـ Rex أصبحت نشطة الآن في حسابك.',
+      undefined,
+    );
+  });
+
   it('falls back to English when the user locale has no template', async () => {
     // 1) user lookup → 'fr', 2) fr template lookup → none, 3) en fallback → found
     mockQuery

@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import { PetTimeline } from '../components/pet/PetTimeline';
 import type { Pet } from '../models/Pet';
+import type { TimelineEntry } from '../services/petTimelineService';
 import breedInsightsService, { type PetBreedInsights } from '../services/breedInsightsService';
 import petService from '../services/petService';
 import { formatLocalDate, formatRelativeTime } from '../utils/dateLocale';
@@ -18,7 +20,10 @@ interface Props {
   onShare?: (petId: string, petName: string) => void;
   onAuditHistory?: (petId: string, petName: string) => void;
   onViewProfile?: (petId: string, petName: string) => void;
+  onOpenTimelineEntry?: (entry: TimelineEntry) => void;
 }
+
+type PetDetailTab = 'records' | 'timeline';
 
 const PetDetailScreen: React.FC<Props> = ({
   petId,
@@ -28,9 +33,11 @@ const PetDetailScreen: React.FC<Props> = ({
   onShare,
   onAuditHistory,
   onViewProfile,
+  onOpenTimelineEntry,
 }) => {
   useSecureScreen();
 
+  const [activeTab, setActiveTab] = useState<PetDetailTab>('records');
   const [pet, setPet] = useState<Pet | null>(null);
   const [photo, setPhoto] = useState<string | null>(null);
   const [breedInsights, setBreedInsights] = useState<PetBreedInsights | null>(null);
@@ -129,6 +136,34 @@ const PetDetailScreen: React.FC<Props> = ({
         </TouchableOpacity>
       </View>
 
+      <View style={styles.tabBar} accessibilityRole="tablist">
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'records' && styles.tabActive]}
+          onPress={() => setActiveTab('records')}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: activeTab === 'records' }}
+          accessibilityLabel="Records tab"
+        >
+          <Text style={[styles.tabText, activeTab === 'records' && styles.tabTextActive]}>
+            Records
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'timeline' && styles.tabActive]}
+          onPress={() => setActiveTab('timeline')}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: activeTab === 'timeline' }}
+          accessibilityLabel="Timeline tab"
+        >
+          <Text style={[styles.tabText, activeTab === 'timeline' && styles.tabTextActive]}>
+            Timeline
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {activeTab === 'timeline' ? (
+        <PetTimeline petId={petId} onSelectEntry={onOpenTimelineEntry} />
+      ) : (
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.photoSection}>
           {photo ? (
@@ -238,6 +273,7 @@ const PetDetailScreen: React.FC<Props> = ({
           <Text style={styles.deleteBtnText}>Delete Pet</Text>
         </TouchableOpacity>
       </ScrollView>
+      )}
     </View>
   );
 };
@@ -373,6 +409,16 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   shareBtnText: { color: '#4CAF50', fontWeight: '700', fontSize: 15 },
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  tab: { flex: 1, paddingVertical: 12, alignItems: 'center' },
+  tabActive: { borderBottomWidth: 2, borderBottomColor: '#4CAF50' },
+  tabText: { fontSize: 14, fontWeight: '600', color: '#888' },
+  tabTextActive: { color: '#4CAF50' },
 });
 
 export default PetDetailScreen;

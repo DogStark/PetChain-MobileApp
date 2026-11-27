@@ -1,5 +1,16 @@
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useState } from 'react';
-import { FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  Alert,
+  FlatList,
+  RefreshControl,
+  Share,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 
 import { EmptyState } from '../components/EmptyState';
 import { HeaderOfflineStatus, useOfflineStatus } from '../components/OfflineIndicator';
@@ -39,6 +50,10 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
   });
   const [showPaywall, setShowPaywall] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [selectedPetIds, setSelectedPetIds] = useState<string[]>([]);
+  const [isBulkBusy, setIsBulkBusy] = useState(false);
+
+  const isSelectionMode = selectedPetIds.length > 0;
 
   const loadPets = useCallback(async () => {
     const data = await petService.getAllPets();
@@ -100,6 +115,106 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
     }
   }, [subscriptionStatus.isPremium, pets.length, onAddPet]);
 
+  // ─── Multi-select / bulk actions ───────────────────────────────────────────
+
+  const exitSelectionMode = useCallback(() => {
+    setSelectedPetIds([]);
+  }, []);
+
+  const togglePetSelection = useCallback((petId: string) => {
+    setSelectedPetIds((current) =>
+      current.includes(petId) ? current.filter((id) => id !== petId) : [...current, petId],
+    );
+  }, []);
+
+  const handlePetPress = useCallback(
+    (pet: Pet) => {
+      if (isSelectionMode) {
+        togglePetSelection(pet.id);
+        return;
+      }
+      onSelectPet(pet);
+    },
+    [isSelectionMode, togglePetSelection, onSelectPet],
+  );
+
+  const handlePetLongPress = useCallback((pet: Pet) => {
+    setSelectedPetIds((current) => (current.includes(pet.id) ? current : [...current, pet.id]));
+  }, []);
+
+  const handleBulkExport = useCallback(async () => {
+    if (isBulkBusy) return;
+    setIsBulkBusy(true);
+    try {
+      const { json, fileName, petCount } = await petService.exportPetsBulk(selectedPetIds);
+      const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
+      await FileSystem.writeAsStringAsync(fileUri, json, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'application/json',
+          dialogTitle: `Export ${petCount} pet record${petCount === 1 ? '' : 's'}`,
+        });
+      } else {
+        Alert.alert('Export Ready', 'Sharing is not available on this device.');
+      }
+      exitSelectionMode();
+    } catch {
+      showToast('Could not export the selected pets', { variant: 'error' });
+    } finally {
+      setIsBulkBusy(false);
+    }
+  }, [isBulkBusy, selectedPetIds, exitSelectionMode, showToast]);
+
+  const handleBulkShare = useCallback(async () => {
+    if (isBulkBusy) return;
+    setIsBulkBusy(true);
+    try {
+      const message = await petService.buildPetsShareMessage(selectedPetIds);
+      await Share.share({ message, title: 'PetChain pet profiles' });
+      exitSelectionMode();
+    } catch {
+      showToast('Could not share the selected pets', { variant: 'error' });
+    } finally {
+      setIsBulkBusy(false);
+    }
+  }, [isBulkBusy, selectedPetIds, exitSelectionMode, showToast]);
+
+  const handleBulkArchive = useCallback(() => {
+    if (isBulkBusy) return;
+    const count = selectedPetIds.length;
+    Alert.alert('Archive pets', `Archive ${count} selected pet${count === 1 ? '' : 's'}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Archive',
+        style: 'destructive',
+        onPress: () => {
+          setIsBulkBusy(true);
+          petService
+            .archivePetsBulk(selectedPetIds)
+            .then(async (result) => {
+              if (result.failed.length > 0) {
+                showToast(`Archived ${result.succeeded.length}, failed ${result.failed.length}`, {
+                  variant: 'error',
+                });
+              } else {
+                showToast(`Archived ${result.succeeded.length} pet(s)`);
+              }
+              exitSelectionMode();
+              await execute();
+              void refreshPets();
+            })
+            .catch(() => showToast('Could not archive the selected pets', { variant: 'error' }))
+            .finally(() => setIsBulkBusy(false));
+        },
+      },
+    ]);
+  }, [isBulkBusy, selectedPetIds, exitSelectionMode, showToast, execute, refreshPets]);
+
+  const selectedCount = selectedPetIds.length;
+
   // card: padding 12 top + 12 bottom + avatar 56 + marginBottom 10 = 90
   const ITEM_HEIGHT = 90;
   const getItemLayout = useCallback(
@@ -112,74 +227,162 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
   );
 
   const renderItem = useCallback(
-    ({ item, index }: { item: Pet; index: number }) => (
-      <TouchableOpacity
-        style={styles.card}
-        onPress={() => onSelectPet(item)}
-        accessibilityRole="button"
-        accessibilityLabel={`${item.name}, ${item.species}`}
-        accessibilityHint="Opens pet details"
-        testID={`pet-list-item-${index}`}
-      >
-        {item.photoUrl || item.thumbnailUrl ? (
-          <OptimizedImage
-            uri={item.photoUrl || item.thumbnailUrl || ''}
-            thumbnailUri={item.thumbnailUrl}
-            blurhash={item.blurhash}
-            style={styles.avatar}
-            accessibilityLabel={`${item.name} photo`}
-          />
-        ) : (
-          <View style={[styles.avatar, styles.avatarPlaceholder]}>
-            <Text style={styles.avatarEmoji}>🐾</Text>
-          </View>
-        )}
-        <View style={styles.cardInfo}>
-          <Text style={styles.petName}>{item.name}</Text>
-          <Text style={styles.petMeta}>
-            {item.species}
-            {item.breed ? ` · ${item.breed}` : ''}
-          </Text>
-          {item.dateOfBirth && (
-            <Text style={styles.petMeta}>
-              Born: {new Date(item.dateOfBirth).toLocaleDateString()}
-            </Text>
+    ({ item, index }: { item: Pet; index: number }) => {
+      const isSelected = selectedPetIds.includes(item.id);
+      return (
+        <TouchableOpacity
+          style={[styles.card, isSelected && styles.cardSelected]}
+          onPress={() => handlePetPress(item)}
+          onLongPress={() => handlePetLongPress(item)}
+          delayLongPress={400}
+          accessibilityRole="button"
+          accessibilityLabel={`${item.name}, ${item.species}`}
+          accessibilityHint={
+            isSelectionMode ? 'Toggles selection' : 'Opens pet details. Long press to select.'
+          }
+          accessibilityState={{ selected: isSelected }}
+          testID={`pet-list-item-${index}`}
+        >
+          {isSelectionMode ? (
+            <View
+              style={[styles.checkbox, isSelected && styles.checkboxChecked]}
+              testID={`pet-list-checkbox-${index}`}
+            >
+              {isSelected ? <Text style={styles.checkboxMark}>✓</Text> : null}
+            </View>
+          ) : null}
+          {item.photoUrl || item.thumbnailUrl ? (
+            <OptimizedImage
+              uri={item.thumbnailUrl || item.photoUrl || ''}
+              thumbnailUri={item.thumbnailUrl}
+              blurhash={item.blurhash}
+              style={styles.avatar}
+              accessibilityLabel={`${item.name} photo`}
+            />
+          ) : (
+            <View style={[styles.avatar, styles.avatarPlaceholder]}>
+              <Text style={styles.avatarEmoji}>🐾</Text>
+            </View>
           )}
-          {!offlineStatus?.isOnline ? <Text style={styles.cachedChip}>Cached</Text> : null}
-        </View>
-        <Text style={styles.chevron}>›</Text>
-      </TouchableOpacity>
-    ),
-    [onSelectPet, offlineStatus?.isOnline],
+          <View style={styles.cardInfo}>
+            <Text style={styles.petName}>{item.name}</Text>
+            <Text style={styles.petMeta}>
+              {item.species}
+              {item.breed ? ` · ${item.breed}` : ''}
+            </Text>
+            {item.dateOfBirth && (
+              <Text style={styles.petMeta}>
+                Born: {new Date(item.dateOfBirth).toLocaleDateString()}
+              </Text>
+            )}
+            {!offlineStatus?.isOnline ? <Text style={
+          )}
+          <View style={styles.cardInfo}>
+            <Text style={styles.petName}>{item.name}</Text>
+            <Text style={styles.petMeta}>
+              {item.species}
+              {item.breed ? ` · ${item.breed}` : ''}
+            </Text>
+            {item.dateOfBirth && (
+              <Text style={styles.petMeta}>
+                Born: {new Date(item.dateOfBirth).toLocaleDateString()}
+              </Text>
+            )}
+            {!offlineStatus?.isOnline ? <Text style={styles.cachedChip}>Cached</Text> : null}
+          </View>
+          {!isSelectionMode ? <Text style={styles.chevron}>›</Text> : null}
+        </TouchableOpacity>
+      );
+    },
+    [
+      offlineStatus?.isOnline,
+      selectedPetIds,
+      isSelectionMode,
+      handlePetPress,
+      handlePetLongPress,
+    ],
   );
 
   return (
     <View style={styles.container} testID="pet-list-screen">
       <View style={styles.header}>
         <View style={styles.titleRow}>
-          <Text style={styles.title}>My Pets</Text>
+          <Text style={styles.title}>{isSelectionMode ? `${selectedCount} selected` : 'My Pets'}</Text>
           <HeaderOfflineStatus />
         </View>
-        <TouchableOpacity
-          style={styles.addBtn}
-          onPress={handleAddPet}
-          accessibilityRole="button"
-          accessibilityLabel="Add pet"
-          accessibilityHint="Adds a new pet"
-          testID="add-pet-button"
-        >
-          <Text style={styles.addBtnText}>+ Add</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.adoptBtn}
-          onPress={onAdoptPet}
-          accessibilityRole="button"
-          accessibilityLabel="Adopt pet"
-          accessibilityHint="Browse shelter pets"
-        >
-          <Text style={styles.adoptBtnText}>Adopt</Text>
-        </TouchableOpacity>
+        {isSelectionMode ? (
+          <TouchableOpacity
+            style={styles.cancelBtn}
+            onPress={exitSelectionMode}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel selection"
+            accessibilityHint="Exits multi-select without performing an action"
+            testID="pet-list-cancel-selection"
+          >
+            <Text style={styles.cancelBtnText}>Cancel</Text>
+          </TouchableOpacity>
+        ) : (
+          <>
+            <TouchableOpacity
+              style={styles.addBtn}
+              onPress={handleAddPet}
+              accessibilityRole="button"
+              accessibilityLabel="Add pet"
+              accessibilityHint="Adds a new pet"
+              testID="add-pet-button"
+            >
+              <Text style={styles.addBtnText}>+ Add</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.adoptBtn}
+              onPress={onAdoptPet}
+              accessibilityRole="button"
+              accessibilityLabel="Adopt pet"
+              accessibilityHint="Browse shelter pets"
+            >
+              <Text style={styles.adoptBtnText}>Adopt</Text>
+            </TouchableOpacity>
+          </>
+        )}
       </View>
+
+      {isSelectionMode ? (
+        <View style={styles.bulkBar} testID="pet-list-bulk-actions">
+          <TouchableOpacity
+            style={styles.bulkBtn}
+            onPress={() => void handleBulkExport()}
+            disabled={isBulkBusy}
+            accessibilityRole="button"
+            accessibilityLabel="Export selected pet records"
+            accessibilityState={{ disabled: isBulkBusy }}
+            testID="pet-list-bulk-export"
+          >
+            <Text style={styles.bulkBtnText}>Export</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.bulkBtn}
+            onPress={() => void handleBulkShare()}
+            disabled={isBulkBusy}
+            accessibilityRole="button"
+            accessibilityLabel="Share selected pet profiles"
+            accessibilityState={{ disabled: isBulkBusy }}
+            testID="pet-list-bulk-share"
+          >
+            <Text style={styles.bulkBtnText}>Share</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.bulkBtn, styles.bulkBtnDanger]}
+            onPress={handleBulkArchive}
+            disabled={isBulkBusy}
+            accessibilityRole="button"
+            accessibilityLabel="Archive selected pets"
+            accessibilityState={{ disabled: isBulkBusy }}
+            testID="pet-list-bulk-archive"
+          >
+            <Text style={styles.bulkBtnText}>Archive</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
       {/* Pet selector bar — Issue #151/#82 */}
       <PetSelectorBar onAddPet={handleAddPet} />
@@ -307,6 +510,46 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   adoptBtnText: { color: '#fff', fontWeight: '600' },
+  cancelBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#12372a',
+  },
+  cancelBtnText: { color: '#12372a', fontWeight: '600' },
+  bulkBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  bulkBtn: {
+    flex: 1,
+    backgroundColor: '#12372a',
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  bulkBtnDanger: { backgroundColor: '#b3261e' },
+  bulkBtnText: { color: '#fff', fontWeight: '600' },
+  cardSelected: { borderWidth: 2, borderColor: '#12372a', backgroundColor: '#eef5f1' },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: '#12372a',
+    marginRight: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxChecked: { backgroundColor: '#12372a' },
+  checkboxMark: { color: '#fff', fontSize: 14, fontWeight: '700' },
   loader: { marginTop: 40 },
   list: { padding: 12 },
   cachedBanner: {

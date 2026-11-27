@@ -17,6 +17,12 @@ const weight: SeriesPoint[] = [
   { label: '2026-07-01', value: 11.1, unit: 'kg' },
 ];
 
+const healthScore: SeriesPoint[] = [
+  { label: '2026-05-01', value: 72, unit: 'score' },
+  { label: '2026-06-01', value: 78, unit: 'score' },
+  { label: '2026-07-01', value: 85, unit: 'score' },
+];
+
 describe('a11yChartSummary — charts (issues #979 & #1194)', () => {
   it('characterizes trend direction from the endpoints and formats non-color badges', () => {
     expect(describeTrend(weight)).toBe('rising');
@@ -159,6 +165,143 @@ describe('a11yChartSummary — charts (issues #979 & #1194)', () => {
   it('does not leak precise values beyond 2 decimals or non-numeric noise', () => {
     const noisy: SeriesPoint[] = [{ label: 'x', value: 3.14159265, unit: 'bpm' }];
     expect(buildChartDataTable(noisy)[0]).toBe('Point 1 of 1. x: 3.14 bpm.');
+  });
+});
+
+describe('a11yChartSummary — health score chart (issue #1381)', () => {
+  it('describes an improving trend with key data points', () => {
+    expect(describeTrend(healthScore)).toBe('rising');
+    const summary = buildChartSummary(healthScore, {
+      metricName: 'Health score',
+      rangeLabel: 'last 3 months',
+    });
+    expect(summary).toBe(
+      'Health score chart over last 3 months. 3 readings. Latest 85 score. Trend rising. Range 72 score to 85 score.',
+    );
+  });
+
+  it('describes a declining trend', () => {
+    const declining = [...healthScore].reverse();
+    expect(describeTrend(declining)).toBe('falling');
+    expect(buildChartSummary(declining, { metricName: 'Health score' })).toContain(
+      'Trend falling.',
+    );
+  });
+
+  it('describes a stable trend', () => {
+    const stable: SeriesPoint[] = [
+      { label: '2026-05-01', value: 80, unit: 'score' },
+      { label: '2026-06-01', value: 80.02, unit: 'score' },
+    ];
+    expect(describeTrend(stable)).toBe('stable');
+    expect(buildChartSummary(stable, { metricName: 'Health score' })).toContain('Trend stable.');
+  });
+
+  it('returns one walkable list item per point', () => {
+    const items = buildChartDataTable(healthScore);
+    expect(items).toHaveLength(healthScore.length);
+    expect(items).toEqual([
+      'Point 1 of 3. 2026-05-01: 72 score.',
+      'Point 2 of 3. 2026-06-01: 78 score.',
+      'Point 3 of 3. 2026-07-01: 85 score.',
+    ]);
+  });
+
+  it('blocks unauthorized access to health score data', () => {
+    const denied = buildChartSummary(healthScore, {
+      metricName: 'Health score',
+      permissions: ['pets:read'],
+    });
+    expect(denied).toBe(
+      'Permission denied. You do not have access to view health charts.',
+    );
+    expect(denied).not.toContain('85');
+    expect(
+      buildAccessibleChartTable(healthScore, { permissions: ['pets:read'] }),
+    ).toEqual([]);
+  });
+
+  it('handles empty and malformed health score input', () => {
+    expect(buildChartSummary([], { metricName: 'Health score' })).toBe(
+      'Health score chart. No data for the selected period.',
+    );
+    expect(
+      buildChartSummary([{ label: 'bad', value: Number.NaN, unit: 'score' }], {
+        metricName: 'Health score',
+      }),
+    ).toBe('Health score chart. No data for the selected period.');
+    expect(buildChartDataTable([])).toEqual([]);
+  });
+});
+
+describe('a11yChartSummary — weight chart (issue #1381)', () => {
+  it('describes a rising weight trend with key data points', () => {
+    const summary = buildChartSummary(weight, { metricName: 'Weight' });
+    expect(summary).toContain('Trend rising.');
+    expect(summary).toContain('Latest 11.1 kg');
+    expect(summary).toContain('Range 10.2 kg to 11.1 kg');
+  });
+
+  it('describes a declining weight trend', () => {
+    const declining = [...weight].reverse();
+    expect(describeTrend(declining)).toBe('falling');
+    expect(buildChartSummary(declining, { metricName: 'Weight' })).toContain('Trend falling.');
+  });
+
+  it('describes a stable weight trend', () => {
+    const stable: SeriesPoint[] = [
+      { label: '2026-05-01', value: 10.2, unit: 'kg' },
+      { label: '2026-06-01', value: 10.21, unit: 'kg' },
+    ];
+    expect(describeTrend(stable)).toBe('stable');
+    expect(buildChartSummary(stable, { metricName: 'Weight' })).toContain('Trend stable.');
+  });
+
+  it('returns one walkable list item per weight point', () => {
+    const items = buildChartDataTable(weight);
+    expect(items).toHaveLength(weight.length);
+    expect(items[0]).toBe('Point 1 of 3. 2026-05-01: 10.2 kg.');
+    expect(items[2]).toBe('Point 3 of 3. 2026-07-01: 11.1 kg.');
+  });
+
+  it('omits trend and range for mixed units', () => {
+    const mixed: SeriesPoint[] = [
+      { label: '2026-05-01', value: 10.2, unit: 'kg' },
+      { label: '2026-06-01', value: 23.0, unit: 'lb' },
+    ];
+    const summary = buildChartSummary(mixed, { metricName: 'Weight' });
+    expect(summary).toContain('Mixed units detected (kg, lb)');
+    expect(summary).not.toContain('Trend');
+  });
+
+  it('blocks unauthorized access to weight data', () => {
+    const denied = buildChartSummary(weight, {
+      metricName: 'Weight',
+      permissions: ['pets:read'],
+    });
+    expect(denied).toBe(
+      'Permission denied. You do not have access to view health charts.',
+    );
+    expect(denied).not.toContain('11.1');
+  });
+
+  it('handles empty and malformed weight input', () => {
+    expect(buildChartSummary([], { metricName: 'Weight' })).toBe(
+      'Weight chart. No data for the selected period.',
+    );
+    expect(
+      buildChartSummary([{ label: 'bad', value: Number.NaN, unit: 'kg' }], {
+        metricName: 'Weight',
+      }),
+    ).toBe('Weight chart. No data for the selected period.');
+    expect(buildChartDataTable([])).toEqual([]);
+  });
+
+  it('builds accessible table rows for weight points', () => {
+    const rows = buildAccessibleChartTable(weight, { permissions: ['health:read'] });
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({ index: 1, total: 3, dateText: '2026-05-01', valueText: '10.2 kg' });
+    expect(rows[2]).toMatchObject({ index: 3, total: 3, dateText: '2026-07-01', valueText: '11.1 kg' });
   });
 });
 
