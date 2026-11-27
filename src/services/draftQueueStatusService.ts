@@ -32,6 +32,23 @@ export interface DraftFeatureGroup {
 const STORAGE_KEY = 'draftQueueStatus:v1';
 const STATUS_ORDER: DraftStatus[] = ['blocked', 'retrying', 'pending', 'completed'];
 
+// ─── Change listeners (header indicator, issue #1362) ─────────────────────────
+
+type Listener = () => void;
+const listeners = new Set<Listener>();
+
+/** Subscribe to draft queue changes. Returns an unsubscribe function. */
+export function subscribeToDraftQueueChanges(fn: Listener): () => void {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+}
+
+function notifyListeners(): void {
+  listeners.forEach((fn) => fn());
+}
+
 async function readAll(): Promise<DraftEntry[]> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
@@ -42,8 +59,10 @@ async function readAll(): Promise<DraftEntry[]> {
   }
 }
 
-const writeAll = (drafts: DraftEntry[]) =>
-  AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(drafts));
+const writeAll = async (drafts: DraftEntry[]): Promise<void> => {
+  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(drafts));
+  notifyListeners();
+};
 
 export async function enqueueDraft(id: string, feature: string, now = Date.now()): Promise<void> {
   const drafts = (await readAll()).filter((d) => d.id !== id);
@@ -125,8 +144,16 @@ export async function getDraftQueueByFeature(): Promise<DraftFeatureGroup[]> {
   })).sort((a, b) => a.feature.localeCompare(b.feature));
 }
 
-/** Screen-reader label for a single draft row. */
-export function describeDraft(draft: DraftEntry, now = Date.now()): string {
+/**
+ * Number of drafts still waiting to sync (pending, retrying or blocked).
+ * Completed drafts are excluded so the header indicator disappears once
+ * everything has synced.
+ */
+export async function getPendingDraftCount(): Promise<number> {
+  return (await readAll()).filter((d) => d.status !== 'completed').length;
+}
+
+/** Screen-reader label for a single draft row. */export function describeDraft(draft: DraftEntry, now = Date.now()): string {
   const minutes = Math.max(0, Math.round((now - draft.updatedAt) / 60000));
   const when = minutes < 1 ? 'just now' : `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
   const reason =

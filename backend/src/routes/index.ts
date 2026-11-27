@@ -3,7 +3,7 @@ import express from 'express';
 import importRouter from './import';
 import lostFoundRouter from './lostFound';
 import petsRouterV2 from './v2/pets';
-import { deprecationHeaders } from '../../middleware/deprecation';
+import { deprecationHeaders, markDeprecated } from '../../middleware/deprecation';
 import analyticsRouter from '../../server/routes/analytics';
 import appointmentsRouter from '../../server/routes/appointments';
 import medicalRecordsRouter from '../../server/routes/medicalRecords';
@@ -16,6 +16,7 @@ import usersRouter from '../../server/routes/users';
  */
 export function createV1Router() {
   const v1 = express.Router();
+  v1.use(markDeprecated());
   v1.use(deprecationHeaders);
 
   v1.get('/health', (_req, res) => {
