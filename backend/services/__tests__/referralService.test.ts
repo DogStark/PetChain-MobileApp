@@ -26,6 +26,7 @@ describe('referralService fraud prevention', () => {
     store.referralCodes.clear();
     store.referrals.clear();
     store.referralCredits.clear();
+    store.referralRedemptions.clear();
   });
 
   it('generates a stable unique referral code per user', () => {
@@ -117,5 +118,125 @@ describe('referralService fraud prevention', () => {
     expect(stats.successfulConversions).toBe(1);
     expect(stats.earnedPremiumDays).toBe(30);
     expect(store.referralCredits.size).toBe(1);
+  });
+});
+
+describe('referralService credit redemption', () => {
+  function seedCredit(id: string, userId: string, amount: number) {
+    store.referralCredits.set(id, {
+      id,
+      userId,
+      referralId: `referral-${id}`,
+      creditType: 'premium_days',
+      amount,
+      status: 'active',
+      awardedAt: new Date().toISOString(),
+    });
+  }
+
+  beforeEach(() => {
+    store.users.clear();
+    store.referralCodes.clear();
+    store.referrals.clear();
+    store.referralCredits.clear();
+    store.referralRedemptions.clear();
+  });
+
+  it('applies credits to the next invoice and marks them redeemed', () => {
+    seedCredit('credit-1', 'user-1', 5);
+
+    const result = referralService.redeemReferralCredits({
+      userId: 'user-1',
+      amount: 5,
+      idempotencyKey: 'key-1',
+      invoiceTotal: 9.99,
+    });
+
+    expect(result.appliedAmount).toBe(5);
+    expect(result.invoiceRemaining).toBe(4.99);
+    expect(result.replayed).toBe(false);
+    expect(store.referralCredits.get('credit-1')?.status).toBe('redeemed');
+    expect(referralService.getReferralStats('user-1').availablePremiumDays).toBe(0);
+  });
+
+  it('replays the same redemption for a repeated idempotency key', () => {
+    seedCredit('credit-1', 'user-1', 5);
+
+    const first = referralService.redeemReferralCredits({
+      userId: 'user-1',
+      amount: 5,
+      idempotencyKey: 'key-1',
+      invoiceTotal: 9.99,
+    });
+    const second = referralService.redeemReferralCredits({
+      userId: 'user-1',
+      amount: 5,
+      idempotencyKey: 'key-1',
+      invoiceTotal: 9.99,
+    });
+
+    expect(second.redemptionId).toBe(first.redemptionId);
+    expect(second.replayed).toBe(true);
+    expect(store.referralRedemptions.size).toBe(1);
+  });
+
+  it('rejects an idempotency key reused with a different amount', () => {
+    seedCredit('credit-1', 'user-1', 5);
+
+    referralService.redeemReferralCredits({
+      userId: 'user-1',
+      amount: 2,
+      idempotencyKey: 'key-1',
+      invoiceTotal: 9.99,
+    });
+
+    expect(() =>
+      referralService.redeemReferralCredits({
+        userId: 'user-1',
+        amount: 3,
+        idempotencyKey: 'key-1',
+        invoiceTotal: 9.99,
+      }),
+    ).toThrow('Idempotency key was already used for a different redemption');
+  });
+
+  it('prevents over-redemption beyond the invoice total', () => {
+    seedCredit('credit-1', 'user-1', 20);
+
+    expect(() =>
+      referralService.redeemReferralCredits({
+        userId: 'user-1',
+        amount: 20,
+        idempotencyKey: 'key-1',
+        invoiceTotal: 9.99,
+      }),
+    ).toThrow('Redemption amount exceeds invoice total');
+    expect(store.referralCredits.get('credit-1')?.status).toBe('active');
+    expect(store.referralRedemptions.size).toBe(0);
+  });
+
+  it('caps the applied amount at the available credit balance', () => {
+    seedCredit('credit-1', 'user-1', 3);
+
+    const result = referralService.redeemReferralCredits({
+      userId: 'user-1',
+      amount: 5,
+      idempotencyKey: 'key-1',
+      invoiceTotal: 9.99,
+    });
+
+    expect(result.appliedAmount).toBe(3);
+    expect(result.invoiceRemaining).toBe(6.99);
+  });
+
+  it('rejects redemption when the user has no active credits', () => {
+    expect(() =>
+      referralService.redeemReferralCredits({
+        userId: 'user-1',
+        amount: 1,
+        idempotencyKey: 'key-1',
+        invoiceTotal: 9.99,
+      }),
+    ).toThrow('No referral credits available');
   });
 });
