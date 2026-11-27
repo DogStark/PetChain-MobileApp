@@ -81,7 +81,7 @@ export function usePet(petId: string | null | undefined): UsePetResult {
       }
 
       try {
-        const result = await getPetById(petId);
+        const result = await getPetById(petId, { refresh: fetchCount > 0 });
 
         if (!cancelled && isMounted.current) {
           setPet(result);

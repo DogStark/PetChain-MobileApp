@@ -254,6 +254,8 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
           {item.photoUrl || item.thumbnailUrl ? (
             <OptimizedImage
               uri={item.thumbnailUrl || item.photoUrl || ''}
+              thumbnailUri={item.thumbnailUrl}
+              blurhash={item.blurhash}
               style={styles.avatar}
               accessibilityLabel={`${item.name} photo`}
             />
@@ -261,6 +263,19 @@ const PetListScreen: React.FC<Props> = ({ onSelectPet, onAddPet, onAdoptPet }) =
             <View style={[styles.avatar, styles.avatarPlaceholder]}>
               <Text style={styles.avatarEmoji}>🐾</Text>
             </View>
+          )}
+          <View style={styles.cardInfo}>
+            <Text style={styles.petName}>{item.name}</Text>
+            <Text style={styles.petMeta}>
+              {item.species}
+              {item.breed ? ` · ${item.breed}` : ''}
+            </Text>
+            {item.dateOfBirth && (
+              <Text style={styles.petMeta}>
+                Born: {new Date(item.dateOfBirth).toLocaleDateString()}
+              </Text>
+            )}
+            {!offlineStatus?.isOnline ? <Text style={
           )}
           <View style={styles.cardInfo}>
             <Text style={styles.petName}>{item.name}</Text>
