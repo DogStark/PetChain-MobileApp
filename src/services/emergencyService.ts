@@ -27,6 +27,11 @@ export interface EmergencyContact {
   type: 'vet' | 'clinic' | 'emergency' | 'poison-control';
   available24h?: boolean;
   notes?: string;
+  /**
+   * False until the contact's phone number has been confirmed by SMS
+   * (Issue #1366). Absent is treated as unverified for user-added contacts.
+   */
+  verified?: boolean;
 }
 
 export interface VetClinic {
@@ -99,6 +104,8 @@ export interface SOSPlan {
   canDispatch: boolean;
   /** Human-readable reasons the plan is degraded, for display in the preview. */
   warnings: string[];
+  /** Contacts skipped because their number is not SMS-verified (Issue #1366). */
+  skippedUnverified?: SOSRecipient[];
 }
 
 export interface TriggerSOSOptions {

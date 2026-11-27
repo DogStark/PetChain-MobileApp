@@ -105,17 +105,32 @@ export async function joinWaitlist(input: JoinWaitlistInput): Promise<WaitlistEn
 
   const entries = await readAll();
 
-  // Prevent duplicate active entries for the same user + vet
+  // Idempotent join: an active entry for the same user + vet + pet + window is
+  // returned as-is instead of creating a duplicate.
   const existing = entries.find(
+    (e) =>
+      e.userId === userId &&
+      e.vetId === vetId &&
+      e.petId === petId &&
+      e.preferredDateStart === preferredDateStart &&
+      e.preferredDateEnd === preferredDateEnd &&
+      (e.status === WaitlistStatus.WAITING || e.status === WaitlistStatus.NOTIFIED),
+  );
+  if (existing) {
+    return { success: true, data: existing, message: 'You are already on this waitlist.' };
+  }
+
+  // Prevent duplicate active entries for the same user + vet
+  const existingForVet = entries.find(
     (e) =>
       e.userId === userId &&
       e.vetId === vetId &&
       (e.status === WaitlistStatus.WAITING || e.status === WaitlistStatus.NOTIFIED),
   );
-  if (existing) {
+  if (existingForVet) {
     return {
       success: false,
-      data: existing,
+      data: existingForVet,
       message: 'You are already on the waitlist for this vet.',
     };
   }
@@ -293,6 +308,9 @@ export async function acceptSlot(
     recalculatePositions(entries, entry.vetId);
     await writeAll(entries);
 
+    // Offer the freed slot to the next user in the queue
+    await notifyNextInQueue(entry.vetId, entry.preferredDateStart);
+
     return {
       success: false,
       data: entry,
@@ -333,6 +351,28 @@ export async function processExpiredNotifications(): Promise<WaitlistEntry[]> {
   }
 
   return expired;
+}
+
+/**
+ * Get all active (WAITING or NOTIFIED) waitlist entries for a specific user.
+ */
+export async function getActiveUserWaitlistEntries(
+  userId: string,
+): Promise<WaitlistListResponse> {
+  if (!userId?.trim()) {
+    return { success: false, data: [], total: 0 };
+  }
+
+  const entries = await readAll();
+  const active = entries
+    .filter(
+      (e) =>
+        e.userId === userId &&
+        (e.status === WaitlistStatus.WAITING || e.status === WaitlistStatus.NOTIFIED),
+    )
+    .sort((a, b) => a.position - b.position);
+
+  return { success: true, data: active, total: active.length };
 }
 
 /**
