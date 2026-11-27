@@ -14,12 +14,15 @@ jest.mock('../../utils/networkMonitor', () => ({ networkMonitor: { isOnline: jes
 import api from '../api';
 import { networkMonitor } from '../../utils/networkMonitor';
 import {
+  buildActivityCsv,
+  buildFilterParams,
   getActivityAccessibilityLabel,
   getActivityViewState,
   getEmptyStateMessage,
   loadFilteredActivity,
   loadNextActivityPage,
   validateFilters,
+  type ActivityFilters,
 } from '../walletActivityFilterService';
 
 const mockApi = api as unknown as { get: jest.Mock };
@@ -106,4 +109,50 @@ it('reports denial without leaking cached activity', async () => {
   expect(await loadFilteredActivity({})).toMatchObject({ status: 'denied', data: null });
   online.mockResolvedValue(false);
   expect((await loadFilteredActivity({})).data).toBeNull();
+});
+
+it('sends every date range and type combination to the server', async () => {
+  mockApi.get.mockResolvedValue({ data: page });
+  const combos: ActivityFilters[] = [
+    {},
+    { from: '2026-10-01' },
+    { to: '2026-10-31' },
+    { from: '2026-10-01', to: '2026-10-31' },
+    { type: 'payment' },
+    { type: 'trustline' },
+    { type: 'path_payment' },
+    { from: '2026-10-01', to: '2026-10-31', type: 'payment' },
+    { from: '2026-10-01', to: '2026-10-31', type: 'trustline' },
+    { from: '2026-10-01', to: '2026-10-31', type: 'path_payment' },
+    { from: '2026-10-01', type: 'path_payment' },
+    { to: '2026-10-31', type: 'trustline' },
+  ];
+  for (const filters of combos) {
+    await loadFilteredActivity(filters);
+    expect(mockApi.get).toHaveBeenLastCalledWith('/wallet/activity', {
+      params: buildFilterParams(filters),
+    });
+  }
+});
+
+it('validates type filters and keeps them in the cache key', async () => {
+  expect(validateFilters({ type: 'payment' })).toEqual([]);
+  expect(validateFilters({ type: 'swap' as never })).toEqual(['Unknown type filter.']);
+  expect(buildFilterParams({ type: 'path_payment' })).toEqual({ type: 'path_payment' });
+
+  mockApi.get.mockResolvedValue({ data: page });
+  await loadFilteredActivity({ type: 'payment' }, { now: 0 });
+  online.mockResolvedValue(false);
+  expect((await loadFilteredActivity({ type: 'payment' }, { now: 1000 })).data).not.toBeNull();
+  expect((await loadFilteredActivity({ type: 'trustline' }, { now: 1000 })).data).toBeNull();
+});
+
+it('builds a quoted CSV for export', () => {
+  const csv = buildActivityCsv([
+    { ...item('t1', 'confirmed'), type: 'payment' },
+    { ...item('t2', 'pending'), type: 'path_payment', asset: 'USDC,"x"' },
+  ]);
+  expect(csv.split('\n')[0]).toBe('Date,Type,Amount,Asset,Status,Transaction ID');
+  expect(csv).toContain('2026-10-01,Payment,12.5,XLM,confirmed,t1');
+  expect(csv).toContain('"USDC,""x"""');
 });

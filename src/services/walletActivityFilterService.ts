@@ -12,6 +12,16 @@ import { readThroughCache, type ServerReadResult } from './offlineServerCache';
 export type ActivityStatus = 'pending' | 'confirmed' | 'failed';
 export const ACTIVITY_STATUSES: ActivityStatus[] = ['pending', 'confirmed', 'failed'];
 
+/** Stellar operation types exposed by the wallet activity feed. */
+export type ActivityType = 'payment' | 'trustline' | 'path_payment';
+export const ACTIVITY_TYPES: ActivityType[] = ['payment', 'trustline', 'path_payment'];
+
+export const ACTIVITY_TYPE_LABELS: Record<ActivityType, string> = {
+  payment: 'Payment',
+  trustline: 'Trustline',
+  path_payment: 'Path payment',
+};
+
 export interface ActivityFilters {
   petId?: string;
   /** Inclusive ISO date (YYYY-MM-DD). */
@@ -19,6 +29,7 @@ export interface ActivityFilters {
   /** Inclusive ISO date (YYYY-MM-DD). */
   to?: string;
   status?: ActivityStatus;
+  type?: ActivityType;
 }
 
 export interface WalletActivity {
@@ -28,6 +39,8 @@ export interface WalletActivity {
   asset: string;
   status: ActivityStatus;
   createdAt: string;
+  /** Stellar operation type, when the server reports one. */
+  type?: ActivityType;
   /** Server-provided link to transaction details, if any. */
   detailsLink?: string;
 }
@@ -51,6 +64,7 @@ export function validateFilters(filters: ActivityFilters): string[] {
     errors.push('Start date must be on or before the end date.');
   if (filters.status && !ACTIVITY_STATUSES.includes(filters.status))
     errors.push('Unknown status filter.');
+  if (filters.type && !ACTIVITY_TYPES.includes(filters.type)) errors.push('Unknown type filter.');
   return errors;
 }
 
@@ -60,6 +74,7 @@ export function buildFilterParams(filters: ActivityFilters): Record<string, stri
   if (filters.from) params.from = filters.from;
   if (filters.to) params.to = filters.to;
   if (filters.status) params.status = filters.status;
+  if (filters.type) params.type = filters.type;
   return params;
 }
 
@@ -84,6 +99,9 @@ function normalizePage(raw: unknown): ActivityPage | null {
         asset: typeof v.asset === 'string' ? v.asset : 'XLM',
         status: v.status as ActivityStatus,
         createdAt: v.createdAt,
+        type: ACTIVITY_TYPES.includes(v.type as ActivityType)
+          ? (v.type as ActivityType)
+          : undefined,
         detailsLink: typeof links.details === 'string' ? links.details : undefined,
       },
     ];
@@ -93,7 +111,7 @@ function normalizePage(raw: unknown): ActivityPage | null {
 
 function cacheKeyFor(filters: ActivityFilters): string {
   const p = buildFilterParams(filters);
-  return `walletActivity:${['petId', 'from', 'to', 'status'].map((k) => p[k] ?? '').join('|')}`;
+  return `walletActivity:${['petId', 'from', 'to', 'status', 'type'].map((k) => p[k] ?? '').join('|')}`;
 }
 
 /** Loads the first page for the given filters (cached for offline viewing). */
@@ -132,5 +150,29 @@ export function getEmptyStateMessage(filters: ActivityFilters, state: ActivityVi
 
 export function getActivityAccessibilityLabel(item: WalletActivity): string {
   const date = item.createdAt.slice(0, 10);
-  return `${item.amount} ${item.asset}, ${item.status}, ${date}`;
+  const type = item.type ? `${ACTIVITY_TYPE_LABELS[item.type]}, ` : '';
+  return `${type}${item.amount} ${item.asset}, ${item.status}, ${date}`;
+}
+
+const CSV_HEADER = 'Date,Type,Amount,Asset,Status,Transaction ID';
+
+function csvCell(value: string): string {
+  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+/** Builds a CSV document for the given activity rows (RFC 4180 quoting). */
+export function buildActivityCsv(items: WalletActivity[]): string {
+  const rows = items.map((i) =>
+    [
+      i.createdAt.slice(0, 10),
+      i.type ? ACTIVITY_TYPE_LABELS[i.type] : '',
+      i.amount,
+      i.asset,
+      i.status,
+      i.id,
+    ]
+      .map(csvCell)
+      .join(','),
+  );
+  return [CSV_HEADER, ...rows].join('\n');
 }

@@ -19,6 +19,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Modal,
   Pressable,
   StyleSheet,
@@ -42,6 +43,7 @@ import consentService, {
   type ConsentScope,
 } from '../services/consultationConsentService';
 import { logError } from '../utils/errorLogger';
+import { networkMonitor } from '../utils/networkMonitor';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -70,6 +72,36 @@ interface NetworkStats {
   rttMs: number;
   bitrateKbps: number;
 }
+
+/** One step of the pre-call checklist (Issue #1353). */
+type PreCallCheckId = 'microphone' | 'camera' | 'network' | 'consent';
+type PreCallCheckStatus = 'pending' | 'running' | 'passed' | 'warning' | 'failed';
+
+interface PreCallCheck {
+  id: PreCallCheckId;
+  label: string;
+  status: PreCallCheckStatus;
+  /** Human-readable result, shown once the check has run. */
+  detail?: string;
+  /** True when a failure blocks joining the call. */
+  required: boolean;
+  /** True when the user can fix the failure in the OS settings. */
+  fixInSettings?: boolean;
+}
+
+/** Below this measured throughput the call is allowed but warned about. */
+const MIN_CALL_BITRATE_KBPS = 1000;
+/** How long to sample the network before giving up on a measurement. */
+const NETWORK_PROBE_TIMEOUT_MS = 5000;
+/** Small payload used to measure throughput. */
+const NETWORK_PROBE_URL = 'https://speed.cloudflare.com/__down?bytes=250000';
+
+const INITIAL_PRE_CALL_CHECKS: PreCallCheck[] = [
+  { id: 'microphone', label: 'Microphone access', status: 'pending', required: true, fixInSettings: true },
+  { id: 'camera', label: 'Camera access', status: 'pending', required: true, fixInSettings: true },
+  { id: 'network', label: 'Network quality', status: 'pending', required: false },
+  { id: 'consent', label: 'Consultation consent', status: 'pending', required: true },
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
@@ -124,6 +156,10 @@ const VideoConsultationScreen: React.FC<Props> = ({
    * microphone are not touched while this is null — see `startLocalMedia`.
    */
   const [consentAnswered, setConsentAnswered] = useState(false);
+  /** Pre-call checklist (Issue #1353). */
+  const [preCallChecks, setPreCallChecks] = useState<PreCallCheck[]>(INITIAL_PRE_CALL_CHECKS);
+  const [preCallRunning, setPreCallRunning] = useState(false);
+  const [preCallComplete, setPreCallComplete] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -212,6 +248,114 @@ const VideoConsultationScreen: React.FC<Props> = ({
       });
     }, STATS_POLL_INTERVAL_MS);
   }, []);
+
+  // ---- Pre-call checklist (Issue #1353) ----------------------------------
+  const updateCheck = useCallback(
+    (id: PreCallCheckId, patch: Partial<Omit<PreCallCheck, 'id' | 'label'>>) => {
+      setPreCallChecks((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    },
+    [],
+  );
+
+  /** Measure throughput; resolves to kbps, or null when it cannot be measured. */
+  const measureBitrateKbps = useCallback(async (): Promise<number | null> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), NETWORK_PROBE_TIMEOUT_MS);
+    const startedAt = Date.now();
+    try {
+      const response = await fetch(NETWORK_PROBE_URL, { signal: controller.signal });
+      const body = await response.arrayBuffer();
+      const elapsedMs = Math.max(Date.now() - startedAt, 1);
+      return Math.round((body.byteLength * 8) / elapsedMs);
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }, []);
+
+  const runPreCallChecks = useCallback(async () => {
+    setPreCallRunning(true);
+    setPreCallChecks(INITIAL_PRE_CALL_CHECKS.map((c) => ({ ...c, status: 'pending', detail: undefined })));
+
+    // 1. Microphone — acquiring an audio-only stream is the permission request.
+    updateCheck('microphone', { status: 'running' });
+    let micGranted = false;
+    try {
+      const micStream = await mediaDevices.getUserMedia({ audio: true });
+      micStream.getTracks().forEach((t) => t.stop());
+      micGranted = true;
+      updateCheck('microphone', { status: 'passed', detail: 'Microphone is available.' });
+    } catch {
+      updateCheck('microphone', {
+        status: 'failed',
+        detail: 'Microphone access is blocked. Enable it in Settings.',
+      });
+    }
+
+    // 2. Camera
+    updateCheck('camera', { status: 'running' });
+    let cameraGranted = false;
+    try {
+      const cameraStream = await mediaDevices.getUserMedia({ video: true });
+      cameraStream.getTracks().forEach((t) => t.stop());
+      cameraGranted = true;
+      updateCheck('camera', { status: 'passed', detail: 'Camera is available.' });
+    } catch {
+      updateCheck('camera', {
+        status: 'failed',
+        detail: 'Camera access is blocked. Enable it in Settings.',
+      });
+    }
+
+    // 3. Network — a poor result warns but never blocks the call.
+    updateCheck('network', { status: 'running' });
+    const online = await networkMonitor.isOnline().catch(() => false);
+    if (!online) {
+      updateCheck('network', {
+        status: 'warning',
+        detail: 'You appear to be offline. The call may not connect.',
+      });
+    } else {
+      const kbps = await measureBitrateKbps();
+      if (kbps == null) {
+        updateCheck('network', {
+          status: 'warning',
+          detail: 'Could not measure your connection speed. You can still join.',
+        });
+      } else if (kbps < MIN_CALL_BITRATE_KBPS) {
+        updateCheck('network', {
+          status: 'warning',
+          detail: `Slow connection (~${kbps} kbps). Video quality may suffer.`,
+        });
+      } else {
+        updateCheck('network', { status: 'passed', detail: `Connection speed ~${kbps} kbps.` });
+      }
+    }
+
+    // 4. Signed consultation consent
+    updateCheck('consent', { status: 'running' });
+    const consentOk = consentService.hasCurrentConsent(consultationId, userId, 'recording');
+    updateCheck('consent', {
+      status: consentOk ? 'passed' : 'failed',
+      detail: consentOk
+        ? 'Consent recorded for this consultation.'
+        : 'Answer the consent prompt to continue.',
+    });
+
+    setPreCallRunning(false);
+    return { micGranted, cameraGranted, consentOk };
+  }, [consultationId, userId, updateCheck, measureBitrateKbps]);
+
+  const preCallBlocked = preCallChecks.some(
+    (c) => c.required && (c.status === 'failed' || c.status === 'pending' || c.status === 'running'),
+  );
+
+  const handleStartCall = useCallback(() => {
+    if (preCallBlocked) return;
+    setPreCallComplete(true);
+    setShowConsentModal(true);
+  }, [preCallBlocked]);
 
   // ---- Consent -----------------------------------------------------------
   /** Record one scope decision for this participant. Never throws. */
@@ -426,13 +570,13 @@ const VideoConsultationScreen: React.FC<Props> = ({
     );
 
     // Show consent dialog before joining (recording opt-in)
-    setShowConsentModal(true);
+    if (preCallComplete) setShowConsentModal(true);
 
     return () => {
       socket.disconnect();
       if (qualityTimerRef.current) clearInterval(qualityTimerRef.current);
     };
-  }, [joinRoom]);
+  }, [joinRoom, preCallComplete]);
 
   // ---- Controls ----------------------------------------------------------
   const toggleMute = useCallback(() => {
