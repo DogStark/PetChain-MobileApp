@@ -4,10 +4,245 @@
  * Unit and integration tests for the widget service
  */
 
-import * as widgetDebug from '../services/widgetDebug';
-import * as widgetService from '../services/widgetService';
+jest.mock('../apiClient', () => ({
+  __esModule: true,
+  default: { get: jest.fn() },
+}));
+
+jest.mock('../localDB', () => ({
+  getItem: jest.fn(),
+  setItem: jest.fn(),
+  removeItem: jest.fn(),
+}));
+
+jest.mock('../petService', () => ({
+  __esModule: true,
+  default: { getAllPets: jest.fn() },
+  getPetById: jest.fn(),
+}));
+
+jest.mock('../medicationService', () => ({
+  getMedications: jest.fn(),
+  getDoseLogs: jest.fn(),
+}));
+
+jest.mock('../appointmentService', () => ({ getUpcomingAppointments: jest.fn() }));
+jest.mock('../healthMetricService', () => ({ getHealthMetrics: jest.fn() }));
+
+import apiClient from '../apiClient';
+import { getItem, setItem } from '../localDB';
+import petService from '../petService';
+import { getMedications, getDoseLogs } from '../medicationService';
+import { getUpcomingAppointments } from '../appointmentService';
+import * as widgetDebug from '../widgetDebug';
+import * as widgetService from '../widgetService';
+
+const mockGet = apiClient.get as jest.Mock;
+const mockGetItem = getItem as jest.Mock;
+const mockSetItem = setItem as jest.Mock;
 
 describe('widgetService', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetItem.mockResolvedValue(null);
+    mockSetItem.mockResolvedValue(undefined);
+    mockGet.mockResolvedValue({ status: 200 });
+    (petService.getAllPets as jest.Mock).mockResolvedValue([
+      {
+        id: 'pet-1',
+        name: 'Milo',
+        species: 'dog',
+      },
+    ]);
+    (getMedications as jest.Mock).mockResolvedValue([
+      {
+        id: 'med-1',
+        petId: 'pet-1',
+        name: 'Daily medication',
+        dosage: '1 tablet',
+        frequency: 24,
+        startDate: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      },
+    ]);
+    (getDoseLogs as jest.Mock).mockResolvedValue([]);
+    (getUpcomingAppointments as jest.Mock).mockResolvedValue([]);
+  });
+
+  describe('buildCareAgenda', () => {
+    const now = new Date('2026-10-21T10:00:00.000Z');
+
+    it('returns the selected pet tasks in time order and excludes expired/other-pet tasks', () => {
+      const tasks = widgetService.buildCareAgenda(
+        'pet-1',
+        'Milo',
+        [
+          {
+            id: 'med-1',
+            petId: 'pet-1',
+            name: 'Medication A',
+            dosage: '1 tablet',
+            frequency: 12,
+            startDate: '2026-10-21T08:00:00.000Z',
+          },
+          {
+            id: 'med-2',
+            petId: 'pet-2',
+            name: 'Other pet medication',
+            dosage: '1 tablet',
+            frequency: 8,
+            startDate: '2026-10-21T08:00:00.000Z',
+          },
+          {
+            id: 'med-expired',
+            petId: 'pet-1',
+            name: 'Expired medication',
+            dosage: '1 tablet',
+            frequency: 8,
+            startDate: '2026-10-20T08:00:00.000Z',
+            endDate: '2026-10-21T09:00:00.000Z',
+          },
+        ],
+        [
+          {
+            id: 'apt-1',
+            petId: 'pet-1',
+            title: 'Vet visit',
+            date: '2026-10-21T11:30:00.000Z',
+          } as never,
+          {
+            id: 'apt-past',
+            petId: 'pet-1',
+            title: 'Past visit',
+            date: '2026-10-21T09:00:00.000Z',
+          } as never,
+        ],
+        now,
+      );
+
+      expect(tasks.map((task) => task.id)).toEqual(['appointment:apt-1', 'medication:med-1']);
+      expect(tasks[0].detail).toBe('Milo');
+    });
+
+    it('applies the agenda limit and includes tasks due exactly now', () => {
+      const tasks = widgetService.buildCareAgenda(
+        'pet-1',
+        'Milo',
+        [],
+        [
+          { id: 'apt-now', petId: 'pet-1', title: 'Checkup', date: now.toISOString() } as never,
+          { id: 'apt-next', petId: 'pet-1', title: 'Follow up', date: '2026-10-22T10:00:00.000Z' } as never,
+        ],
+        now,
+        1,
+      );
+
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].id).toBe('appointment:apt-now');
+    });
+
+    it('advances a medication task from its latest recorded dose', () => {
+      const tasks = widgetService.buildCareAgenda(
+        'pet-1',
+        'Milo',
+        [
+          {
+            id: 'med-1',
+            petId: 'pet-1',
+            name: 'Medication A',
+            dosage: '1 tablet',
+            frequency: 12,
+            startDate: '2026-10-21T08:00:00.000Z',
+          },
+        ],
+        [],
+        now,
+        5,
+        [
+          {
+            id: 'dose-1',
+            medicationId: 'med-1',
+            takenAt: '2026-10-21T09:00:00.000Z',
+            scheduledFor: '2026-10-21T09:00:00.000Z',
+          }],
+      );
+
+      expect(tasks[0].scheduledAt).toBe('2026-10-21T21:00:00.000Z');
+    });
+  });
+
+  describe('widget preferences and server access', () => {
+    it('defaults to hiding lock-screen details and persists preference updates', async () => {
+      await expect(widgetService.getWidgetPreferences()).resolves.toEqual({
+        selectedPetId: null,
+        hideDetailsOnLockScreen: true,
+      });
+
+      mockGetItem.mockResolvedValueOnce(
+        JSON.stringify({ selectedPetId: 'pet-1', hideDetailsOnLockScreen: true }),
+      );
+      await expect(
+        widgetService.saveWidgetPreferences({ hideDetailsOnLockScreen: false }),
+      ).resolves.toEqual({ selectedPetId: 'pet-1', hideDetailsOnLockScreen: false });
+      expect(mockSetItem).toHaveBeenCalledWith(
+        'widget_preferences',
+        JSON.stringify({ selectedPetId: 'pet-1', hideDetailsOnLockScreen: false }),
+      );
+    });
+
+    it('distinguishes server-confirmed denial from a transient unavailable response', async () => {
+      mockGet.mockResolvedValueOnce({ status: 200 });
+      await expect(widgetService.checkWidgetPetAccess('pet-1')).resolves.toBe('granted');
+
+      mockGet.mockRejectedValueOnce({ response: { status: 403 } });
+      await expect(widgetService.checkWidgetPetAccess('pet-1')).resolves.toBe('denied');
+
+      mockGet.mockRejectedValueOnce(new Error('offline'));
+      await expect(widgetService.checkWidgetPetAccess('pet-1')).resolves.toBe('unavailable');
+      expect(mockGet).toHaveBeenCalledWith('/pets/pet-1');
+    });
+
+    it('publishes only the selected pet agenda after server access is confirmed', async () => {
+      mockGetItem.mockResolvedValueOnce(
+        JSON.stringify({ selectedPetId: 'pet-1', hideDetailsOnLockScreen: true }),
+      );
+
+      const data = await widgetService.fetchWidgetData();
+
+      expect(data.selectedPetId).toBe('pet-1');
+      expect(data.agenda?.map((task) => task.id)).toEqual(['medication:med-1']);
+      expect(data.hideDetailsOnLockScreen).toBe(true);
+      expect(mockGet).toHaveBeenCalledWith('/pets/pet-1');
+    });
+
+    it('clears stale widget data when the server revokes access', async () => {
+      mockGetItem.mockResolvedValueOnce(
+        JSON.stringify({ selectedPetId: 'pet-1', hideDetailsOnLockScreen: true }),
+      );
+      mockGet.mockRejectedValueOnce({ response: { status: 403 } });
+
+      const data = await widgetService.fetchWidgetData();
+
+      expect(data.agenda).toEqual([]);
+      expect(data.selectedPetId).toBeNull();
+      expect(mockSetItem).toHaveBeenCalledWith(
+        'widget_preferences',
+        JSON.stringify({ selectedPetId: null, hideDetailsOnLockScreen: true }),
+      );
+    });
+
+    it('keeps the cached selected-pet agenda when server access cannot be checked offline', async () => {
+      mockGetItem.mockResolvedValueOnce(
+        JSON.stringify({ selectedPetId: 'pet-1', hideDetailsOnLockScreen: true }),
+      );
+      mockGet.mockRejectedValueOnce(new Error('offline'));
+
+      const data = await widgetService.fetchWidgetData();
+
+      expect(data.agenda?.map((task) => task.id)).toEqual(['medication:med-1']);
+      expect(data.selectedPetId).toBe('pet-1');
+    });
+  });
+
   describe('getTodaysMedicationSchedule', () => {
     it('should return medications scheduled for today', async () => {
       // This would require mocking the dependencies

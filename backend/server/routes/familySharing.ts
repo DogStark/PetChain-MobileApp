@@ -8,6 +8,7 @@ import express from 'express';
 import type { AuditableRequest } from '../../middleware/auditLog';
 import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
 import { FamilyMemberRole } from '../../models/FamilySharing';
+import { UserRole } from '../../models/UserRole';
 import familySharingService from '../../services/familySharingService';
 import { ok, sendError } from '../response';
 
@@ -467,10 +468,41 @@ router.delete('/pets/:petId/access/:userId', (req: AuthenticatedRequest, res) =>
 // ─── Activity Feed Routes ──────────────────────────────────────────────────────
 
 /**
- * GET /family-groups/:id/activity
+ * GET /family-sharing/:grantId/activity
+ * Paginated access log for a pet access grant (#1398). Visible to the
+ * grantee, the user who granted access, and admins.
+ *
+ * GET /family-sharing/:id/activity (when :id is a family group)
  * Get family activity feed
  */
 router.get('/:id/activity', (req: AuthenticatedRequest, res) => {
+  const grant = familySharingService.getPetAccessGrant(req.params.id);
+  if (grant) {
+    const userId = req.user!.id;
+    if (
+      req.user!.role !== UserRole.ADMIN &&
+      userId !== grant.userId &&
+      userId !== grant.grantedBy
+    ) {
+      return sendError(res, 403, 'FORBIDDEN', 'You do not have access to this grant');
+    }
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+    const log = familySharingService.getGrantActivity(grant.id, page, limit);
+    return res.json({
+      ...ok(log.data),
+      grant: { id: grant.id, petId: grant.petId, lastAccessedAt: grant.lastAccessedAt ?? null },
+      pagination: {
+        page: log.page,
+        limit: log.limit,
+        total: log.total,
+        totalPages: log.totalPages,
+        hasNext: log.page < log.totalPages,
+        hasPrev: log.page > 1,
+      },
+    });
+  }
+
   if (!familySharingService.canUserAccessFamily(req.params.id, req.user!.id)) {
     return sendError(res, 403, 'FORBIDDEN', 'You do not have access to this family group');
   }

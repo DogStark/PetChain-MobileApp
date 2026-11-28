@@ -1,5 +1,7 @@
-import { localDB } from '../storage/localDB';
-import { withRetry } from '../utils/withRetry';
+import apiClient from './apiClient';
+import { getCurrentAccountId } from './authService';
+import { getItem, removeItem, setItem } from './localDB';
+import { withRetry } from '../utils/retry';
 
 export type AdoptionProgressErrorKind =
   | 'permission-denied'
@@ -33,6 +35,12 @@ export interface AdoptionProgressReview {
   comments?: string | null;
 }
 
+/** Server-provided contact and appeal paths. Absent when the shelter has not published them. */
+export interface AdoptionProgressContact {
+  email?: string | null;
+  appealUrl?: string | null;
+}
+
 export interface AdoptionApplicationProgress {
   applicantId: string;
   applicationId: string;
@@ -40,6 +48,11 @@ export interface AdoptionApplicationProgress {
   documents: AdoptionProgressDocument[];
   review: AdoptionProgressReview;
   updatedAt: string;
+  /** Timeline milestones. Each is null until the server has reached that milestone. */
+  submittedAt?: string | null;
+  matchedAt?: string | null;
+  closedAt?: string | null;
+  contact?: AdoptionProgressContact | null;
 }
 
 export interface AdoptionProgressResult {
@@ -61,49 +74,17 @@ export class AdoptionProgressError extends Error {
   }
 }
 
+interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  message?: string;
+}
+
 const CACHE_KEY_PREFIX = 'adoptionApplicationProgress:';
-const DEFAULT_ENDPOINT = '/adoption/applications/progress';
+const BASE_URL = '/adoption/applications/progress';
 
 function getCacheKey(applicantId: string): string {
   return `${CACHE_KEY_PREFIX}${applicantId}`;
-}
-
-function getEndpoint(applicationId?: string): string {
-  const base =
-    (typeof process !== 'undefined' && process.env && process.env.ADOPTION_PROGRESS_ENDPOINT) ||
-    DEFAULT_ENDPOINT;
-  if (applicationId) {
-    return `${base}?applicationId=${encodeURIComponent(applicationId)}`;
-  }
-  return base;
-}
-
-function getAuthToken(): string | null {
-  try {
-    // Token is resolved by the shared API client / session layer.
-    const session = localDB.get('session') as { token?: string } | null | undefined;
-    return session?.token ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function getCurrentUserId(): string | null {
-  try {
-    const session = localDB.get('session') as { user?: { id?: string } } | null | undefined;
-    return session?.user?.id ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function isNetworkError(error: unknown): boolean {
-  if (!error) return false;
-  const err = error as { name?: string; message?: string; code?: string };
-  if (err.name === 'TypeError' && /fetch|network/i.test(err.message ?? '')) return true;
-  if (err.code === 'NETWORK_ERROR' || err.code === 'ECONNABORTED') return true;
-  if (/network request failed|failed to fetch|offline/i.test(err.message ?? '')) return true;
-  return false;
 }
 
 function mapHttpStatusToKind(status: number): AdoptionProgressErrorKind {
@@ -112,14 +93,15 @@ function mapHttpStatusToKind(status: number): AdoptionProgressErrorKind {
   return 'unknown';
 }
 
-function isRetryable(kind: AdoptionProgressErrorKind): boolean {
-  return kind === 'server-error' || kind === 'offline';
+function toErrorKind(error: unknown): AdoptionProgressErrorKind {
+  if (error instanceof AdoptionProgressError) return error.kind;
+  const err = error as { response?: { status?: number }; request?: unknown };
+  if (err?.response?.status) return mapHttpStatusToKind(err.response.status);
+  if (err?.request) return 'offline';
+  return 'unknown';
 }
 
-function validatePayload(
-  payload: unknown,
-  currentUserId: string,
-): AdoptionApplicationProgress {
+function validatePayload(payload: unknown, currentUserId: string): AdoptionApplicationProgress {
   if (!payload || typeof payload !== 'object') {
     throw new AdoptionProgressError('invalid-response', 'Malformed progress payload');
   }
@@ -153,60 +135,23 @@ function validatePayload(
   return {
     applicantId: data.applicantId,
     applicationId: data.applicationId,
-    steps: data.steps as AdoptionProgressStep[],
-    documents: data.documents as AdoptionProgressDocument[],
-    review: data.review as AdoptionProgressReview,
+    steps: data.steps,
+    documents: data.documents,
+    review: data.review,
     updatedAt: data.updatedAt,
+    submittedAt: data.submittedAt ?? null,
+    matchedAt: data.matchedAt ?? null,
+    closedAt: data.closedAt ?? null,
+    contact: data.contact ?? null,
   };
 }
 
-async function fetchProgress(
-  currentUserId: string,
-  applicationId?: string,
-): Promise<AdoptionApplicationProgress> {
-  const token = getAuthToken();
-  if (!token) {
-    throw new AdoptionProgressError('permission-denied', 'No authenticated session');
-  }
-
-  let response: Response;
+async function readCache(applicantId: string): Promise<AdoptionApplicationProgress | null> {
   try {
-    response = await fetch(getEndpoint(applicationId), {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-    });
-  } catch (error) {
-    if (isNetworkError(error)) {
-      throw new AdoptionProgressError('offline', 'Network unavailable');
-    }
-    throw new AdoptionProgressError('unknown', 'Failed to fetch progress');
-  }
-
-  if (!response.ok) {
-    const kind = mapHttpStatusToKind(response.status);
-    throw new AdoptionProgressError(kind, `Progress request failed (${response.status})`, response.status);
-  }
-
-  let json: unknown;
-  try {
-    json = await response.json();
-  } catch {
-    throw new AdoptionProgressError('invalid-response', 'Failed to parse progress response');
-  }
-
-  return validatePayload(json, currentUserId);
-}
-
-function readCache(applicantId: string): AdoptionApplicationProgress | null {
-  try {
-    const cached = localDB.get(getCacheKey(applicantId)) as
-      | { data?: AdoptionApplicationProgress }
-      | null
-      | undefined;
-    if (cached && cached.data && cached.data.applicantId === applicantId) {
+    const raw = await getItem(getCacheKey(applicantId));
+    if (!raw) return null;
+    const cached = JSON.parse(raw) as { data?: AdoptionApplicationProgress } | null;
+    if (cached?.data && cached.data.applicantId === applicantId) {
       return cached.data;
     }
     return null;
@@ -215,9 +160,9 @@ function readCache(applicantId: string): AdoptionApplicationProgress | null {
   }
 }
 
-function writeCache(applicantId: string, data: AdoptionApplicationProgress): void {
+async function writeCache(applicantId: string, data: AdoptionApplicationProgress): Promise<void> {
   try {
-    localDB.set(getCacheKey(applicantId), { data });
+    await setItem(getCacheKey(applicantId), JSON.stringify({ data }));
   } catch {
     // Cache write failures must not break the flow.
   }
@@ -226,60 +171,40 @@ function writeCache(applicantId: string, data: AdoptionApplicationProgress): voi
 export async function getAdoptionApplicationProgress(
   applicationId?: string,
 ): Promise<AdoptionProgressResult> {
-  const currentUserId = getCurrentUserId();
+  const currentUserId = await getCurrentAccountId();
   if (!currentUserId) {
-    return {
-      data: null,
-      error: 'permission-denied',
-      lastUpdatedAt: null,
-      fromCache: false,
-    };
+    return { data: null, error: 'permission-denied', lastUpdatedAt: null, fromCache: false };
   }
 
   try {
-    const data = await withRetry(
-      () => fetchProgress(currentUserId, applicationId),
-      {
-        retries: 2,
-        shouldRetry: (error: unknown) => {
-          if (error instanceof AdoptionProgressError) {
-            return isRetryable(error.kind);
-          }
-          return false;
-        },
-      },
+    const response = await withRetry(
+      () =>
+        apiClient.get<ApiResponse<AdoptionApplicationProgress>>(BASE_URL, {
+          params: applicationId ? { applicationId } : undefined,
+        }),
+      { maxRetries: 2, initialDelay: 500 },
     );
+    const data = validatePayload(response.data?.data, currentUserId);
 
-    writeCache(currentUserId, data);
+    await writeCache(currentUserId, data);
 
-    return {
-      data,
-      error: null,
-      lastUpdatedAt: data.updatedAt,
-      fromCache: false,
-    };
+    return { data, error: null, lastUpdatedAt: data.updatedAt, fromCache: false };
   } catch (error) {
-    const kind: AdoptionProgressErrorKind =
-      error instanceof AdoptionProgressError ? error.kind : 'unknown';
-
-    const cached = readCache(currentUserId);
+    const kind = toErrorKind(error);
 
     if (kind === 'offline' || kind === 'server-error') {
-      // Fall back to last successful payload for offline display.
+      // Fall back to the last payload for this applicant. Never show a different application.
+      const cached = await readCache(currentUserId);
+      const usable = cached && (!applicationId || cached.applicationId === applicationId);
       return {
-        data: cached,
+        data: usable ? cached : null,
         error: kind,
-        lastUpdatedAt: cached?.updatedAt ?? null,
-        fromCache: cached !== null,
+        lastUpdatedAt: usable ? cached.updatedAt : null,
+        fromCache: Boolean(usable),
       };
     }
 
-    return {
-      data: null,
-      error: kind,
-      lastUpdatedAt: null,
-      fromCache: false,
-    };
+    return { data: null, error: kind, lastUpdatedAt: null, fromCache: false };
   }
 }
 
@@ -294,11 +219,11 @@ export function isProgressStale(
   return now - updated > maxAgeMs;
 }
 
-export function clearAdoptionProgressCache(applicantId?: string): void {
+export async function clearAdoptionProgressCache(applicantId?: string): Promise<void> {
   try {
-    const id = applicantId ?? getCurrentUserId();
+    const id = applicantId ?? (await getCurrentAccountId());
     if (!id) return;
-    localDB.remove(getCacheKey(id));
+    await removeItem(getCacheKey(id));
   } catch {
     // Ignore cache clear failures.
   }

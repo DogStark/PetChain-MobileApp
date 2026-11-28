@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getStorageUsage, clearCacheByCategory, StorageCategory } from './storageService';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,12 +41,21 @@ export interface SyncStatus {
   conflicts: ConflictRecord[];
 }
 
+export interface StorageUsageSummary {
+  mediaBytes: number;
+  recordsBytes: number;
+  totalBytes: number;
+  draftCount: number;
+  unsyncedDraftCount: number;
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SYNC_QUEUE_KEY = '@sync_queue';
 const SYNC_STATUS_KEY = '@sync_status';
 const CONFLICTS_KEY = '@sync_conflicts';
 const MAX_RETRIES = 3;
+const DRAFTS_KEY = '@user_drafts';
 
 const DEFAULT_STATUS: SyncStatus = {
   isSyncing: false,
@@ -59,6 +69,8 @@ const DEFAULT_STATUS: SyncStatus = {
 
 class SyncService {
   private statusListeners: Array<(status: SyncStatus) => void> = [];
+
+  // ── Storage usage & cache cleanup ────────────────────────────────────────────
 
   // ── Queue management ─────────────────────────────────────────────────────────
 
@@ -243,6 +255,64 @@ class SyncService {
     return () => {
       this.statusListeners = this.statusListeners.filter((l) => l !== listener);
     };
+  }
+
+  /**
+   * Returns a breakdown of cached media vs. records plus unsynchronized draft
+   * counts. Drafts are surfaced separately so the UI can warn before cleanup.
+   */
+  async getStorageUsage(): Promise<StorageUsageSummary> {
+    const usage = await getStorageUsage();
+    const drafts = await this.getDrafts();
+    const unsyncedDraftCount = drafts.filter((d) => !d.synced).length;
+    return {
+      mediaBytes: usage.mediaBytes,
+      recordsBytes: usage.recordsBytes,
+      totalBytes: usage.mediaBytes + usage.recordsBytes,
+      draftCount: drafts.length,
+      unsyncedDraftCount,
+    };
+  }
+
+  /**
+   * Selectively clears cached data by category. Unsynchronized user-authored
+   * drafts are always preserved regardless of the requested category.
+   */
+  async clearCache(categories: StorageCategory[]): Promise<StorageUsageSummary> {
+    const safeCategories = categories.filter((c) => c !== 'drafts');
+    if (safeCategories.length > 0) {
+      await clearCacheByCategory(safeCategories);
+    }
+    return this.getStorageUsage();
+  }
+
+  /**
+   * Clears all cache categories except drafts. Used by the "clear all" action.
+   */
+  async clearAllCache(): Promise<StorageUsageSummary> {
+    return this.clearCache(['media', 'records']);
+  }
+
+  async getDrafts(): Promise<Array<{ id: string; synced: boolean; data: Record<string, unknown> }>> {
+    const stored = await AsyncStorage.getItem(DRAFTS_KEY);
+    return stored ? JSON.parse(stored) : [];
+  }
+
+  async saveDraft(id: string, data: Record<string, unknown>): Promise<void> {
+    const drafts = await this.getDrafts();
+    const idx = drafts.findIndex((d) => d.id === id);
+    const draft = { id, synced: false, data };
+    if (idx >= 0) drafts[idx] = draft;
+    else drafts.push(draft);
+    await AsyncStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+  }
+
+  async markDraftSynced(id: string): Promise<void> {
+    const drafts = await this.getDrafts();
+    const idx = drafts.findIndex((d) => d.id === id);
+    if (idx < 0) return;
+    drafts[idx] = { ...drafts[idx], synced: true };
+    await AsyncStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
   }
 
   async clearQueue(): Promise<void> {

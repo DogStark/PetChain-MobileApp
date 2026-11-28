@@ -33,12 +33,26 @@ router.get('/usage', (req, res) => {
 
 /** Create a new API key — plaintext secret returned once. */
 router.post('/', async (req: AuthenticatedRequest, res) => {
-  const body = req.body as Partial<CreateApiKeyInput>;
+  const body = req.body as Partial<CreateApiKeyInput> & { rate_limit_per_minute?: unknown };
   if (!body.name?.trim()) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'name is required');
   }
   if (!Array.isArray(body.scopes) || body.scopes.length === 0) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'scopes must be a non-empty array');
+  }
+  const rateLimitPerMinute = body.rateLimitPerMinute ?? body.rate_limit_per_minute;
+  if (
+    rateLimitPerMinute !== undefined &&
+    (typeof rateLimitPerMinute !== 'number' ||
+      !Number.isInteger(rateLimitPerMinute) ||
+      rateLimitPerMinute <= 0)
+  ) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      'rate_limit_per_minute must be a positive integer',
+    );
   }
 
   try {
@@ -47,6 +61,7 @@ router.post('/', async (req: AuthenticatedRequest, res) => {
         name: body.name,
         scopes: body.scopes as ApiKeyScope[],
         expiresAt: body.expiresAt,
+        rateLimitPerMinute,
       },
       req.user!.id,
     );
@@ -60,6 +75,14 @@ router.post('/', async (req: AuthenticatedRequest, res) => {
         400,
         'INVALID_SCOPES',
         `scopes must be one of: ${API_KEY_SCOPES.join(', ')}`,
+      );
+    }
+    if (err instanceof Error && err.message === 'INVALID_RATE_LIMIT') {
+      return sendError(
+        res,
+        400,
+        'VALIDATION_ERROR',
+        'rate_limit_per_minute must be a positive integer',
       );
     }
     return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to create API key');

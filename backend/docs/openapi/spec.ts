@@ -12,6 +12,7 @@
 import { appointmentPaths } from './paths/appointments';
 import { authPaths } from './paths/auth';
 import { blockchainPaths } from './paths/blockchain';
+import { communityPaths } from './paths/community';
 import { medicalRecordPaths } from './paths/medicalRecords';
 import { medicationPaths } from './paths/medications';
 import { petPaths } from './paths/pets';
@@ -19,6 +20,7 @@ import { userPaths } from './paths/users';
 import { appointmentSchemas } from '../schemas/appointment';
 import { authSchemas } from '../schemas/auth';
 import { blockchainSchemas } from '../schemas/blockchain';
+import { communitySchemas } from '../schemas/community';
 import { commonSchemas } from '../schemas/common';
 import { medicalRecordSchemas } from '../schemas/medicalRecord';
 import { medicationSchemas } from '../schemas/medication';
@@ -136,6 +138,10 @@ All errors follow a consistent shape:
       name: 'Blockchain',
       description: 'Stellar blockchain integration for tamper-proof medical record anchoring',
     },
+    {
+      name: 'Community',
+      description: 'Community posts, forum threads, comments, reports, and moderation',
+    },
   ],
 
   // ─── Paths ─────────────────────────────────────────────────────────────────
@@ -148,6 +154,7 @@ All errors follow a consistent shape:
     ...appointmentPaths,
     ...medicationPaths,
     ...blockchainPaths,
+    ...communityPaths,
   },
 
   // ─── Components ────────────────────────────────────────────────────────────
@@ -192,6 +199,7 @@ Tokens expire after 7 days. Use \`POST /auth/refresh\` to obtain a new token.
       ...appointmentSchemas,
       ...medicationSchemas,
       ...blockchainSchemas,
+      ...communitySchemas,
     },
 
     // ── Reusable parameters ─────────────────────────────────────────────────

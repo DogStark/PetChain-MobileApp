@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 
+import { searchDrugs, type DrugSearchResult } from '../../backend/services/drugDatabaseService';
 import { EmptyState } from '../components/EmptyState';
 import MultiStepFormHeader from '../components/MultiStepFormHeader';
 import { SkeletonCard } from '../components/SkeletonCard';
@@ -42,7 +43,11 @@ import {
   scheduleRefillReminder,
   syncRefillReminders,
 } from '../services/medicationService';
-import { scheduleMedicationReminder } from '../services/notificationService';
+import {
+  scheduleMedicationReminder,
+  syncRefillThresholdNotification,
+} from '../services/notificationService';
+import { reviewService } from '../services/reviewService';
 import { formatLocalDate, formatLocalTime } from '../utils/dateLocale';
 import { useSecureScreen } from '../utils/secureScreen';
 
@@ -104,6 +109,7 @@ const MedicationScreen: React.FC = () => {
   const [vetId, setVetId] = useState('');
   const [overrideJustification, setOverrideJustification] = useState('');
   const [contraindicatedAcknowledged, setContraindicatedAcknowledged] = useState(false);
+  const [drugSuggestions, setDrugSuggestions] = useState<DrugSearchResult[]>([]);
   // Refill modal state
   const [refillModalVisible, setRefillModalVisible] = useState(false);
   const [refillTargetMed, setRefillTargetMed] = useState<Medication | null>(null);
@@ -133,7 +139,16 @@ const MedicationScreen: React.FC = () => {
     setIsLoading(true);
     try {
       const [meds, logs] = await Promise.all([getMedications(), getDoseLogs()]);
-      setMedications(meds);
+      const reconciledMeds = await Promise.all(
+        meds.map(async (med) => {
+          const result = await syncRefillThresholdNotification(med);
+          if (result.status !== 'scheduled' || med.refillThreshold === undefined) return med;
+          const updatedMed = { ...med, refillThresholdNotifiedAt: med.refillThreshold };
+          await saveMedication(updatedMed);
+          return updatedMed;
+        }),
+      );
+      setMedications(reconciledMeds);
       setDoseLogs(logs);
     } catch (err) {
       // Only surface a toast if we already have cached data on screen — an
@@ -174,7 +189,24 @@ const MedicationScreen: React.FC = () => {
   );
   const closeModal = () => {
     setModalVisible(false);
+    setDrugSuggestions([]);
     resetFormSteps();
+  };
+
+  const handleNameChange = (value: string) => {
+    setForm((f) => ({ ...f, name: value }));
+    setDrugSuggestions(searchDrugs(value));
+  };
+
+  const handleSelectDrug = (result: DrugSearchResult) => {
+    const { drug, dosageOptions, frequencyOptions } = result;
+    setDrugSuggestions([]);
+    setForm((f) => ({
+      ...f,
+      name: drug.name,
+      dosage: dosageOptions[0] ?? f.dosage,
+      frequency: frequencyOptions[0] ?? f.frequency,
+    }));
   };
 
   const validateMedicationStep = (): boolean => {
@@ -206,6 +238,13 @@ const MedicationScreen: React.FC = () => {
     }
     if (!form.dosage.trim()) {
       focusFormError('dosage', 'Dosage is required.', 0);
+      return;
+    }
+    if (
+      form.refillThreshold !== undefined &&
+      (!Number.isFinite(form.refillThreshold) || form.refillThreshold < 0)
+    ) {
+      focusFormError('refillThreshold', 'Refill threshold must be zero or greater.', 3);
       return;
     }
 
@@ -261,12 +300,20 @@ const MedicationScreen: React.FC = () => {
       totalPills: form.totalPills ? Number(form.totalPills) : undefined,
       remainingPills,
       currentSupply,
+      refillThresholdNotifiedAt:
+        editingMed?.refillThreshold === form.refillThreshold
+          ? editingMed.refillThresholdNotifiedAt
+          : undefined,
     };
     await saveMedication(med);
     await scheduleRefillReminder(med);
     await scheduleMedicationReminder(med);
     // Sync refill reminder notifications whenever supply/frequency changes
     await syncRefillReminders(med);
+    const thresholdResult = await syncRefillThresholdNotification(med);
+    if (thresholdResult.status === 'scheduled') {
+      await saveMedication({ ...med, refillThresholdNotifiedAt: med.refillThreshold });
+    }
     setInteractionResult(null);
     setVetOverrideMode(false);
     setVetId('');
@@ -302,6 +349,9 @@ const MedicationScreen: React.FC = () => {
         skipped,
       };
       await logDose(log);
+      if (!skipped) {
+        reviewService.notifyPositiveAction('dose_confirmed');
+      }
       const med = medications.find((m) => m.id === medicationId);
       if (med && !skipped) {
         // Decrement both supply fields, then resync run-out & notifications
@@ -310,8 +360,20 @@ const MedicationScreen: React.FC = () => {
           ...med,
           currentSupply: newSupply,
           remainingPills: newSupply,
+          refillThresholdNotifiedAt:
+            med.refillThreshold !== undefined && newSupply > med.refillThreshold
+              ? undefined
+              : med.refillThresholdNotifiedAt,
         };
+        await saveMedication(updatedMed);
         await syncRefillReminders(updatedMed);
+        const thresholdResult = await syncRefillThresholdNotification(updatedMed);
+        if (thresholdResult.status === 'scheduled') {
+          await saveMedication({
+            ...updatedMed,
+            refillThresholdNotifiedAt: updatedMed.refillThreshold,
+          });
+        }
       }
       void loadData();
     },
@@ -342,6 +404,26 @@ const MedicationScreen: React.FC = () => {
       return;
     }
     await markRefillComplete(refillTargetMed, qty);
+    const refreshedMed = (await getMedications()).find((med) => med.id === refillTargetMed.id);
+    if (refreshedMed) {
+      const updatedMed = {
+        ...refreshedMed,
+        refillThresholdNotifiedAt:
+          refreshedMed.refillThreshold !== undefined &&
+          (refreshedMed.currentSupply ?? refreshedMed.remainingPills ?? 0) >
+            refreshedMed.refillThreshold
+            ? undefined
+            : refreshedMed.refillThresholdNotifiedAt,
+      };
+      await saveMedication(updatedMed);
+      const thresholdResult = await syncRefillThresholdNotification(updatedMed);
+      if (thresholdResult.status === 'scheduled') {
+        await saveMedication({
+          ...updatedMed,
+          refillThresholdNotifiedAt: updatedMed.refillThreshold,
+        });
+      }
+    }
     setRefillModalVisible(false);
     setRefillTargetMed(null);
     setNewSupplyInput('');
@@ -549,9 +631,30 @@ const MedicationScreen: React.FC = () => {
             <>
               {renderFormInput('name', 'Medication name *', {
                 value: form.name,
-                onChangeText: (v) => setForm((f) => ({ ...f, name: v })),
+                onChangeText: handleNameChange,
                 isFirstInteractive: true,
               })}
+              {drugSuggestions.length > 0 && (
+                <View style={styles.suggestions}>
+                  {drugSuggestions.map((result) => (
+                    <TouchableOpacity
+                      key={result.drug.id}
+                      style={styles.suggestionRow}
+                      onPress={() => handleSelectDrug(result)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Use ${result.drug.name}`}
+                    >
+                      <Text style={styles.suggestionName}>{result.drug.name}</Text>
+                      <Text style={styles.suggestionMeta}>
+                        {result.drug.drugClass}
+                        {result.dosageOptions.length > 0
+                          ? ` · ${result.dosageOptions.join(' / ')}`
+                          : ''}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
               {renderFormInput('dosage', 'Dosage (e.g. 5mg) *', {
                 value: form.dosage,
                 onChangeText: (v) => setForm((f) => ({ ...f, dosage: v })),
@@ -675,6 +778,15 @@ const MedicationScreen: React.FC = () => {
                   setForm((f) => ({
                     ...f,
                     currentSupply: v ? Number(v) : undefined,
+                  })),
+                keyboardType: 'numeric',
+              })}
+              {renderFormInput('refillThreshold', 'Refill reminder threshold (doses)', {
+                value: form.refillThreshold !== undefined ? String(form.refillThreshold) : '',
+                onChangeText: (v) =>
+                  setForm((f) => ({
+                    ...f,
+                    refillThreshold: v === '' ? undefined : Number(v),
                   })),
                 keyboardType: 'numeric',
               })}
@@ -947,12 +1059,14 @@ const styles = StyleSheet.create({
   },
   cardHeader: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 6,
     marginBottom: 6,
   },
   medName: { fontSize: 16, fontWeight: '700', color: '#1a1a1a', flex: 1 },
-  cardActions: { flexDirection: 'row', gap: 6 },
+  cardActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 6 },
   actionBtn: {
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -1008,7 +1122,7 @@ const styles = StyleSheet.create({
     borderLeftColor: '#4CAF50',
   },
   slotTaken: { borderLeftColor: '#9e9e9e', opacity: 0.7 },
-  slotTime: { fontSize: 13, fontWeight: '600', color: '#333', width: 60 },
+  slotTime: { fontSize: 13, fontWeight: '600', color: '#333', minWidth: 60 },
   slotName: { flex: 1, fontSize: 13, color: '#555' },
   takenBadge: { fontSize: 16, color: '#4CAF50' },
   emptyText: {
@@ -1043,9 +1157,27 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginBottom: 10,
     fontSize: 14,
+    minHeight: 44,
     backgroundColor: '#fafafa',
   },
-  textArea: { height: 70, textAlignVertical: 'top' },
+  textArea: { minHeight: 70, textAlignVertical: 'top' },
+  suggestions: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    marginTop: -6,
+    marginBottom: 10,
+    backgroundColor: '#fff',
+    overflow: 'hidden',
+  },
+  suggestionRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#eee',
+  },
+  suggestionName: { fontSize: 14, fontWeight: '600', color: '#1a1a1a' },
+  suggestionMeta: { fontSize: 12, color: '#666', marginTop: 2 },
   modalActions: { flexDirection: 'row', gap: 10, marginTop: 4 },
   cancelBtn: {
     flex: 1,

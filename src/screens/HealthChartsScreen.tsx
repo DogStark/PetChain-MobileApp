@@ -12,6 +12,14 @@ import { useAuth } from '../context/AuthContext';
 import { useOffline } from '../context/OfflineContext';
 import { getHealthCharts, HealthChartPoint } from '../services/healthService';
 import { colors, spacing, typography } from '../theme';
+import {
+  buildAccessibleChartTable,
+  buildChartSummary,
+  describeTrend,
+  formatTrendBadge,
+  sectionHeading,
+  type SeriesPoint,
+} from '../utils/a11yChartSummary';
 
 const WEIGHT_UNIT = 'kg';
 const GAP_THRESHOLD_MS = 1000 * 60 * 60 * 24 * 30;
@@ -120,6 +128,46 @@ export default function HealthChartsScreen() {
 
   const segments = useMemo(() => buildSegments(measurements), [measurements]);
 
+  const seriesPoints = useMemo<SeriesPoint[]>(() => {
+    const sorted = [...measurements].sort(
+      (a, b) => new Date(a.measuredAt).getTime() - new Date(b.measuredAt).getTime(),
+    );
+    return sorted.map((m) => ({
+      label: formatDate(m.measuredAt),
+      value: m.weight,
+      unit: m.unit,
+    }));
+  }, [measurements]);
+
+  const chartSummary = useMemo(
+    () =>
+      buildChartSummary(seriesPoints, {
+        metricName: 'Weight',
+        offline: isOffline,
+        permissions,
+      }),
+    [seriesPoints, isOffline, permissions],
+  );
+
+  const overallTrendBadge = useMemo(() => {
+    if (inconsistentUnits) return formatTrendBadge('not enough data');
+    return formatTrendBadge(describeTrend(seriesPoints));
+  }, [inconsistentUnits, seriesPoints]);
+
+  const tableRowsById = useMemo(() => {
+    const sorted = [...measurements].sort(
+      (a, b) => new Date(a.measuredAt).getTime() - new Date(b.measuredAt).getTime(),
+    );
+    const rows = buildAccessibleChartTable(seriesPoints, { permissions });
+    const map = new Map<string, (typeof rows)[number]>();
+    sorted.forEach((m, idx) => {
+      if (rows[idx]) {
+        map.set(m.id, rows[idx]);
+      }
+    });
+    return map;
+  }, [measurements, seriesPoints, permissions]);
+
   if (!canView) {
     return (
       <View style={styles.centered}>
@@ -148,6 +196,25 @@ export default function HealthChartsScreen() {
         Weight History
       </Text>
 
+      <View
+        style={styles.summaryBox}
+        accessible
+        accessibilityRole="summary"
+        accessibilityLabel={chartSummary}
+        testID="health-chart-a11y-summary"
+      >
+        <Text style={styles.summaryTrendText}>Overall trend: {overallTrendBadge}</Text>
+        <Text style={styles.summaryBodyText}>{chartSummary}</Text>
+      </View>
+
+      {isOffline ? (
+        <View style={styles.offlineBox} accessibilityRole="alert">
+          <Text style={styles.offlineText}>
+            Offline mode — showing cached health chart readings.
+          </Text>
+        </View>
+      ) : null}
+
       {error ? (
         <Text style={styles.errorText} accessibilityRole="alert">
           {error}
@@ -163,6 +230,10 @@ export default function HealthChartsScreen() {
         </View>
       ) : null}
 
+      <Text style={styles.sectionHeader} accessibilityRole="header">
+        {sectionHeading('Accessible Data Table', measurements.length)}
+      </Text>
+
       {measurements.length === 0 ? (
         <Text style={styles.emptyText} accessibilityRole="text">
           No weight measurements recorded yet.
@@ -171,26 +242,41 @@ export default function HealthChartsScreen() {
         segments.map((segment, idx) => (
           <View key={`segment-${idx}`} style={styles.segment}>
             {segment.gapBefore ? (
-              <View style={styles.gapBox} accessibilityRole="text">
+              <View
+                style={styles.gapBox}
+                accessible
+                accessibilityRole="text"
+                accessibilityLabel="Gap in measurements. Over 30 days with no data recorded."
+              >
                 <Text style={styles.gapText}>Gap in measurements — no data recorded</Text>
               </View>
             ) : null}
-            {segment.points.map((m) => (
-              <View
-                key={m.id}
-                style={styles.row}
-                accessible
-                accessibilityLabel={`${m.weight} ${m.unit} on ${formatDate(
-                  m.measuredAt,
-                )}${m.context ? `, ${m.context}` : ''}`}
-              >
-                <Text style={styles.weightText}>
-                  {m.weight} {m.unit}
-                </Text>
-                <Text style={styles.metaText}>{formatDate(m.measuredAt)}</Text>
-                {m.context ? <Text style={styles.contextText}>{m.context}</Text> : null}
-              </View>
-            ))}
+            {segment.points.map((m) => {
+              const tableRow = tableRowsById.get(m.id);
+              const a11yRowLabel =
+                tableRow?.spokenRow ?? `${m.weight} ${m.unit} on ${formatDate(m.measuredAt)}`;
+              return (
+                <View
+                  key={m.id}
+                  style={styles.row}
+                  accessible
+                  accessibilityLabel={a11yRowLabel}
+                >
+                  <View style={styles.rowHeader}>
+                    <Text style={styles.weightText}>
+                      {m.weight} {m.unit}
+                    </Text>
+                    {tableRow ? (
+                      <Text style={styles.trendBadgeText}>
+                        {tableRow.stepTrendBadge} ({tableRow.deltaText})
+                      </Text>
+                    ) : null}
+                  </View>
+                  <Text style={styles.metaText}>{formatDate(m.measuredAt)}</Text>
+                  {m.context ? <Text style={styles.contextText}>{m.context}</Text> : null}
+                </View>
+              );
+            })}
           </View>
         ))
       )}
@@ -203,13 +289,35 @@ const styles = StyleSheet.create({
   content: { padding: spacing.md },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.md },
   title: { ...typography.h2, marginBottom: spacing.md },
+  summaryBox: {
+    padding: spacing.sm,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: 8,
+    marginBottom: spacing.md,
+  },
+  summaryTrendText: { ...typography.body, fontWeight: '600', marginBottom: 4 },
+  summaryBodyText: { ...typography.caption, color: colors.textMuted },
+  offlineBox: {
+    padding: spacing.sm,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: 8,
+    marginBottom: spacing.md,
+  },
+  offlineText: { ...typography.caption, color: colors.textMuted },
+  sectionHeader: { ...typography.body, fontWeight: '600', marginBottom: spacing.sm },
   segment: { marginBottom: spacing.md },
   row: {
     paddingVertical: spacing.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
+  rowHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   weightText: { ...typography.body, fontWeight: '600' },
+  trendBadgeText: { ...typography.caption, color: colors.textMuted },
   metaText: { ...typography.caption, color: colors.textMuted },
   contextText: { ...typography.caption, color: colors.textMuted, fontStyle: 'italic' },
   gapBox: {

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
   Alert,
+  type AlertButton,
   Linking,
   Modal,
   Platform,
@@ -18,6 +19,7 @@ import {
 
 import LanguageSelector from '../components/LanguageSelector';
 import type { NotificationPreferences, User } from '../models/User';
+import { loadLockTimeout, saveLockTimeout, type LockTimeout } from '../services/appLockService';
 import {
   disableBiometricAuthentication,
   isBiometricAuthenticationAvailable,
@@ -27,6 +29,15 @@ import {
   promptForBiometricSetup,
 } from '../services/authService';
 import { getEntitySyncStatuses, type EntitySyncRecord } from '../services/cloudSyncService';
+import {
+  exportLocalDrafts,
+  getLocalDraftExportPermission,
+  getLocalDraftSummary,
+  isLocalDraftExportShareAvailable,
+  LocalDraftExportError,
+  validateDraftExportPassphrase,
+  type LocalDraftSummary,
+} from '../services/localDraftExportService';
 import { type SyncEntityType } from '../services/syncService';
 import { getUserProfile, saveUserProfile, updateUserProfile } from '../services/userService';
 import { useAppTheme } from '../theme';
@@ -49,6 +60,8 @@ const PRIVACY_URL = 'https://petchain.app/privacy';
 interface Props {
   /** Called after a successful logout so the parent can redirect to auth. */
   onLogout: () => void;
+  /** Opens the privacy-safe sync retry detail view. */
+  onOpenSyncRetryDetail?: () => void;
 }
 
 // ─── Change Password Modal ────────────────────────────────────────────────────
@@ -122,7 +135,7 @@ const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ visible, emai
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
-const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
+const SettingsScreen: React.FC<Props> = ({ onLogout, onOpenSyncRetryDetail }) => {
   const { t } = useTranslation();
   const { mode: themeMode, setMode: setThemeMode } = useTheme();
   const colors = useAppTheme();
@@ -157,9 +170,15 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
   const [biometricLoading, setBiometricLoading] = useState(false);
 
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showDraftExportPassword, setShowDraftExportPassword] = useState(false);
+  const [draftExportPassword, setDraftExportPassword] = useState('');
+  const [draftExportPasswordConfirmation, setDraftExportPasswordConfirmation] = useState('');
+  const [draftExportError, setDraftExportError] = useState<string | null>(null);
+  const [draftExporting, setDraftExporting] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [exportRequesting, setExportRequesting] = useState(false);
   const [hapticEnabled, setHapticEnabledState] = useState(true);
+  const [lockTimeout, setLockTimeoutState] = useState<LockTimeout>('5min');
   const [entitySyncStatuses, setEntitySyncStatuses] = useState<Record<
     SyncEntityType,
     EntitySyncRecord
@@ -205,6 +224,9 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
       // Load haptic preference
       const hapticOn = await isHapticEnabled();
       setHapticEnabledState(hapticOn);
+
+      // Load app lock timeout preference
+      setLockTimeoutState(await loadLockTimeout());
     })();
   }, []);
 
@@ -320,6 +342,15 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
     await setHapticEnabled(value);
   }, []);
 
+  const handleLockTimeoutChange = useCallback(async (value: LockTimeout) => {
+    setLockTimeoutState(value);
+    try {
+      await saveLockTimeout(value);
+    } catch {
+      // Keep the new selection on screen; App.tsx re-reads the stored value on next foreground
+    }
+  }, []);
+
   // ── Data Export ────────────────────────────────────────────────────────────
 
   const handleRequestDataExport = useCallback(async () => {
@@ -373,25 +404,211 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
 
   // ── Logout ─────────────────────────────────────────────────────────────────
 
-  const handleLogout = useCallback(() => {
-    Alert.alert(t('common.logoutConfirmTitle'), t('common.logoutConfirmMessage'), [
-      { text: t('common.cancel'), style: 'cancel' },
-      {
-        text: t('common.logout'),
+  const performLogout = useCallback(async () => {
+    setLoggingOut(true);
+    try {
+      await logout();
+      onLogout();
+    } catch {
+      // Preserve the existing offline sign-out behavior if server cleanup fails.
+      onLogout();
+    }
+  }, [onLogout]);
+
+  const confirmLogout = useCallback(
+    async (exportedSummary?: LocalDraftSummary) => {
+      let latestSummary: LocalDraftSummary;
+      try {
+        latestSummary = await getLocalDraftSummary();
+      } catch (error) {
+        Alert.alert(
+          t('common.error'),
+          error instanceof Error
+            ? error.message
+            : t('settings.draftStatusFailed', 'Unable to check local drafts.'),
+        );
+        return;
+      }
+
+      const changedSinceExport =
+        exportedSummary !== undefined && latestSummary.fingerprint !== exportedSummary.fingerprint;
+      const message = changedSinceExport
+        ? `${t(
+            'settings.draftsChangedSinceExport',
+            'Local work changed after the export was created. Export the latest copy or explicitly sign out and clear it.',
+          )}\n\n${t('settings.localDraftCount', 'Clinical note drafts: {{count}}', {
+            count: latestSummary.clinicalNoteDraftCount,
+          })}\n${t('settings.pendingChangeCount', 'Unsynchronized changes: {{count}}', {
+            count: latestSummary.pendingChangeCount,
+          })}`
+        : `${t(
+            'settings.logoutDraftWarning',
+            'Signing out clears local drafts and unsynchronized changes from this device.',
+          )}\n\n${t('settings.localDraftCount', 'Clinical note drafts: {{count}}', {
+            count: latestSummary.clinicalNoteDraftCount,
+          })}\n${t('settings.pendingChangeCount', 'Unsynchronized changes: {{count}}', {
+            count: latestSummary.pendingChangeCount,
+          })}${
+            exportedSummary
+              ? `\n\n${t('settings.exportReady', 'Your encrypted export is ready to save.')}`
+              : ''
+          }`;
+
+      const buttons: AlertButton[] = [
+        { text: t('common.cancel'), style: 'cancel' },
+      ];
+      if (changedSinceExport) {
+        buttons.push({
+          text: t('settings.exportUpdatedDrafts', 'Export latest drafts'),
+          onPress: () => setShowDraftExportPassword(true),
+        });
+      }
+      buttons.push({
+        text: t('settings.clearDraftsAndLogout', 'Sign out and clear drafts'),
         style: 'destructive',
-        onPress: async () => {
-          setLoggingOut(true);
-          try {
-            await logout();
-            onLogout();
-          } catch {
-            // Even if server-side logout fails, local tokens are cleared — proceed
-            onLogout();
-          }
-        },
-      },
-    ]);
-  }, [onLogout, t]);
+        onPress: () => void performLogout(),
+      });
+
+      Alert.alert(t('common.logoutConfirmTitle'), message, buttons);
+    },
+    [performLogout, t],
+  );
+
+  const handleLogout = useCallback(async () => {
+    let summary: LocalDraftSummary;
+    try {
+      summary = await getLocalDraftSummary();
+    } catch (error) {
+      Alert.alert(
+        t('common.error'),
+        error instanceof Error
+          ? error.message
+          : t('settings.draftStatusFailed', 'Unable to check local drafts.'),
+        [
+          { text: t('common.cancel'), style: 'cancel' },
+          {
+            text: t('settings.continueSignOut', 'Continue to sign out'),
+            style: 'destructive',
+            onPress: () =>
+              Alert.alert(
+                t('common.logoutConfirmTitle'),
+                t(
+                  'settings.unknownDraftWarning',
+                  'Local draft status could not be checked. Signing out may clear unsynchronized work.',
+                ),
+                [
+                  { text: t('common.cancel'), style: 'cancel' },
+                  {
+                    text: t('settings.clearDraftsAndLogout', 'Sign out and clear drafts'),
+                    style: 'destructive',
+                    onPress: () => void performLogout(),
+                  },
+                ],
+              ),
+          },
+        ],
+      );
+      return;
+    }
+
+    if (summary.clinicalNoteDraftCount + summary.pendingChangeCount === 0) {
+      await confirmLogout();
+      return;
+    }
+
+    let shareAvailable = false;
+    try {
+      shareAvailable = await isLocalDraftExportShareAvailable();
+    } catch {
+      shareAvailable = false;
+    }
+
+    let permission: 'allowed' | 'denied' | 'unconfirmed' = 'unconfirmed';
+    try {
+      await getLocalDraftExportPermission();
+      permission = 'allowed';
+    } catch (error) {
+      permission =
+        error instanceof LocalDraftExportError && error.code === 'PERMISSION_DENIED'
+          ? 'denied'
+          : 'unconfirmed';
+    }
+
+    const message = `${t(
+      'settings.unsyncedWorkWarning',
+      'You have local drafts or unsynchronized changes. Signing out clears them from this device.',
+    )}\n\n${t('settings.localDraftCount', 'Clinical note drafts: {{count}}', {
+      count: summary.clinicalNoteDraftCount,
+    })}\n${t('settings.pendingChangeCount', 'Unsynchronized changes: {{count}}', {
+      count: summary.pendingChangeCount,
+    })}${
+      permission === 'allowed' && shareAvailable
+        ? `\n\n${t(
+            'settings.encryptedDraftExportAvailable',
+            'You can save an encrypted export before signing out. Choose a passphrase you can remember; it cannot be recovered.',
+          )}`
+        : `\n\n${t(
+            permission === 'denied'
+              ? 'settings.draftExportDenied'
+              : 'settings.draftExportUnconfirmed',
+            permission === 'denied'
+              ? 'The server denied draft export permission.'
+              : 'Export permission could not be confirmed. You can retry when connected or sign out without exporting.',
+          )}${
+            !shareAvailable
+              ? `\n${t('settings.draftSharingUnavailable', 'Encrypted sharing is unavailable on this device.')}`
+              : ''
+          }`
+    }`;
+
+    const buttons: AlertButton[] = [
+      { text: t('common.cancel'), style: 'cancel' },
+    ];
+    if (shareAvailable && permission === 'allowed') {
+      buttons.push({
+        text: t('settings.exportDraftsAndLogout', 'Export and sign out'),
+        onPress: () => setShowDraftExportPassword(true),
+      });
+    } else if (shareAvailable && permission === 'unconfirmed') {
+      buttons.push({
+        text: t('settings.retryExportPermission', 'Retry export permission'),
+        onPress: () => void handleLogout(),
+      });
+    }
+    buttons.push({
+      text: t('settings.continueWithoutExport', 'Sign out without export'),
+      style: 'destructive',
+      onPress: () => void confirmLogout(),
+    });
+    Alert.alert(t('common.logoutConfirmTitle'), message, buttons);
+  }, [confirmLogout, performLogout, t]);
+
+  const handleDraftExport = useCallback(async () => {
+    setDraftExportError(null);
+    if (draftExportPassword !== draftExportPasswordConfirmation) {
+      setDraftExportError(
+        t('settings.draftPassphraseMismatch', 'The passphrases do not match.'),
+      );
+      return;
+    }
+    try {
+      validateDraftExportPassphrase(draftExportPassword);
+      setDraftExporting(true);
+      const summary = await exportLocalDrafts(draftExportPassword);
+      setShowDraftExportPassword(false);
+      setDraftExportPassword('');
+      setDraftExportPasswordConfirmation('');
+      await confirmLogout(summary);
+    } catch (error) {
+      setDraftExportError(
+        error instanceof Error
+          ? error.message
+          : t('settings.draftExportFailed', 'Could not create the encrypted draft export.'),
+      );
+    } finally {
+      setDraftExporting(false);
+    }
+  }, [confirmLogout, draftExportPassword, draftExportPasswordConfirmation, t]);
 
   // ── Render helpers ─────────────────────────────────────────────────────────
 
@@ -674,12 +891,41 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
             thumbColor={Platform.OS === 'android' ? '#fff' : undefined}
           />
         </View>
+
+        {/* ── App Lock Timing ── */}
+        <RowSeparator />
+        <View style={styles.row}>
+          <Text style={[styles.rowLabel, { color: colors.text }]}>
+            {t('settings.autoLock', 'Require unlock after')}
+          </Text>
+        </View>
+        {(
+          [
+            { value: '1min', label: t('settings.autoLock1min', '1 minute') },
+            { value: '5min', label: t('settings.autoLock5min', '5 minutes') },
+            { value: '15min', label: t('settings.autoLock15min', '15 minutes') },
+            { value: 'never', label: t('settings.autoLockNever', 'Never') },
+          ] as { value: LockTimeout; label: string }[]
+        ).map(({ value, label }, idx, arr) => (
+          <React.Fragment key={value}>
+            <TouchableOpacity
+              style={styles.row}
+              onPress={() => void handleLockTimeoutChange(value)}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: lockTimeout === value }}
+            >
+              <Text style={[styles.rowLabel, { color: colors.text }]}>{label}</Text>
+              {lockTimeout === value && <Text style={styles.checkmark}>✓</Text>}
+            </TouchableOpacity>
+            {idx < arr.length - 1 && <RowSeparator />}
+          </React.Fragment>
+        ))}
       </View>
 
       {/* ── Theme ── */}
       <SectionHeader title={t('settings.theme', 'Theme')} />
       <View style={cardStyle}>
-        {(['system', 'light', 'dark'] as ThemeMode[]).map((option, idx, arr) => (
+        {(['system', 'light', 'dark', 'dark-oled'] as ThemeMode[]).map((option, idx, arr) => (
           <React.Fragment key={option}>
             <TouchableOpacity
               style={styles.row}
@@ -692,7 +938,9 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
                   ? t('settings.themeSystem', 'Follow system')
                   : option === 'light'
                     ? t('settings.themeLight', 'Light')
-                    : t('settings.themeDark', 'Dark')}
+                    : option === 'dark'
+                      ? t('settings.themeDark', 'Dark')
+                      : t('settings.themeDarkOled', 'Dark (OLED black)')}
               </Text>
               {themeMode === option && <Text style={styles.checkmark}>✓</Text>}
             </TouchableOpacity>
@@ -755,6 +1003,23 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
             <ActivityIndicator size="small" color={colors.primary} />
           </View>
         )}
+        {onOpenSyncRetryDetail ? (
+          <>
+            <RowSeparator />
+            <TouchableOpacity
+              style={styles.syncRow}
+              onPress={onOpenSyncRetryDetail}
+              accessibilityRole="button"
+              accessibilityLabel="View sync retry details"
+              accessibilityHint="Shows failed changes, retry counts, and a safe retry action"
+            >
+              <Text style={[styles.rowLabel, { color: colors.text }]}>
+                {t('settings.syncRetryDetails', 'Retry details')}
+              </Text>
+              <Text style={[styles.chevron, { color: colors.placeholder }]}>›</Text>
+            </TouchableOpacity>
+          </>
+        ) : null}
       </View>
 
       {/* ── App Information ── */}
@@ -797,6 +1062,116 @@ const SettingsScreen: React.FC<Props> = ({ onLogout }) => {
         email={email}
         onClose={() => setShowChangePassword(false)}
       />
+
+      <Modal
+        visible={showDraftExportPassword}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          if (!draftExporting) {
+            setShowDraftExportPassword(false);
+            setDraftExportPassword('');
+            setDraftExportPasswordConfirmation('');
+            setDraftExportError(null);
+          }
+        }}
+      >
+        <View style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}>
+          <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]} accessibilityRole="header">
+              {t('settings.draftExportPasswordTitle', 'Encrypt local drafts')}
+            </Text>
+            <Text style={[styles.modalBody, { color: colors.secondaryText }]}>
+              {t(
+                'settings.draftExportPasswordMessage',
+                'Choose a passphrase with at least 12 characters. You will need it to open this export; PetChain cannot recover it.',
+              )}
+            </Text>
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  backgroundColor: colors.input,
+                  borderColor: colors.border,
+                  color: colors.text,
+                },
+              ]}
+              value={draftExportPassword}
+              onChangeText={setDraftExportPassword}
+              placeholder={t('settings.draftExportPasswordPlaceholder', 'Export passphrase')}
+              placeholderTextColor={placeholderColor}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              textContentType="newPassword"
+              accessibilityLabel={t(
+                'settings.draftExportPasswordPlaceholder',
+                'Export passphrase',
+              )}
+            />
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  backgroundColor: colors.input,
+                  borderColor: colors.border,
+                  color: colors.text,
+                },
+              ]}
+              value={draftExportPasswordConfirmation}
+              onChangeText={setDraftExportPasswordConfirmation}
+              placeholder={t(
+                'settings.draftExportPasswordConfirmPlaceholder',
+                'Confirm passphrase',
+              )}
+              placeholderTextColor={placeholderColor}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              textContentType="newPassword"
+              accessibilityLabel={t(
+                'settings.draftExportPasswordConfirmPlaceholder',
+                'Confirm passphrase',
+              )}
+            />
+            {draftExportError ? (
+              <Text style={[styles.draftExportError, { color: '#d32f2f' }]} accessibilityRole="alert">
+                {draftExportError}
+              </Text>
+            ) : null}
+            <TouchableOpacity
+              style={[styles.btn, draftExporting && styles.btnDisabled]}
+              onPress={() => void handleDraftExport()}
+              disabled={draftExporting}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: draftExporting, busy: draftExporting }}
+            >
+              {draftExporting ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.btnText}>
+                  {t('settings.createEncryptedExport', 'Create encrypted export')}
+                </Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => {
+                setShowDraftExportPassword(false);
+                setDraftExportPassword('');
+                setDraftExportPasswordConfirmation('');
+                setDraftExportError(null);
+              }}
+              disabled={draftExporting}
+              accessibilityRole="button"
+            >
+              <Text style={[styles.cancelText, { color: colors.secondaryText }]}>
+                {t('common.cancel')}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 };
@@ -899,6 +1274,7 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 20, fontWeight: '700', marginBottom: 12 },
   modalBody: { fontSize: 15, marginBottom: 6 },
   modalEmail: { fontSize: 15, fontWeight: '600', marginBottom: 20 },
+  draftExportError: { fontSize: 13, marginTop: 8 },
   cancelBtn: { paddingVertical: 12, alignItems: 'center', marginTop: 8 },
   cancelText: { fontSize: 15 },
   syncRow: {

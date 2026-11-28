@@ -230,6 +230,15 @@ export interface UpdatePetRequest {
 }
 
 /**
+ * Server-confirmed permission for resolving profile edits.
+ */
+export interface PetEditPermissionResponse {
+  canEdit: boolean;
+  reason?: string;
+  revision?: string;
+}
+
+/**
  * Pet - List Pets Request
  */
 export interface ListPetsRequest extends PaginationParams {
@@ -487,6 +496,7 @@ export const API_ENDPOINTS = {
   PETS_CREATE: '/pets',
   PETS_UPDATE: '/pets/:id',
   PETS_DELETE: '/pets/:id',
+  PETS_EDIT_PERMISSION: '/pets/:id/edit-permission',
   PETS_BY_OWNER: '/pets/owner/:ownerId',
 
   // Medical Records

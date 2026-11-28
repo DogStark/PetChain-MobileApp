@@ -3,6 +3,7 @@ import * as SecureStore from 'expo-secure-store';
 
 import sessionMonitoringService from './sessionMonitoringService';
 import { incrementLogoutGeneration } from './apiClient';
+import { cancelPendingPetRequests } from './petService';
 import type {
   LoginRequest,
   LoginResponse,
@@ -53,6 +54,10 @@ export interface AuthSession {
   token: string;
   refreshToken?: string;
   expiresIn?: number;
+  /** Vet accounts without 2FA must set it up (#1394). */
+  twoFactorSetupRequired?: boolean;
+  /** When the vet 2FA grace period ends. */
+  twoFactorDeadline?: string;
 }
 
 export interface StoredSession {
@@ -241,11 +246,17 @@ export async function login(email: string, password: string): Promise<AuthSessio
       refreshToken: data.refreshToken,
     });
 
+    const twoFactor = data as LoginResponse & {
+      twoFactorSetupRequired?: boolean;
+      twoFactorDeadline?: string;
+    };
     return {
       user: data.user,
       token: data.token,
       refreshToken: data.refreshToken,
       expiresIn: data.expiresIn,
+      twoFactorSetupRequired: twoFactor.twoFactorSetupRequired,
+      twoFactorDeadline: twoFactor.twoFactorDeadline,
     };
   } catch (err: unknown) {
     if (err instanceof AuthError) {
@@ -405,6 +416,10 @@ async function clearTokensIfCurrent(generation: number): Promise<void> {
 }
 
 export async function logout(): Promise<void> {
+  // Cancel in-flight pet detail requests so a previous account's data can
+  // never resolve into the next session (#1073).
+  cancelPendingPetRequests();
+
   await Promise.allSettled([
     syncEngine.clearAll(),
     offlineQueue.clearAll(),

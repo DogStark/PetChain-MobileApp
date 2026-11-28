@@ -35,6 +35,13 @@ import { calculateClinicStatus, useClinicStatus } from '../hooks/useClinicStatus
 import { getAvailability } from '../services/appointmentService';
 import mapService, { type ClinicType, type Location, type VetClinic } from '../services/mapService';
 import { networkMonitor } from '../utils/networkMonitor';
+import {
+  DEFAULT_VET_SEARCH_FILTERS,
+  getVetSearchFilters,
+  saveVetSearchFilters,
+  type VetSearchFilters,
+  type VetSpecialty,
+} from '../services/vetService';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -65,6 +72,15 @@ const TYPE_ICONS: Record<ClinicType, string> = {
 };
 
 const DEFAULT_DELTA = 0.05;
+
+const SPECIALTY_OPTIONS: { label: string; value: VetSpecialty }[] = [
+  { label: 'Dermatology', value: 'dermatology' },
+  { label: 'Oncology', value: 'oncology' },
+  { label: 'Dentistry', value: 'dentistry' },
+  { label: 'General', value: 'general' },
+];
+
+const RADIUS_OPTIONS: number[] = [5, 10, 25, 50];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -122,6 +138,7 @@ const VetMapScreen: React.FC<Props> = ({ onBookAppointment }) => {
   const [selectedClinic, setSelectedClinic] = useState<VetClinic | null>(null);
   const [activeFilter, setActiveFilter] = useState<ClinicType | 'all'>('all');
   const [openNowOnly, setOpenNowOnly] = useState(false);
+  const [vetFilters, setVetFilters] = useState<VetSearchFilters>(DEFAULT_VET_SEARCH_FILTERS);
   const [loading, setLoading] = useState(true);
   const [locationLoading, setLocationLoading] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
@@ -143,8 +160,23 @@ const VetMapScreen: React.FC<Props> = ({ onBookAppointment }) => {
         return status === 'open' || status === 'closing_soon' || status === 'emergency';
       });
     }
-    return filtered;
-  }, [clinics, openNowOnly]);
+    if (vetFilters.specialties.length > 0) {
+      filtered = filtered.filter((clinic) => {
+        const specialties = clinic.specialties ?? [];
+        return specialties.some((s) => vetFilters.specialties.includes(s));
+      });
+    }
+    if (vetFilters.radiusKm > 0) {
+      filtered = filtered.filter(
+        (clinic) => clinic.distance === undefined || clinic.distance <= vetFilters.radiusKm,
+      );
+    }
+    return [...filtered].sort((a, b) => {
+      const da = a.distance ?? Number.POSITIVE_INFINITY;
+      const db = b.distance ?? Number.POSITIVE_INFINITY;
+      return da - db;
+    });
+  }, [clinics, openNowOnly, vetFilters]);
 
   // ── Network status ──────────────────────────────────────────────────────────
 
@@ -166,6 +198,41 @@ const VetMapScreen: React.FC<Props> = ({ onBookAppointment }) => {
   useEffect(() => {
     void bootstrap();
   }, []);
+
+  // ── Persisted vet filters ───────────────────────────────────────────────────
+
+  useEffect(() => {
+    let cancelled = false;
+    void getVetSearchFilters().then((filters) => {
+      if (!cancelled) setVetFilters(filters);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const updateVetFilters = useCallback((next: VetSearchFilters) => {
+    setVetFilters(next);
+    void saveVetSearchFilters(next);
+  }, []);
+
+  const toggleSpecialty = useCallback(
+    (specialty: VetSpecialty) => {
+      const selected = vetFilters.specialties.includes(specialty);
+      const specialties = selected
+        ? vetFilters.specialties.filter((s) => s !== specialty)
+        : [...vetFilters.specialties, specialty];
+      updateVetFilters({ ...vetFilters, specialties });
+    },
+    [vetFilters, updateVetFilters],
+  );
+
+  const handleRadiusChange = useCallback(
+    (radiusKm: number) => {
+      updateVetFilters({ ...vetFilters, radiusKm });
+    },
+    [vetFilters, updateVetFilters],
+  );
 
   const bootstrap = async () => {
     setLoading(true);
@@ -383,6 +450,40 @@ const VetMapScreen: React.FC<Props> = ({ onBookAppointment }) => {
     );
   };
 
+  const renderSpecialtyChip = (option: (typeof SPECIALTY_OPTIONS)[number]) => {
+    const active = vetFilters.specialties.includes(option.value);
+    return (
+      <TouchableOpacity
+        key={option.value}
+        style={[styles.filterChip, active && styles.filterChipActive]}
+        onPress={() => toggleSpecialty(option.value)}
+        accessibilityLabel={`Filter by specialty ${option.label}`}
+        accessibilityState={{ selected: active }}
+      >
+        <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+          {option.label}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderRadiusChip = (radiusKm: number) => {
+    const active = vetFilters.radiusKm === radiusKm;
+    return (
+      <TouchableOpacity
+        key={radiusKm}
+        style={[styles.filterChip, active && styles.filterChipActive]}
+        onPress={() => handleRadiusChange(radiusKm)}
+        accessibilityLabel={`Filter by radius ${radiusKm} kilometers`}
+        accessibilityState={{ selected: active }}
+      >
+        <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+          {radiusKm} km
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
   const renderSlot = (slot: { date: string; time: string }, clinic: VetClinic) => (
     <TouchableOpacity
       key={`${slot.date}-${slot.time}`}
@@ -466,6 +567,10 @@ const VetMapScreen: React.FC<Props> = ({ onBookAppointment }) => {
           </TouchableOpacity>
           <View style={styles.filterDivider} />
           {FILTER_OPTIONS.map(renderFilterChip)}
+          <View style={styles.filterDivider} />
+          {SPECIALTY_OPTIONS.map(renderSpecialtyChip)}
+          <View style={styles.filterDivider} />
+          {RADIUS_OPTIONS.map(renderRadiusChip)}
         </ScrollView>
       </View>
 

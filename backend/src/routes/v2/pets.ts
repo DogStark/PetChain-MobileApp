@@ -1,5 +1,5 @@
-/**
- * v2 /pets — breaking changes vs v1:
+/*
+ * v2 /pets -- breaking changes vs v1:
  *   - `owner` field renamed to `ownerInfo`
  *   - `dateOfBirth` renamed to `birthDate`
  *   - list endpoint returns `{ data, total, page, limit }` envelope (was flat array)
@@ -49,9 +49,8 @@ router.get('/:id', (req, res) => {
 });
 
 router.post('/', (req, res) => {
-  const { name, species, breed, birthDate, microchipId, photoUrl, ownerId } = req.body as Partial<
-    StoredPet & { birthDate?: string }
-  >;
+  const { name, species, breed, birthDate, microchipId, photoUrl, ownerId } =
+    req.body as Partial<StoredPet & { birthDate?: string }>;
   if (!name?.trim() || !species?.trim() || !ownerId?.trim()) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'name, species, and ownerId are required');
   }

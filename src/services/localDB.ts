@@ -857,6 +857,8 @@ export interface SoapNoteDraft {
   assessment: string;
   plan: string;
   savedAt: string; // ISO string
+  /** Client-generated version vector tagging this offline edit (issue #1367). */
+  versionVector?: Record<string, number>;
 }
 
 export async function upsertSoapDraft(draft: SoapNoteDraft): Promise<void> {
@@ -879,6 +881,26 @@ export async function getSoapDraft(petId: string, vetId: string): Promise<SoapNo
   } catch {
     return null;
   }
+}
+
+export async function getAllSoapDrafts(): Promise<SoapNoteDraft[]> {
+  const rows = await db.getAllAsync<{ data: string }>(
+    `SELECT data FROM soap_note_drafts ORDER BY updated_at ASC`,
+  );
+  const drafts: SoapNoteDraft[] = [];
+  for (const row of rows) {
+    const draft = await safeDecrypt<SoapNoteDraft>(row.data, 'localdb_soap_drafts', true);
+    if (
+      !draft ||
+      typeof draft.petId !== 'string' ||
+      typeof draft.vetId !== 'string' ||
+      typeof draft.savedAt !== 'string'
+    ) {
+      throw new Error('A saved clinical note draft could not be read');
+    }
+    drafts.push(draft);
+  }
+  return drafts;
 }
 
 export async function deleteSoapDraft(petId: string, vetId: string): Promise<void> {
@@ -993,6 +1015,7 @@ export default {
   deleteHealthMetricById,
   upsertSoapDraft,
   getSoapDraft,
+  getAllSoapDrafts,
   deleteSoapDraft,
   getAllAppointmentsByPetId,
   getAllLocalAppointments,

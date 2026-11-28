@@ -91,6 +91,47 @@ const AccountDeletionProgressScreen: React.FC<Props> = ({ onBack, onSignedOut })
   const copy = status ? STATE_COPY[status.state] : null;
   const scheduledAt = formatDate(status?.deletionScheduledAt ?? null);
   const estimate = formatDate(status?.completionEstimate ?? null);
+  const exportDownloadedAt = formatDate(status?.exportDownloadedAt ?? null);
+  const exportExpiresAt = formatDate(status?.exportExpiresAt ?? null);
+
+  const timeline: { label: string; detail: string; done: boolean }[] = [
+    {
+      label: 'Deletion requested',
+      detail: status?.requestedAt
+        ? `Requested ${formatDate(status.requestedAt)}`
+        : 'Waiting for your request',
+      done: Boolean(status?.requestedAt),
+    },
+    {
+      label: 'Data export downloaded',
+      detail: exportDownloadedAt
+        ? `Downloaded ${exportDownloadedAt}`
+        : 'Download your export from the Delete Account screen',
+      done: Boolean(exportDownloadedAt),
+    },
+    {
+      label: '24-hour cooling-off period',
+      detail: exportDownloadedAt
+        ? 'You can still cancel by contacting support during this window'
+        : 'Starts once your export is downloaded',
+      done: Boolean(exportDownloadedAt),
+    },
+    {
+      label: 'Deletion scheduled',
+      detail: scheduledAt ? `Scheduled for ${scheduledAt}` : 'Not scheduled yet',
+      done: Boolean(scheduledAt),
+    },
+    {
+      label: 'Deletion completed',
+      detail:
+        status?.state === 'completed'
+          ? 'Your account data has been erased'
+          : estimate
+            ? `Estimated ${estimate}`
+            : 'Pending',
+      done: status?.state === 'completed',
+    },
+  ];
 
   return (
     <View style={styles.container}>
@@ -130,8 +171,26 @@ const AccountDeletionProgressScreen: React.FC<Props> = ({ onBack, onSignedOut })
             )}
             {scheduledAt && <Text style={styles.meta}>Scheduled: {scheduledAt}</Text>}
             {estimate && <Text style={styles.meta}>Estimated completion: {estimate}</Text>}
+            {exportExpiresAt && (
+              <Text style={styles.meta}>Export link valid until: {exportExpiresAt}</Text>
+            )}
           </View>
         )}
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Deletion timeline</Text>
+          {timeline.map((step) => (
+            <View key={step.label} style={styles.timelineRow}>
+              <Text style={[styles.timelineDot, step.done && styles.timelineDotDone]}>
+                {step.done ? '●' : '○'}
+              </Text>
+              <View style={styles.timelineText}>
+                <Text style={styles.timelineLabel}>{step.label}</Text>
+                <Text style={styles.meta}>{step.detail}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
 
         {status?.retentionNotice && (
           <View style={styles.card}>
@@ -207,6 +266,11 @@ const styles = StyleSheet.create({
   body: { fontSize: 14, color: '#555', lineHeight: 20 },
   staleNotice: { fontSize: 13, color: '#b26a00', fontWeight: '600' },
   meta: { fontSize: 13, color: '#666' },
+  timelineRow: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
+  timelineDot: { fontSize: 14, color: '#cbd5e0', lineHeight: 20 },
+  timelineDotDone: { color: '#4CAF50' },
+  timelineText: { flex: 1, gap: 2 },
+  timelineLabel: { fontSize: 14, fontWeight: '600', color: '#1a1a1a' },
   note: { fontSize: 13, color: '#666', lineHeight: 18 },
   btn: {
     borderRadius: 10,

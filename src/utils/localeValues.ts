@@ -93,6 +93,44 @@ export function formatCurrency(amount: number, currencyOverride?: string): strin
   }).format(amount);
 }
 
+// ─── Numbers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Format a number for display in the active locale. Does not convert units:
+ * callers pass values in their stored unit (e.g. kg or °C).
+ */
+export function formatLocaleNumber(value: number): string {
+  return new Intl.NumberFormat(locale(), { maximumFractionDigits: 2 }).format(value);
+}
+
+/**
+ * Parse a number typed in the active locale, e.g. "1.234,5" (es) or "1,234.5" (en).
+ * Returns null when the text is malformed or ambiguous (e.g. "12.5" in es, where "." groups
+ * thousands) so callers can reject it instead of silently dropping or misreading it.
+ */
+export function parseLocaleNumber(raw: string): number | null {
+  const tag = locale();
+  const symbols = new Intl.NumberFormat(tag).formatToParts(-1234567.5);
+  const group = symbols.find((p) => p.type === 'group')?.value ?? '';
+  const decimal = symbols.find((p) => p.type === 'decimal')?.value ?? '.';
+  const digits = new Intl.NumberFormat(tag, { useGrouping: false });
+
+  // Strip whitespace and bidi marks, then map locale digits (e.g. Arabic-Indic) to ASCII
+  let text = raw.replace(/[\s‎‏؜]/g, '');
+  for (let d = 0; d <= 9; d++) {
+    text = text.split(digits.format(d)).join(String(d));
+  }
+
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const shape = new RegExp(
+    `^-?(?:\\d+|\\d{1,3}(?:${escape(group)}\\d{3})+)(?:${escape(decimal)}\\d+)?$`,
+  );
+  if (!shape.test(text)) return null;
+
+  if (group) text = text.split(group).join('');
+  return Number(text.split(decimal).join('.'));
+}
+
 // ─── Address ──────────────────────────────────────────────────────────────────
 
 export interface AddressFields {

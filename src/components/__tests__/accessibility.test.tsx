@@ -13,11 +13,47 @@
  */
 
 import React from 'react';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { RetryError } from '../RetryError';
 import { TrustBadge } from '../TrustBadge';
 import { VerificationBadge } from '../VerificationBadge';
+import SOSButton from '../SOSButton';
+import EmergencyCallButton from '../EmergencyCallButton';
+import QRCodeDisplay from '../QRCodeDisplay';
+import PetSelectorBar from '../PetSelectorBar';
+import { PetContext } from '../../context/PetContext';
 import type { VerificationStatus } from '../../services/verificationService';
+
+jest.mock('expo-haptics', () => ({
+  impactAsync: jest.fn().mockResolvedValue(undefined),
+  notificationAsync: jest.fn().mockResolvedValue(undefined),
+  ImpactFeedbackStyle: { Light: 'light', Medium: 'medium', Heavy: 'heavy' },
+  NotificationFeedbackType: { Success: 'success', Warning: 'warning', Error: 'error' },
+}));
+
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn().mockResolvedValue(null),
+  setItem: jest.fn().mockResolvedValue(undefined),
+  removeItem: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('@react-native-community/geolocation', () => ({
+  getCurrentPosition: jest.fn(),
+}));
+
+jest.mock('../../services/emergencyService', () => ({
+  __esModule: true,
+  default: {
+    prepareSOS: jest.fn().mockResolvedValue({ canDispatch: true, recipients: [], warnings: [] }),
+    triggerSOS: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
+jest.mock('../../services/qrCodeService', () => ({
+  generatePetQRCode: jest.fn().mockResolvedValue('qr-payload'),
+  getQRImageUrl: jest.fn(() => 'https://example.test/qr.png'),
+}));
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -266,6 +302,100 @@ describe('Modal components resolve', () => {
   it.each(MODALS)('%s resolves', (name) => {
     const mod = require(`../${name}`);
     expect(mod.default ?? mod).toBeDefined();
+  });
+});
+
+// ==============================================================================
+// 21. Icon-only interactive elements expose label + role (Issue #1339)
+// ==============================================================================
+describe('Icon-only interactive elements accessibility', () => {
+  const mockPet = {
+    id: 'pet-1',
+    name: 'Buddy',
+    species: 'dog',
+    breed: 'Labrador',
+    dateOfBirth: '2020-01-01',
+    weightKg: 12,
+    ownerId: 'user-1',
+  } as any;
+
+  function renderTree(element: React.ReactElement): ReactTestRenderer {
+    let tree: ReactTestRenderer | null = null;
+    act(() => {
+      tree = create(element);
+    });
+    if (!tree) throw new Error('renderer did not mount');
+    return tree;
+  }
+
+  function findHost(tree: ReactTestRenderer, type: string): any[] {
+    return tree.root.findAll((node) => node.type === type);
+  }
+
+  it('SOSButton exposes accessibilityLabel and accessibilityRole', () => {
+    const tree = renderTree(React.createElement(SOSButton));
+    const buttons = findHost(tree, 'TouchableOpacity');
+    expect(buttons.length).toBeGreaterThan(0);
+    buttons.forEach((button) => {
+      expect(typeof button.props.accessibilityLabel).toBe('string');
+      expect(button.props.accessibilityLabel.length).toBeGreaterThan(0);
+      expect(button.props.accessibilityRole).toBe('button');
+    });
+  });
+
+  it('EmergencyCallButton (compact icon-only) exposes label and role', () => {
+    const tree = renderTree(
+      React.createElement(EmergencyCallButton, {
+        phoneNumber: '+1-800-555-0100',
+        label: 'Emergency Vet',
+        compact: true,
+      }),
+    );
+    const [button] = findHost(tree, 'TouchableOpacity');
+    expect(button.props.accessibilityRole).toBe('button');
+    expect(button.props.accessibilityLabel).toBe('Call Emergency Vet');
+  });
+
+  it('QRCodeDisplay image exposes label and image role', async () => {
+    const tree = renderTree(React.createElement(QRCodeDisplay, { pet: mockPet }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const [image] = findHost(tree, 'Image');
+    expect(image).toBeDefined();
+    expect(image.props.accessibilityRole).toBe('image');
+    expect(image.props.accessibilityLabel).toContain('Buddy');
+  });
+
+  it('PetSelectorBar tabs and add button expose label and role', () => {
+    const tree = renderTree(
+      React.createElement(
+        PetContext.Provider,
+        {
+          value: {
+            pets: [mockPet],
+            activePet: mockPet,
+            loading: false,
+            error: null,
+            setActivePet: jest.fn(),
+            activateShortcutPet: jest.fn(),
+            refreshPets: jest.fn(),
+            getPetSettings: jest.fn(),
+            updatePetSettings: jest.fn(),
+            totalPets: 1,
+          } as any,
+        },
+        React.createElement(PetSelectorBar, { onAddPet: jest.fn() }),
+      ),
+    );
+    const touchables = findHost(tree, 'TouchableOpacity');
+    expect(touchables.length).toBe(2);
+    touchables.forEach((touchable) => {
+      expect(typeof touchable.props.accessibilityLabel).toBe('string');
+      expect(touchable.props.accessibilityLabel.length).toBeGreaterThan(0);
+      expect(['tab', 'button']).toContain(touchable.props.accessibilityRole);
+    });
   });
 });
 

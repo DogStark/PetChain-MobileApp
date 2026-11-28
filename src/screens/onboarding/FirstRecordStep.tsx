@@ -4,6 +4,8 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 interface Props {
   onNext: () => void;
   onSkip: () => void;
+  /** Hidden for mandatory steps (#1393). */
+  canSkip?: boolean;
 }
 
 const RECORD_TYPES = [
@@ -13,7 +15,7 @@ const RECORD_TYPES = [
   { emoji: '📋', label: 'Lab Results' },
 ];
 
-const FirstRecordStep: React.FC<Props> = ({ onNext, onSkip }) => (
+const FirstRecordStep: React.FC<Props> = ({ onNext, onSkip, canSkip = true }) => (
   <View style={styles.container}>
     <Text style={styles.emoji}>📋</Text>
     <Text style={styles.title}>Add Your First Record</Text>
@@ -33,9 +35,11 @@ const FirstRecordStep: React.FC<Props> = ({ onNext, onSkip }) => (
     <TouchableOpacity style={styles.primary} onPress={onNext} accessibilityRole="button">
       <Text style={styles.primaryText}>Add a Record</Text>
     </TouchableOpacity>
-    <TouchableOpacity onPress={onSkip} accessibilityRole="button">
-      <Text style={styles.skip}>I'll do this later</Text>
-    </TouchableOpacity>
+    {canSkip ? (
+      <TouchableOpacity onPress={onSkip} accessibilityRole="button">
+        <Text style={styles.skip}>I'll do this later</Text>
+      </TouchableOpacity>
+    ) : null}
   </View>
 );
 

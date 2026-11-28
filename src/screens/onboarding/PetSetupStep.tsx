@@ -4,11 +4,13 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView } from 
 interface Props {
   onNext: () => void;
   onSkip: () => void;
+  /** Hidden for mandatory steps (#1393). */
+  canSkip?: boolean;
 }
 
 const PET_TYPES = ['🐕 Dog', '🐈 Cat', '🐇 Rabbit', '🐦 Bird', '🐠 Fish', '🦎 Other'];
 
-const PetSetupStep: React.FC<Props> = ({ onNext, onSkip }) => {
+const PetSetupStep: React.FC<Props> = ({ onNext, onSkip, canSkip = true }) => {
   const [name, setName] = useState('');
   const [selectedType, setSelectedType] = useState<string | null>(null);
 
@@ -47,9 +49,11 @@ const PetSetupStep: React.FC<Props> = ({ onNext, onSkip }) => {
       <TouchableOpacity style={styles.primary} onPress={onNext} accessibilityRole="button">
         <Text style={styles.primaryText}>{name ? 'Continue' : 'Continue'}</Text>
       </TouchableOpacity>
-      <TouchableOpacity onPress={onSkip} accessibilityRole="button">
-        <Text style={styles.skip}>Skip — I'll add pets later</Text>
-      </TouchableOpacity>
+      {canSkip ? (
+        <TouchableOpacity onPress={onSkip} accessibilityRole="button">
+          <Text style={styles.skip}>Skip — I'll add pets later</Text>
+        </TouchableOpacity>
+      ) : null}
     </ScrollView>
   );
 };

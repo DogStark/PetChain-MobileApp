@@ -30,11 +30,31 @@ export interface SqliteMigrationRecord {
   status: 'applied' | 'rolled_back';
 }
 
+export type SqliteMigrationRecovery = 'not_needed' | 'rolled_back' | 'rollback_failed';
+
+/**
+ * Redacted outcome of one migration run. Carries schema versions and timing
+ * only; no row values or SQL parameters.
+ */
+export interface SqliteMigrationOutcome {
+  /** Highest version applied before this run, or null on a fresh install. */
+  fromVersion: string | null;
+  /** Highest pending version this run targeted. */
+  toVersion: string;
+  /** Version whose up() failed, if any. */
+  failedVersion?: string;
+  durationMs: number;
+  success: boolean;
+  recovery: SqliteMigrationRecovery;
+}
+
 export interface SqliteMigrationResult {
   success: boolean;
   migrationsRun: number;
   appliedVersions: string[];
   error?: string;
+  /** Set only when the run attempted at least one pending migration. */
+  outcome?: SqliteMigrationOutcome;
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────────────
@@ -126,6 +146,9 @@ export async function runSqliteMigrations(
   }
 
   const appliedVersions: string[] = [];
+  const startedAt = Date.now();
+  const fromVersion = [...applied.keys()].pop() ?? null;
+  const toVersion = pending[pending.length - 1].version;
 
   for (const migration of pending) {
     try {
@@ -136,21 +159,42 @@ export async function runSqliteMigrations(
       appliedVersions.push(migration.version);
     } catch (err) {
       // Attempt rollback of the failed migration
+      let recovery: SqliteMigrationRecovery = 'rolled_back';
       try {
         await migration.down(db);
       } catch {
         // Rollback failure is secondary — surface the original error
+        recovery = 'rollback_failed';
       }
       return {
         success: false,
         migrationsRun: appliedVersions.length,
         appliedVersions,
         error: err instanceof Error ? err.message : String(err),
+        outcome: {
+          fromVersion,
+          toVersion,
+          failedVersion: migration.version,
+          durationMs: Date.now() - startedAt,
+          success: false,
+          recovery,
+        },
       };
     }
   }
 
-  return { success: true, migrationsRun: pending.length, appliedVersions };
+  return {
+    success: true,
+    migrationsRun: pending.length,
+    appliedVersions,
+    outcome: {
+      fromVersion,
+      toVersion,
+      durationMs: Date.now() - startedAt,
+      success: true,
+      recovery: 'not_needed',
+    },
+  };
 }
 
 // Clear in-flight flag when finished or on error

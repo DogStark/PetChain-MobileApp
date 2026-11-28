@@ -23,9 +23,11 @@ function getDeviceLanguage(): LanguageCode {
 interface Props {
   onNext: () => void;
   onSkip: () => void;
+  /** Hidden for mandatory steps (#1393). */
+  canSkip?: boolean;
 }
 
-const WelcomeStep: React.FC<Props> = ({ onNext, onSkip }) => {
+const WelcomeStep: React.FC<Props> = ({ onNext, onSkip, canSkip = true }) => {
   const [selectedLang, setSelectedLang] = useState<LanguageCode>(getDeviceLanguage);
 
   useEffect(() => {
@@ -71,9 +73,11 @@ const WelcomeStep: React.FC<Props> = ({ onNext, onSkip }) => {
       <TouchableOpacity style={styles.primary} onPress={onNext} accessibilityRole="button">
         <Text style={styles.primaryText}>Get Started</Text>
       </TouchableOpacity>
-      <TouchableOpacity onPress={onSkip} accessibilityRole="button">
-        <Text style={styles.skip}>Skip for now</Text>
-      </TouchableOpacity>
+      {canSkip ? (
+        <TouchableOpacity onPress={onSkip} accessibilityRole="button">
+          <Text style={styles.skip}>Skip for now</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 };

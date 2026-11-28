@@ -109,6 +109,18 @@ and due date for the signed-in applicant only. Keep it compliant:
   `AccessibilityInfo.announceForAccessibility` (e.g. "Showing saved progress,
   last updated …") and expose a retry control with an accessible label.
 
+## Clinician attachment review (`src/components/AttachmentReviewState.tsx`)
+
+- Show upload, pending review, accepted, rejected, expired, and unavailable
+  states as text with actionable guidance; never rely on colour alone.
+- Announce changes through a polite live region, and keep review/retry controls
+  labelled and operable by screen readers.
+- Render clinician actions only when the server confirms review permission.
+  Retry is likewise available only when the server confirms the owner can
+  replace the current rejected or expired version.
+- Do not include pet names, file paths, document contents, or reviewer identity
+  in state labels or accessibility announcements.
+
 ## Colour-independent health status (`src/theme/healthStatus.ts`)
 
 Severity and trend must never rely on hue alone (WCAG 1.4.1). Every status token

@@ -4,6 +4,8 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import type { Pet } from '../models/Pet';
 import type { CoSignPayload } from '../screens/PendingCoSignScreen';
+import type { SubscriptionPlan } from '../models/Payment';
+import type { PathPaymentQuote } from '../services/stellarPathPaymentService';
 
 // ─── Root Stack ───────────────────────────────────────────────────────────────
 export type RootStackParamList = {
@@ -13,11 +15,13 @@ export type RootStackParamList = {
   Main: undefined;
   Forum: undefined;
   LostFound: undefined;
+  DoseConfirmation: { petId: string; medicationId: string };
   // Modals
   QRScanner: { onScanSuccess?: (data: string) => void };
   ManualEntry: undefined;
   // Future: Payment / Subscription
   Payment: { planId?: string };
+  PaymentReview: { plan: SubscriptionPlan; quote?: PathPaymentQuote };
   PendingCoSign: {
     payload: CoSignPayload;
     expectedSequence: number;
@@ -62,10 +66,12 @@ export type PetStackParamList = {
   PetProfile: { petId: string };
   PetHealthDashboard: { petId: string; petName?: string };
   PetHealthMetrics: { petId: string; petName?: string };
+  ExpenseExport: { petId: string; petName?: string };
   PetForm: { pet?: Pet; ownerId?: string };
   MedicalRecordSearch: { petId: string };
   MedicalRecordViewer: { petId: string; petName?: string };
   PetShare: { petId: string; petName: string };
+  PetCareCard: { petId: string; petName: string };
   TravelCertificate: { petId: string; petName?: string };
   TravelPackingChecklist: { petId: string; tripId?: string; tripName?: string };
   DosageCalculator: { petId?: string; species?: string; weightKg?: number };
@@ -76,13 +82,17 @@ export type PetStackParamList = {
   VetDirectory: undefined;
   PrivacyDashboard: undefined;
   SecuritySessions: undefined;
+  SyncRetryDetail: { recordId?: string } | undefined;
   Insurance: undefined;
   Search: undefined;
   NotificationPreferences: undefined;
+  NotificationTroubleshooting: undefined;
   DeleteAccount: undefined;
   AccountDeletionProgress: undefined;
   ClinicalNotes: { petId: string; vetId?: string };
   RoutineStreak: { petId: string; petName?: string };
+  FosterHandover: { petId: string; petName?: string };
+  LostPetReport: { petId: string; petName?: string };
 };
 
 // ─── Screen prop helpers ──────────────────────────────────────────────────────

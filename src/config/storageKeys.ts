@@ -21,6 +21,14 @@ export const storageKeys = {
     themeMode: '@cache/theme_mode',
     /** Cached geofence alerts. */
     geofenceAlerts: '@cache/geofence_alerts',
+    /** Last server-confirmed feature availability snapshot (feature → status only). */
+    featureAvailability: '@cache/feature_availability',
+  },
+  calendar: {
+    /** appointmentId → calendar sync record (event id, content revision, opt-ins). */
+    eventRecords: '@calendar/event_records',
+    /** Calendar export opt-ins: `syncEnabled` and `includePetDetails`. */
+    exportPreferences: '@calendar/export_preferences',
   },
   sync: {
     /** Pending sync queue state. */
@@ -38,6 +46,8 @@ export const storageKeys = {
      * here.
      */
     pendingTransactions: '@stellar/pending_transactions',
+    /** Fiat on-ramp (SEP-24) deposits tracked for status polling (issue #1380). */
+    fiatOnRampTransactions: '@stellar/fiat_onramp_transactions',
   },
   travelPackingChecklist: {
     /** Cached list of packing checklist templates for the current user. */

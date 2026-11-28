@@ -62,6 +62,15 @@ export function directionalSign(): 1 | -1 {
 }
 
 /**
+ * Wrap an identifier (microchip ID, license number, etc.) in a left-to-right
+ * isolate so mixed-direction text cannot reorder its characters inside an RTL
+ * sentence. Unlike `writingDirection`, this works on both iOS and Android.
+ */
+export function isolateLtr(value: string): string {
+  return `⁦${value}⁩`;
+}
+
+/**
  * Resolve the direction for an explicit language code (independent of the
  * global `I18nManager` state) — used by screenshot tests that render a specific
  * locale without reloading the app.
@@ -80,4 +89,5 @@ export default {
   physicalEdge,
   directionalSign,
   directionForLanguage,
+  isolateLtr,
 };

@@ -102,7 +102,7 @@ const EmergencyCallButton: React.FC<Props> = ({
         disabled={calling}
       >
         {calling ? (
-          <ActivityIndicator size="small" color="#fff" />
+          <ActivityIndicator size="small" color="#fff" accessibilityLabel="Calling" />
         ) : (
           <Text style={styles.compactIcon}>📞</Text>
         )}
@@ -121,7 +121,7 @@ const EmergencyCallButton: React.FC<Props> = ({
       activeOpacity={0.8}
     >
       {calling ? (
-        <ActivityIndicator size="small" color="#fff" />
+        <ActivityIndicator size="small" color="#fff" accessibilityLabel="Calling" />
       ) : (
         <View style={styles.btnInner}>
           <Text style={styles.btnIcon}>📞</Text>

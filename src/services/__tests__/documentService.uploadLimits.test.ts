@@ -80,7 +80,9 @@ jest.mock('../config/uploadLimits', () => ({
 import * as FileSystem from 'expo-file-system';
 import apiClient from '../apiClient';
 import {
+  DocumentReviewError,
   uploadDocument,
+  reviewDocument,
   DocumentUploadError,
   UploadDocumentParams,
 } from './documentService';
@@ -305,15 +307,71 @@ describe('uploadDocument — #1026 large-file upload limits and resume policy', 
     });
 
     it('calls cleanupTempFile on cancellation to remove temporary chunks', async () => {
-      const params = makeParams({ signal: AbortSignal.timeout(0) });
+      const params = makeParams({
+        signal: AbortSignal.timeout(0),
+        uri: '/mock/cache/record.pdf',
+      });
       mockGetInfoAsync.mockResolvedValue(mockFileInfo(1024));
 
       await uploadDocument(params).catch(() => {});
 
-      // cleanupTempFile is called via deleteAsync for the cancelled upload
-      // The documentService calls cleanupTempFile which uses FileSystem.deleteAsync
-      // Verify that cleanup was triggered
       expect(mockDeleteAsync).toHaveBeenCalled();
+    });
+
+    it('deletes a private-cache source only after the upload succeeds', async () => {
+      const params = makeParams({ uri: '/mock/cache/picked-record.pdf' });
+      mockGetInfoAsync.mockResolvedValue(mockFileInfo(1024));
+      mockValidateFileLimits.mockReturnValue({ ok: true });
+
+      await expect(uploadDocument(params)).resolves.toBeDefined();
+
+      expect(mockDeleteAsync).toHaveBeenCalledWith(params.uri, { idempotent: true });
+    });
+
+    it('does not delete a source outside the app cache after upload', async () => {
+      const params = makeParams({ uri: 'content://provider/document/record.pdf' });
+      mockGetInfoAsync.mockResolvedValue(mockFileInfo(1024));
+      mockValidateFileLimits.mockReturnValue({ ok: true });
+
+      await expect(uploadDocument(params)).resolves.toBeDefined();
+
+      expect(mockDeleteAsync).not.toHaveBeenCalled();
+    });
+
+    it('keeps the private-cache source available when the upload fails', async () => {
+      const params = makeParams({ uri: '/mock/cache/picked-record.pdf' });
+      mockGetInfoAsync.mockResolvedValue(mockFileInfo(1024));
+      mockValidateFileLimits.mockReturnValue({ ok: true });
+      mockPost.mockRejectedValue(new Error('network unavailable'));
+
+      await expect(uploadDocument(params)).rejects.toThrow('network unavailable');
+
+      expect(mockDeleteAsync).not.toHaveBeenCalled();
+    });
+
+    it('sends the rejected attachment id when submitting a retry', async () => {
+      const params = makeParams({ retryOfId: 'rejected-doc-1' });
+      mockGetInfoAsync.mockResolvedValue(mockFileInfo(1024));
+      mockValidateFileLimits.mockReturnValue({ ok: true });
+
+      await uploadDocument(params);
+
+      expect(mockPost.mock.calls[0][1]).toMatchObject({ retryOfId: 'rejected-doc-1' });
+    });
+
+    it.each([
+      [403, 'You no longer have permission to review this attachment.'],
+      [409, 'This attachment has already changed. Refresh the list before reviewing it again.'],
+    ])('surfaces server review denial or stale status (%s)', async (status, message) => {
+      mockPost.mockRejectedValue({
+        isAxiosError: true,
+        response: { status },
+      });
+
+      await expect(reviewDocument('doc-1', 'accepted')).rejects.toMatchObject({
+        message,
+        status,
+      } satisfies Partial<DocumentReviewError>);
     });
   });
 

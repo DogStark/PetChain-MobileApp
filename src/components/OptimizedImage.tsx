@@ -8,6 +8,12 @@ interface OptimizedImageProps extends ImageProps {
   uri: string;
   thumbnailUri?: string;
   useThumbnailFirst?: boolean;
+  /** Tiny base64 data URI rendered blurred underneath the full image. */
+  blurhash?: string;
+  /** When false the image is not fetched until it becomes visible. Defaults to true. */
+  visible?: boolean;
+  /** Blur radius applied to the placeholder. Defaults to 12. */
+  placeholderBlurRadius?: number;
 }
 
 const IMAGE_CACHE_PREFIX = '@image_cache:';
@@ -16,6 +22,9 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
   uri,
   thumbnailUri,
   useThumbnailFirst = true,
+  blurhash,
+  visible = true,
+  placeholderBlurRadius = 12,
   style,
   ...props
 }) => {
@@ -27,6 +36,13 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
 
   useEffect(() => {
     let isMounted = true;
+
+    // Lazy loading: nothing is fetched until the image is (or becomes) visible.
+    if (!visible) {
+      return () => {
+        isMounted = false;
+      };
+    }
 
     const loadImage = async () => {
       if (cacheManager.get(uri)) {
@@ -75,7 +91,7 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [uri, thumbnailUri, useThumbnailFirst]);
+  }, [uri, thumbnailUri, useThumbnailFirst, visible]);
 
   if (error) {
     return (
@@ -85,8 +101,19 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
     );
   }
 
+  const showBlurPlaceholder = Boolean(blurhash) && currentUri !== uri;
+
   return (
     <View style={style}>
+      {showBlurPlaceholder ? (
+        <Image
+          source={{ uri: blurhash }}
+          style={[style, StyleSheet.absoluteFill]}
+          blurRadius={placeholderBlurRadius}
+          resizeMode="cover"
+          accessible={false}
+        />
+      ) : null}
       {currentUri ? (
         <Image
           {...props}
@@ -95,7 +122,7 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
           onLoadEnd={() => setLoading(false)}
         />
       ) : null}
-      {loading && (
+      {loading && !showBlurPlaceholder && (
         <View style={[StyleSheet.absoluteFill, styles.placeholder]}>
           <ActivityIndicator color="#999" />
         </View>

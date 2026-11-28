@@ -147,6 +147,9 @@ const ACTION_MARK_AS_READ = 'MARK_AS_READ';
 const ACTION_MARK_AS_TAKEN = 'MARK_AS_TAKEN';
 const ACTION_SNOOZE_30MIN = 'SNOOZE_30MIN';
 const ACTION_SKIP_DOSE = 'SKIP_DOSE';
+const ACTION_SNOOZE_1H = 'SNOOZE_1H';
+const ACTION_RESCHEDULE = 'RESCHEDULE';
+const APPOINTMENT_SNOOZE_DELAY_MS = 60 * 60 * 1000;
 
 // Session-scoped set to track notification IDs that have already triggered navigation.
 // Ensures cold-start and listener paths don't both navigate for the same notification.
@@ -355,9 +358,28 @@ export const registerNotificationActions = async (): Promise<void> => {
     },
   ];
 
+  const appointmentActions = [
+    {
+      identifier: ACTION_SNOOZE_1H,
+      buttonTitle: 'Snooze (1h)',
+      options: { opensAppToForeground: false },
+    },
+    {
+      identifier: ACTION_RESCHEDULE,
+      buttonTitle: 'Reschedule',
+      options: { opensAppToForeground: true },
+    },
+    {
+      identifier: ACTION_OPEN,
+      buttonTitle: 'Open',
+      options: { opensAppToForeground: true },
+    },
+  ];
+
   await Promise.all([
     Notifications.setNotificationCategoryAsync('medication', medicationActions),
-    ...['appointment', 'vaccination', 'alert', 'scheduled'].map((category) =>
+    Notifications.setNotificationCategoryAsync('appointment', appointmentActions),
+    ...['vaccination', 'alert', 'scheduled'].map((category) =>
       Notifications.setNotificationCategoryAsync(category, defaultActions),
     ),
   ]);
@@ -402,6 +424,23 @@ export const snooze = async (
 export const openApp = async (notification: Notifications.Notification): Promise<void> => {
   await markAsRead(notification.request.identifier);
   await Linking.openURL(getNotificationUrl(notification.request.content.data));
+};
+
+/** Deep link straight to the appointment reschedule screen. */
+export const getAppointmentRescheduleUrl = (appointmentId: string): string =>
+  `petchain://appointments/${encodeURIComponent(appointmentId)}?reschedule=true`;
+
+export const openAppointmentReschedule = async (
+  notification: Notifications.Notification,
+): Promise<void> => {
+  const appointmentId = notification.request.content.data?.appointmentId;
+  if (typeof appointmentId !== 'string' || appointmentId.length === 0) {
+    await openApp(notification);
+    return;
+  }
+
+  await markAsRead(notification.request.identifier);
+  await Linking.openURL(getAppointmentRescheduleUrl(appointmentId));
 };
 
 // ─── Deep Link Builders & Validation ──────────────────────────────────────────
@@ -553,6 +592,34 @@ async function findMedicationId(notification: Notifications.Notification): Promi
   return medicationId ?? null;
 }
 
+/**
+ * Resolves the instant the reminder was scheduled for, so a dose action lands on
+ * the same scheduled-dose identity as the reminder and a manual tap. Falls back to
+ * the trigger date for payloads that predate `scheduledFor`.
+ */
+const getScheduledFor = (notification: Notifications.Notification): string => {
+  const data = notification.request.content.data ?? {};
+  if (isValidString(data.scheduledFor)) return data.scheduledFor;
+
+  const trigger = notification.request.trigger as { date?: unknown } | null | undefined;
+  if (typeof trigger?.date === 'number' || typeof trigger?.date === 'string') {
+    return new Date(trigger.date).toISOString();
+  }
+  return new Date().toISOString();
+};
+
+/**
+ * A dose action is stale when its medication was removed after the reminder was
+ * scheduled. Callers dismiss the notification instead of writing an orphaned log.
+ */
+async function isStaleDoseAction(
+  medService: typeof import('./medicationService'),
+  medicationId: string,
+): Promise<boolean> {
+  const medications = await medService.getMedications();
+  return !medications.some((medication) => medication.id === medicationId);
+}
+
 async function handleMarkAsTaken(notification: Notifications.Notification): Promise<void> {
   const notificationId = notification.request.identifier;
 
@@ -566,11 +633,13 @@ async function handleMarkAsTaken(notification: Notifications.Notification): Prom
 
   try {
     const medService = await getMedicationService();
-    await medService.logDose({
-      id: `action-${Date.now()}`,
-      medicationId,
-      takenAt: new Date().toISOString(),
-    });
+    if (await isStaleDoseAction(medService, medicationId)) {
+      await markAsRead(notificationId);
+      return;
+    }
+
+    // Idempotent: a duplicate for the same scheduled dose resolves as success
+    await medService.transitionDose(medicationId, getScheduledFor(notification), 'taken');
     await markAsRead(notificationId);
 
     // Mark action as processed after successful mutation
@@ -594,6 +663,20 @@ async function handleSnooze30Min(notification: Notifications.Notification): Prom
   await markActionAsProcessed(notificationId, 'SNOOZE_30MIN');
 }
 
+async function handleSnooze1h(notification: Notifications.Notification): Promise<void> {
+  const notificationId = notification.request.identifier;
+
+  // Check idempotency: skip if action already processed recently
+  if (await isActionAlreadyProcessed(notificationId, ACTION_SNOOZE_1H)) {
+    return;
+  }
+
+  await snooze(notification, APPOINTMENT_SNOOZE_DELAY_MS);
+
+  // Mark action as processed after successful snooze
+  await markActionAsProcessed(notificationId, ACTION_SNOOZE_1H);
+}
+
 async function handleSkipDose(notification: Notifications.Notification): Promise<void> {
   const notificationId = notification.request.identifier;
 
@@ -607,12 +690,12 @@ async function handleSkipDose(notification: Notifications.Notification): Promise
 
   try {
     const medService = await getMedicationService();
-    await medService.logDose({
-      id: `skip-${Date.now()}`,
-      medicationId,
-      takenAt: new Date().toISOString(),
-      skipped: true,
-    });
+    if (await isStaleDoseAction(medService, medicationId)) {
+      await markAsRead(notificationId);
+      return;
+    }
+
+    await medService.transitionDose(medicationId, getScheduledFor(notification), 'skipped');
     await cancelEntityNotification(medicationId);
     await markAsRead(notificationId);
 
@@ -640,6 +723,16 @@ export const handleNotificationAction = async (
 
   if (actionIdentifier === ACTION_SKIP_DOSE) {
     await handleSkipDose(notification);
+    return;
+  }
+
+  if (actionIdentifier === ACTION_SNOOZE_1H) {
+    await handleSnooze1h(notification);
+    return;
+  }
+
+  if (actionIdentifier === ACTION_RESCHEDULE) {
+    await openAppointmentReschedule(notification);
     return;
   }
 
@@ -748,6 +841,107 @@ export const requestPermissions = async (): Promise<boolean> => {
 export const checkPermissions = async (): Promise<boolean> => {
   const state = await checkPermissionState();
   return state === 'granted' || state === 'provisional';
+};
+
+export interface RefillThresholdMedication {
+  id: string;
+  currentSupply?: number;
+  remainingPills?: number;
+  refillThreshold?: number;
+  refillThresholdNotifiedAt?: number;
+  status?: string;
+}
+
+export type RefillThresholdSyncResult =
+  | { status: 'scheduled' }
+  | { status: 'already-notified' }
+  | { status: 'not-applicable' }
+  | { status: 'permission-denied' }
+  | { status: 'unavailable' };
+
+const refillThresholdEntityId = (medicationId: string): string =>
+  `refill-threshold:${medicationId}`;
+
+const cancelRefillThresholdNotification = async (entityId: string): Promise<boolean> => {
+  try {
+    await cancelEntityNotification(entityId);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Reconcile one generic, private refill alert against recorded on-hand supply. */
+export const syncRefillThresholdNotification = async (
+  medication: RefillThresholdMedication,
+): Promise<RefillThresholdSyncResult> => {
+  const threshold = medication.refillThreshold;
+  const supply = medication.currentSupply ?? medication.remainingPills;
+  const entityId = refillThresholdEntityId(medication.id);
+
+  if (
+    medication.status === 'discontinued' ||
+    !Number.isFinite(threshold) ||
+    (threshold as number) < 0 ||
+    !Number.isFinite(supply) ||
+    (supply as number) > (threshold as number)
+  ) {
+    await cancelRefillThresholdNotification(entityId);
+    return { status: 'not-applicable' };
+  }
+
+  let serverPreferences: { enabled: boolean; topics: Record<PushTopic, boolean> };
+  try {
+    serverPreferences = await getServerPreferences();
+  } catch {
+    // Keep an already scheduled alert if the server cannot be reached offline.
+    return { status: 'unavailable' };
+  }
+
+  if (!serverPreferences.enabled || !serverPreferences.topics.medication_reminders) {
+    return (await cancelRefillThresholdNotification(entityId))
+      ? { status: 'permission-denied' }
+      : { status: 'unavailable' };
+  }
+
+  let devicePermission = false;
+  try {
+    devicePermission = await checkPermissions();
+  } catch {
+    // Permission state could not be confirmed, so do not schedule a new alert.
+  }
+  if (!devicePermission) {
+    return (await cancelRefillThresholdNotification(entityId))
+      ? { status: 'permission-denied' }
+      : { status: 'unavailable' };
+  }
+
+  if (medication.refillThresholdNotifiedAt === threshold) {
+    return { status: 'already-notified' };
+  }
+
+  if (!(await cancelRefillThresholdNotification(entityId))) {
+    return { status: 'unavailable' };
+  }
+  let notificationId: string | undefined;
+  try {
+    notificationId = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Refill reminder',
+        body: 'Recorded medication supply is at or below your set refill threshold.',
+        data: { type: 'medication' as NotificationGroup, category: 'medication' },
+        categoryIdentifier: 'medication',
+      },
+      trigger: null,
+    });
+    await saveNotificationIds(entityId, [notificationId]);
+    return { status: 'scheduled' };
+  } catch {
+    if (notificationId) {
+      await Notifications.cancelScheduledNotificationAsync(notificationId).catch(() => undefined);
+    }
+    return { status: 'unavailable' };
+  }
 };
 
 // ─── Preferences ─────────────────────────────────────────────────────────────

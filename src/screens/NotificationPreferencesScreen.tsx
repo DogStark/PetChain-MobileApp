@@ -1,5 +1,5 @@
 import * as Notifications from 'expo-notifications';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -24,15 +24,20 @@ import petService, { type Pet } from '../services/petService';
 
 interface Props {
   onBack: () => void;
+  onOpenTroubleshooting?: () => void;
 }
 
-const NotificationPreferencesScreen: React.FC<Props> = ({ onBack }) => {
+const NotificationPreferencesScreen: React.FC<Props> = ({
+  onBack,
+  onOpenTroubleshooting,
+}) => {
   const [prefs, setPrefs] = useState<NotificationPreferences | null>(null);
   const [pets, setPets] = useState<Pet[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [showRationale, setShowRationale] = useState(false);
   const [notifPermissionDenied, setNotifPermissionDenied] = useState(false);
+  const medicationSwitchRef = useRef<View>(null);
 
   useEffect(() => {
     void (async () => {
@@ -136,15 +141,18 @@ const NotificationPreferencesScreen: React.FC<Props> = ({ onBack }) => {
     value,
     onValueChange,
     disabled,
+    switchRef,
   }: {
     label: string;
     value: boolean;
     onValueChange: (v: boolean) => void;
     disabled?: boolean;
+    switchRef?: React.RefObject<View | null>;
   }) => (
     <View style={styles.row}>
       <Text style={styles.rowLabel}>{label}</Text>
       <Switch
+        ref={switchRef as never}
         value={value}
         onValueChange={onValueChange}
         trackColor={{ false: '#ddd', true: '#4CAF50' }}
@@ -160,6 +168,7 @@ const NotificationPreferencesScreen: React.FC<Props> = ({ onBack }) => {
         visible={showRationale}
         permissionType="notifications"
         showSettings={notifPermissionDenied}
+        returnFocusRef={medicationSwitchRef}
         onAllow={async () => {
           setShowRationale(false);
           const granted = await requestNotificationPermission();
@@ -185,12 +194,27 @@ const NotificationPreferencesScreen: React.FC<Props> = ({ onBack }) => {
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
+        {onOpenTroubleshooting && (
+          <View style={styles.card}>
+            <TouchableOpacity
+              style={styles.row}
+              onPress={onOpenTroubleshooting}
+              accessibilityRole="button"
+              accessibilityLabel="Why am I not getting reminders? Open delivery troubleshooting"
+            >
+              <Text style={styles.rowLabel}>Reminders not arriving?</Text>
+              <Text style={styles.backText}>›</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* ── By Type ── */}
         <SectionHeader title="By Type" />
         <View style={styles.card}>
           <Row
             label="Medication Reminders"
             value={prefs.medicationReminders}
+            switchRef={medicationSwitchRef}
             onValueChange={(v) => void handleToggleMedicationReminders(v)}
           />
           <View style={styles.sep} />

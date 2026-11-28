@@ -113,8 +113,12 @@ const config = {
 
   database: {
     url: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/petchain',
+    // Read replica used for read-only queries when the primary is unreachable (#1352)
+    replicaUrl: process.env.DATABASE_REPLICA_URL || '',
     poolSize: Number(process.env.DB_POOL_SIZE) || 20,
     idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT) || 30000,
+    // Interval for re-checking primary health while failed over (#1352)
+    primaryHealthRecheckMs: Number(process.env.DB_PRIMARY_RECHECK_MS) || 30000,
   },
 
   elasticsearch: {

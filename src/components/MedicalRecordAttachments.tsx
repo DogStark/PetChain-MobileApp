@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Alert, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { OptimizedImage } from './OptimizedImage';
+import { ZoomableImageViewer } from './ZoomableImageViewer';
 import type { MedicalDocumentMetadata } from '../models/MedicalRecord';
 import {
   formatFileSize,
@@ -79,10 +80,13 @@ function useSignedUrl(doc: MedicalDocumentMetadata): string {
 
 interface AttachmentCardProps {
   document: MedicalDocumentMetadata;
+  /** Opens image attachments in the zoomable viewer (#1399). */
+  onOpenImage?: (url: string) => void;
 }
 
-const AttachmentCard: React.FC<AttachmentCardProps> = ({ document }) => {
+const AttachmentCard: React.FC<AttachmentCardProps> = ({ document, onOpenImage }) => {
   const resolvedUrl = useSignedUrl(document);
+  const isImage = isImageDocument(document);
 
   const description = [
     getAttachmentLabel(document),
@@ -96,12 +100,14 @@ const AttachmentCard: React.FC<AttachmentCardProps> = ({ document }) => {
     <TouchableOpacity
       key={document.id || document.url}
       style={styles.card}
-      onPress={() => openDocument(resolvedUrl)}
+      onPress={() =>
+        isImage && onOpenImage ? onOpenImage(resolvedUrl) : openDocument(resolvedUrl)
+      }
       accessibilityRole="button"
       accessibilityLabel={`${document.name}, ${description}`}
-      accessibilityHint="Opens the attachment"
+      accessibilityHint={isImage ? 'Opens the image with pinch-to-zoom' : 'Opens the attachment'}
     >
-      {isImageDocument(document) ? (
+      {isImage ? (
         <OptimizedImage
           uri={resolvedUrl}
           style={styles.preview}
@@ -127,19 +133,42 @@ const AttachmentCard: React.FC<AttachmentCardProps> = ({ document }) => {
 
 export const MedicalRecordAttachments: React.FC<Props> = ({ documents }) => {
   const attachments = normalizeDocuments(documents);
+  const imageDocs = attachments.filter(isImageDocument);
+  // Latest resolved (possibly refreshed) URL per image, keyed by original URL.
+  const [resolvedImageUrls, setResolvedImageUrls] = useState<Record<string, string>>({});
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
   if (attachments.length === 0) {
     return null;
   }
+
+  const viewerImages = imageDocs.map((doc) => ({
+    uri: resolvedImageUrls[doc.url] ?? doc.url,
+    name: doc.name,
+  }));
 
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>Attachments</Text>
       <View style={styles.grid}>
         {attachments.map((document) => (
-          <AttachmentCard key={document.id || document.url} document={document} />
+          <AttachmentCard
+            key={document.id || document.url}
+            document={document}
+            onOpenImage={(url) => {
+              setResolvedImageUrls((prev) => ({ ...prev, [document.url]: url }));
+              setViewerIndex(imageDocs.indexOf(document));
+            }}
+          />
         ))}
       </View>
+      <ZoomableImageViewer
+        visible={viewerIndex !== null}
+        images={viewerImages}
+        index={viewerIndex ?? 0}
+        onIndexChange={(i) => setViewerIndex(Math.max(0, Math.min(viewerImages.length - 1, i)))}
+        onClose={() => setViewerIndex(null)}
+      />
     </View>
   );
 };

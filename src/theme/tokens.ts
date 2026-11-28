@@ -37,3 +37,19 @@ export const tokens = {
   typography,
   radii,
 };
+
+/**
+ * OLED background overrides: pure black (#000000) surfaces for the
+ * `dark-oled` theme variant, which saves power on OLED displays.
+ */
+export const oledBackgroundTokens = {
+  background: '#000000',
+  surface: '#000000',
+  card: '#0A0A0A',
+  cardElevated: '#141414',
+  input: '#0A0A0A',
+  subtle: '#000000',
+  muted: '#1A1A1A',
+  overlay: 'rgba(0,0,0,0.85)',
+  shadow: '#000000',
+} as const;

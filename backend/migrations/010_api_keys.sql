@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   rotated_from_id         UUID REFERENCES api_keys(id) ON DELETE SET NULL,
   rotation_overlap_ends_at TIMESTAMPTZ,
   last_used_at            TIMESTAMPTZ,
+  rate_limit_per_minute   INTEGER CHECK (rate_limit_per_minute IS NULL OR rate_limit_per_minute > 0),
   created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   revoked_at              TIMESTAMPTZ
@@ -24,6 +25,7 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_created_by ON api_keys(created_by);
 
 COMMENT ON TABLE api_keys IS 'Third-party API keys; key_hash is bcrypt of the full secret';
 COMMENT ON COLUMN api_keys.key_prefix IS 'Lookup prefix (first segment of issued key)';
+COMMENT ON COLUMN api_keys.rate_limit_per_minute IS 'Per-key request budget per minute (Redis-enforced)';
 
 -- Per-endpoint usage analytics
 CREATE TABLE IF NOT EXISTS api_key_usage (

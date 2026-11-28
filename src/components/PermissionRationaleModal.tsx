@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Linking, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { useAppTheme } from '../theme';
+import { useAccessibleModal } from '../hooks/useAccessibleModal';
 import { type PermissionType, PERMISSION_RATIONALES } from '../utils/permissionRationale';
 
 interface Props {
@@ -13,6 +14,8 @@ interface Props {
   onDeny: () => void;
   /** When true, shows a "Open Settings" button instead of "Allow" */
   showSettings?: boolean;
+  /** Focus returns here on close — usually the control that triggered the prompt */
+  returnFocusRef?: React.RefObject<View | null>;
 }
 
 const PermissionRationaleModal: React.FC<Props> = ({
@@ -21,9 +24,18 @@ const PermissionRationaleModal: React.FC<Props> = ({
   onAllow,
   onDeny,
   showSettings = false,
+  returnFocusRef,
 }) => {
   const colors = useAppTheme();
   const rationale = PERMISSION_RATIONALES[permissionType];
+  const titleRef = useRef<View>(null);
+
+  const modalProps = useAccessibleModal({
+    visible,
+    onClose: onDeny,
+    titleRef,
+    returnFocusRef,
+  });
 
   const handlePrimaryAction = () => {
     if (showSettings) {
@@ -34,11 +46,17 @@ const PermissionRationaleModal: React.FC<Props> = ({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDeny}>
+    <Modal {...modalProps} animationType="fade">
       <View style={[styles.overlay, { backgroundColor: colors.overlay }]}>
         <View style={[styles.card, { backgroundColor: colors.surface }]}>
           <Text style={styles.icon}>{rationale.icon}</Text>
-          <Text style={[styles.title, { color: colors.text }]}>{rationale.title}</Text>
+          <Text
+            ref={titleRef as never}
+            accessibilityRole="header"
+            style={[styles.title, { color: colors.text }]}
+          >
+            {rationale.title}
+          </Text>
           <Text style={[styles.description, { color: colors.secondaryText }]}>
             {rationale.description}
           </Text>

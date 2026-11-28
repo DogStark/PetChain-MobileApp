@@ -34,6 +34,15 @@ export const reviewService = {
     await StoreReview.requestReview();
     analytics.track('review_prompt_completed', { variant, trigger: event });
   },
+
+  /**
+   * Fire-and-forget wrapper for call sites: records the positive action and
+   * shows the prompt when eligible. Never throws, so it can be called right
+   * after a successful action without affecting the caller's flow.
+   */
+  notifyPositiveAction(event: EngagementEvent): void {
+    void reviewService.onEngagementEvent(event).catch(() => {});
+  },
 };
 
 // --- Vet Reviews API ---

@@ -24,8 +24,16 @@ import {
   recordScreenLoad,
   type PerformanceDashboard,
 } from '../services/performanceService';
+import petService, { type Pet } from '../services/petService';
 import { getReferralStats, type ReferralStats } from '../services/referralService';
 import { getUserProfile, saveUserProfile, updateUserProfile } from '../services/userService';
+import {
+  checkWidgetPetAccess,
+  forceWidgetUpdate,
+  getWidgetPreferences,
+  saveWidgetPreferences,
+  type WidgetPreferences,
+} from '../services/widgetService';
 import { formatAddress } from '../utils/localeValues';
 import { useSecureScreen } from '../utils/secureScreen';
 
@@ -56,6 +64,12 @@ const ProfileScreen: React.FC = () => {
   const [backupBusy, setBackupBusy] = useState(false);
   const [performance, setPerformance] = useState<PerformanceDashboard | null>(null);
   const [referralStats, setReferralStats] = useState<ReferralStats | null>(null);
+  const [widgetPets, setWidgetPets] = useState<Pet[]>([]);
+  const [widgetPreferences, setWidgetPreferencesState] = useState<WidgetPreferences>({
+    selectedPetId: null,
+    hideDetailsOnLockScreen: true,
+  });
+  const [widgetSaving, setWidgetSaving] = useState(false);
   const loadStartedAt = useRef(Date.now());
 
   const reloadProfile = async () => {
@@ -101,6 +115,41 @@ const ProfileScreen: React.FC = () => {
       await reloadReferrals();
     })();
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      petService.getAllPets().catch(() => [] as Pet[]),
+      getWidgetPreferences(),
+    ]).then(([pets, preferences]) => {
+      if (!active) return;
+      setWidgetPets(pets);
+      setWidgetPreferencesState(preferences);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const updateWidgetPreferences = async (patch: Partial<WidgetPreferences>) => {
+    setWidgetSaving(true);
+    try {
+      if (patch.selectedPetId) {
+        const access = await checkWidgetPetAccess(patch.selectedPetId);
+        if (access === 'denied') {
+          Alert.alert('Pet access unavailable', 'The server no longer confirms access to this pet.');
+          return;
+        }
+      }
+      const updated = await saveWidgetPreferences(patch);
+      setWidgetPreferencesState(updated);
+      await forceWidgetUpdate();
+    } catch {
+      Alert.alert('Widget settings', 'Could not save widget settings. Try again when online.');
+    } finally {
+      setWidgetSaving(false);
+    }
+  };
 
   const save = async () => {
     if (!profile.email.trim() || !profile.name.trim()) {
@@ -326,6 +375,49 @@ const ProfileScreen: React.FC = () => {
       <TouchableOpacity style={styles.saveButton} onPress={save}>
         <Text style={styles.saveButtonText}>Save Profile</Text>
       </TouchableOpacity>
+
+      <Text style={styles.sectionTitle}>Home-screen care agenda</Text>
+      <View style={styles.card}>
+        <Text style={styles.dashboardText}>Choose which pet appears in the widget.</Text>
+        <TouchableOpacity
+          style={styles.switchRow}
+          onPress={() => void updateWidgetPreferences({ selectedPetId: null })}
+          accessibilityRole="radio"
+          accessibilityState={{ checked: widgetPreferences.selectedPetId === null }}
+          disabled={widgetSaving}
+        >
+          <Text style={styles.switchLabel}>No pet selected</Text>
+          <Text accessibilityElementsHidden>{widgetPreferences.selectedPetId === null ? '●' : '○'}</Text>
+        </TouchableOpacity>
+        {widgetPets.map((pet) => {
+          const selected = widgetPreferences.selectedPetId === pet.id;
+          return (
+            <TouchableOpacity
+              key={pet.id}
+              style={styles.switchRow}
+              onPress={() => void updateWidgetPreferences({ selectedPetId: pet.id })}
+              accessibilityRole="radio"
+              accessibilityLabel={`Show ${pet.name} in care agenda widget`}
+              accessibilityState={{ checked: selected }}
+              disabled={widgetSaving}
+            >
+              <Text style={styles.switchLabel}>{pet.name}</Text>
+              <Text accessibilityElementsHidden>{selected ? '●' : '○'}</Text>
+            </TouchableOpacity>
+          );
+        })}
+        <View style={styles.switchRow}>
+          <Text style={styles.switchLabel}>Hide details on lock screens</Text>
+          <Switch
+            value={widgetPreferences.hideDetailsOnLockScreen}
+            onValueChange={(value) =>
+              void updateWidgetPreferences({ hideDetailsOnLockScreen: value })
+            }
+            disabled={widgetSaving}
+            accessibilityLabel="Hide care agenda details on lock screens"
+          />
+        </View>
+      </View>
 
       <Text style={styles.sectionTitle}>Referrals & Credits</Text>
       <View style={styles.card}>

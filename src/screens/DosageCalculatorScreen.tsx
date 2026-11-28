@@ -686,9 +686,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 14,
+    minHeight: 44,
     backgroundColor: '#fafafa',
   },
-  textArea: { height: 90, textAlignVertical: 'top' },
+  textArea: { minHeight: 90, textAlignVertical: 'top' },
   warningBox: {
     backgroundColor: '#fff3cd',
     borderRadius: 8,

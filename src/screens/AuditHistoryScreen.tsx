@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-import auditTrailService, { type AuditTrailEntry } from '../services/auditTrailService';
+import auditTrailService, {
+  type AuditTrailEntry,
+  type PetMetadataHistoryEntry,
+} from '../services/auditTrailService';
 import { formatRelativeTime } from '../utils/dateLocale';
 import { useSecureScreen } from '../utils/secureScreen';
 
@@ -28,11 +31,41 @@ function prettyDiff(entry: AuditTrailEntry): string {
     .join('\n');
 }
 
+const METADATA_PAGE_SIZE = 20;
+
+function prettyPatch(patch: unknown): string {
+  if (patch == null) return 'No metadata diff captured.';
+  if (Array.isArray(patch)) {
+    if (!patch.length) return 'No metadata changes.';
+    return patch
+      .map((op) => {
+        if (op && typeof op === 'object') {
+          const { op: kind, path, value } = op as {
+            op?: string;
+            path?: string;
+            value?: unknown;
+          };
+          const rendered = value === undefined ? '' : ` = ${JSON.stringify(value)}`;
+          return `${kind ?? 'op'} ${path ?? ''}${rendered}`.trim();
+        }
+        return JSON.stringify(op);
+      })
+      .join('\n');
+  }
+  return JSON.stringify(patch, null, 2);
+}
+
 const AuditHistoryScreen: React.FC<Props> = ({ entityType, entityId, title, onBack }) => {
   useSecureScreen();
 
   const [rows, setRows] = useState<AuditTrailEntry[]>([]);
   const [loading, setLoading] = useState(false);
+
+  const isPet = entityType === 'pet';
+  const [metadataRows, setMetadataRows] = useState<PetMetadataHistoryEntry[]>([]);
+  const [metadataLoading, setMetadataLoading] = useState(false);
+  const [metadataPage, setMetadataPage] = useState(1);
+  const [metadataTotalPages, setMetadataTotalPages] = useState(1);
 
   const headerTitle = useMemo(() => title ?? 'Audit History', [title]);
 
@@ -48,9 +81,40 @@ const AuditHistoryScreen: React.FC<Props> = ({ entityType, entityId, title, onBa
     }
   }, [entityType, entityId]);
 
+  const loadMetadataHistory = useCallback(
+    async (page: number) => {
+      setMetadataLoading(true);
+      try {
+        const result = await auditTrailService.getPetMetadataHistory({
+          petId: entityId,
+          page,
+          limit: METADATA_PAGE_SIZE,
+        });
+        setMetadataRows(result.entries);
+        setMetadataPage(result.page);
+        setMetadataTotalPages(Math.max(1, result.totalPages));
+      } catch {
+        Alert.alert('Error', 'Failed to load pet metadata history.');
+      } finally {
+        setMetadataLoading(false);
+      }
+    },
+    [entityId],
+  );
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!isPet) {
+      setMetadataRows([]);
+      setMetadataPage(1);
+      setMetadataTotalPages(1);
+      return;
+    }
+    void loadMetadataHistory(1);
+  }, [isPet, loadMetadataHistory]);
 
   const handleExport = async () => {
     try {
@@ -85,23 +149,99 @@ const AuditHistoryScreen: React.FC<Props> = ({ entityType, entityId, title, onBa
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
+        {isPet && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Metadata Change History</Text>
+            {metadataLoading && <Text style={styles.muted}>Loading…</Text>}
+            {!metadataLoading && metadataRows.length === 0 && (
+              <Text style={styles.muted}>No metadata changes recorded yet.</Text>
+            )}
+            {metadataRows.map((m) => (
+              <View key={m.id} style={styles.card}>
+                <View style={styles.cardHeader}>
+                  <Text style={styles.action}>{m.action}</Text>
+                  <Text style={styles.time}>{formatRelativeTime(m.createdAt)}</Text>
+                </View>
+                <Text style={styles.meta}>
+                  {m.changedBy ? `User: ${m.changedBy}` : 'User: (system/unknown)'}
+                </Text>
+                <Text style={styles.subLabel}>Before</Text>
+                <Text style={styles.diff}>
+                  {m.beforeData ? JSON.stringify(m.beforeData, null, 2) : '∅'}
+                </Text>
+                <Text style={styles.subLabel}>After</Text>
+                <Text style={styles.diff}>
+                  {m.afterData ? JSON.stringify(m.afterData, null, 2) : '∅'}
+                </Text>
+                <Text style={styles.subLabel}>Diff (JSON patch)</Text>
+                <Text style={styles.diff}>{prettyPatch(m.metadataDiff)}</Text>
+              </View>
+            ))}
+            {metadataTotalPages > 1 && (
+              <View style={styles.pagination}>
+                <TouchableOpacity
+                  onPress={() => void loadMetadataHistory(metadataPage - 1)}
+                  disabled={metadataLoading || metadataPage <= 1}
+                  style={[styles.pageBtn, (metadataLoading || metadataPage <= 1) && styles.pageBtnDisabled]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Previous metadata history page"
+                >
+                  <Text style={styles.pageBtnText}>‹ Prev</Text>
+                </TouchableOpacity>
+                <Text style={styles.pageInfo}>
+                  {`Page ${metadataPage} of ${metadataTotalPages}`}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => void loadMetadataHistory(metadataPage + 1)}
+                  disabled={metadataLoading || metadataPage >= metadataTotalPages}
+                  style={[
+                    styles.pageBtn,
+                    (metadataLoading || metadataPage >= metadataTotalPages) && styles.pageBtnDisabled,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Next metadata history page"
+                >
+                  <Text style={styles.pageBtnText}>Next ›</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        )}
+
         {loading && <Text style={styles.muted}>Loading…</Text>}
         {!loading && rows.length === 0 && (
           <Text style={styles.muted}>No audit history available yet.</Text>
         )}
 
-        {rows.map((r) => (
-          <View key={r.id} style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.action}>{r.action}</Text>
-              <Text style={styles.time}>{formatRelativeTime(r.createdAt)}</Text>
+        {rows.map((r) => {
+          // Co-owner (family sharing) actions are shown distinctly (#1398).
+          const isCoOwner = !!r.onBehalfOfUserId;
+          return (
+            <View
+              key={r.id}
+              style={[styles.card, isCoOwner && styles.coOwnerCard]}
+              accessibilityLabel={isCoOwner ? 'Co-owner action' : undefined}
+            >
+              <View style={styles.cardHeader}>
+                <Text style={styles.action}>{r.action}</Text>
+                <Text style={styles.time}>{formatRelativeTime(r.createdAt)}</Text>
+              </View>
+              {isCoOwner ? (
+                <>
+                  <Text style={styles.coOwnerBadge}>Co-owner action</Text>
+                  <Text style={styles.meta}>
+                    {`By: ${r.actingUserId ?? r.changedBy ?? 'unknown'}\nOn behalf of: ${r.onBehalfOfUserId}`}
+                  </Text>
+                </>
+              ) : (
+                <Text style={styles.meta}>
+                  {r.changedBy ? `User: ${r.changedBy}` : 'User: (system/unknown)'}
+                </Text>
+              )}
+              <Text style={styles.diff}>{prettyDiff(r)}</Text>
             </View>
-            <Text style={styles.meta}>
-              {r.changedBy ? `User: ${r.changedBy}` : 'User: (system/unknown)'}
-            </Text>
-            <Text style={styles.diff}>{prettyDiff(r)}</Text>
-          </View>
-        ))}
+          );
+        })}
       </ScrollView>
     </View>
   );
@@ -130,6 +270,24 @@ const styles = StyleSheet.create({
   exportBtnText: { color: '#4CAF50', fontWeight: '700' },
   content: { padding: 16 },
   muted: { color: '#666', paddingVertical: 8 },
+  section: { marginBottom: 16 },
+  sectionTitle: { fontSize: 15, fontWeight: '700', color: '#1a1a1a', marginBottom: 8 },
+  subLabel: { fontSize: 12, fontWeight: '700', color: '#666', marginTop: 8, marginBottom: 2 },
+  pagination: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+  pageBtn: {
+    backgroundColor: '#e8f5e9',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  pageBtnDisabled: { opacity: 0.4 },
+  pageBtnText: { color: '#4CAF50', fontWeight: '700' },
+  pageInfo: { color: '#666' },
   card: {
     backgroundColor: '#fff',
     borderRadius: 12,
@@ -141,6 +299,18 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  coOwnerCard: { borderLeftWidth: 4, borderLeftColor: '#7c3aed' },
+  coOwnerBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#ede9fe',
+    color: '#5b21b6',
+    fontSize: 12,
+    fontWeight: '700',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginBottom: 6,
+  },
   action: { fontWeight: '800', color: '#1a1a1a' },
   time: { color: '#666' },
   meta: { color: '#666', marginBottom: 10 },

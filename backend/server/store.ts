@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 
 import type { ApiKey, ApiKeyUsageRecord } from '../models/ApiKey';
+import type { PetJointOwner } from '../models/JointOwnership';
 import { AppointmentStatus, AppointmentType } from '../models/Appointment';
 import { UserRole } from '../models/UserRole';
 
@@ -19,6 +20,8 @@ export interface StoredUser {
   passwordHash?: string;
   // 2FA fields
   twoFactorEnabled: boolean;
+  /** When the vet 2FA enforcement grace period started (#1394). */
+  twoFactorGraceStartedAt?: string;
   twoFactorSecret?: string; // encrypted TOTP secret (never exposed in API)
   twoFactorBackupCodes?: string[]; // bcrypt-hashed backup codes
   twoFactorPendingSecret?: string; // secret during setup (before confirmation)
@@ -183,6 +186,18 @@ export interface StoredReferralCredit {
   awardedAt: string;
 }
 
+export interface StoredReferralRedemption {
+  id: string;
+  userId: string;
+  idempotencyKey: string;
+  requestedAmount: number;
+  appliedAmount: number;
+  invoiceTotal: number;
+  invoiceRemaining: number;
+  creditIds: string[];
+  createdAt: string;
+}
+
 export interface StoredPayment {
   id: string;
   userId: string;
@@ -332,8 +347,11 @@ const apiKeyUsage: ApiKeyUsageRecord[] = [];
 const referralCodes = new Map<string, StoredReferralCode>();
 const referrals = new Map<string, StoredReferral>();
 const referralCredits = new Map<string, StoredReferralCredit>();
+const referralRedemptions = new Map<string, StoredReferralRedemption>();
 const payments = new Map<string, StoredPayment>();
 const familySharing = new Map<string, StoredFamilySharing>();
+/** Joint owners keyed by `${petId}:${userId}` (#1388). */
+const petJointOwners = new Map<string, PetJointOwner>();
 
 export function newId(): string {
   return randomUUID();
@@ -351,7 +369,9 @@ export const store = {
   referralCodes,
   referrals,
   referralCredits,
+  referralRedemptions,
   payments,
   familySharing,
+  petJointOwners,
   newId,
 };

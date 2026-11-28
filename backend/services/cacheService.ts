@@ -49,6 +49,7 @@ export const CacheKeys = {
   allBreeds: () => cacheKey('breeds', 'all'),
   vet: (id: string) => cacheKey('vet', id),
   vetDirectory: (params: string) => cacheKey('vets', 'dir', params),
+  petHealthSummary: (petId: string) => cacheKey('pet', petId, 'health-summary'),
 } as const;
 
 // ─── Core operations ─────────────────────────────────────────────────────────
@@ -160,6 +161,15 @@ export async function invalidatePet(petId: string, ownerId?: string): Promise<vo
   const keys = [CacheKeys.pet(petId)];
   if (ownerId) keys.push(CacheKeys.petsByOwner(ownerId));
   await invalidate(...keys);
+}
+
+/**
+ * Invalidates the cached health summary of a pet.
+ * Called whenever a component of the summary (medical record, medication,
+ * appointment) is created, updated or deleted.
+ */
+export async function invalidatePetHealthSummary(petId: string): Promise<void> {
+  await invalidate(CacheKeys.petHealthSummary(petId));
 }
 
 /** Invalidates all vet directory cache entries. */

@@ -101,6 +101,11 @@ const ToastHost: React.FC<{
   );
 };
 
+/** Like useToast, but returns undefined outside a ToastProvider instead of throwing. */
+export function useOptionalToast(): ToastContextValue | undefined {
+  return useContext(ToastContext);
+}
+
 export function useToast(): ToastContextValue {
   const ctx = useContext(ToastContext);
   if (!ctx) {

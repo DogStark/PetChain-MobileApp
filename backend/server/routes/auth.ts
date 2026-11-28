@@ -4,8 +4,14 @@ import jwt from 'jsonwebtoken';
 
 import config from '../../config';
 import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
+import {
+  loginEmailRateLimiter,
+  loginIpRateLimiter,
+  registerIpRateLimiter,
+} from '../../middleware/rateLimiter';
 import { UserRole } from '../../models/UserRole';
 import referralService from '../../services/referralService';
+import { evaluateVetTwoFactor } from '../../services/twoFactorPolicyService';
 import {
   generateBackupCodes,
   generateQRCodeDataURL,
@@ -35,7 +41,7 @@ function issueToken(user: { id: string; email: string; role: UserRole }) {
   });
 }
 
-router.post('/register', async (req, res) => {
+router.post('/register', registerIpRateLimiter, async (req, res) => {
   const { email, name, password, phone, role, referralCode, deviceFingerprint } = req.body as {
     email?: string;
     name?: string;
@@ -95,7 +101,7 @@ router.post('/register', async (req, res) => {
   });
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', loginIpRateLimiter, loginEmailRateLimiter, async (req, res) => {
   const { email, password } = req.body as { email?: string; password?: string };
   if (!email?.trim() || !password) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'email and password are required');
@@ -110,10 +116,20 @@ router.post('/login', async (req, res) => {
 
   store.users.set(user.id, { ...user, lastLoginAt: new Date().toISOString() });
 
+  // Vets without 2FA are sent to 2FA setup on login (#1394).
+  const twoFactor = evaluateVetTwoFactor(user.id);
+
   return res.json({
     user: authUser(user),
     token: issueToken(user),
     expiresIn: 3600,
+    ...(twoFactor.required
+      ? {
+          twoFactorSetupRequired: true,
+          twoFactorDeadline: twoFactor.deadline,
+          twoFactorEnforced: twoFactor.enforced,
+        }
+      : {}),
   });
 });
 

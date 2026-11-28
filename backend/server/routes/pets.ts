@@ -1,29 +1,75 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import crypto from 'crypto';
+import { randomUUID } from 'crypto';
 
 import express from 'express';
 
 import { logAuditTrail } from '../../middleware/auditLogger';
-import { authenticateJWT, type AuthenticatedRequest } from '../../middleware/auth';
+import { authenticateJWT, optionalAuth, type AuthenticatedRequest } from '../../middleware/auth';
 import {
   petProfileCacheMiddleware,
   petsByOwnerCacheMiddleware,
 } from '../../middleware/cacheMiddleware';
 import { UserRole } from '../../models/UserRole';
 import { invalidatePet } from '../../services/cacheService';
+import auditLogService from '../../services/auditLogService';
 import paymentService from '../../services/paymentService';
 import { issuePetAsset, transferPetAsset } from '../../services/stellarAssetService';
 import { petRepository } from '../../src/repositories/petRepository';
 import { type DBPet } from '../../src/repositories/petRepository';
 import { userRepository } from '../../src/repositories/userRepository';
-import { ok, sendError } from '../response';
+import { decodeCursor, encodeCursor, paginateByCursor, parseLimit } from '../pagination';
+import { ok, errBody, sendError } from '../response';
 import { type StoredMedicalRecord, type StoredPet, store } from '../store';
 
 const router = express.Router();
 const QR_SECRET = process.env.QR_SIGNING_SECRET ?? 'petchain-dev-qr-secret';
+const ALLERGY_CORRECTION_STATUSES = ['pending', 'approved', 'rejected'] as const;
+type AllergyCorrectionStatus = (typeof ALLERGY_CORRECTION_STATUSES)[number];
+
+const QR_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
 function signPetIdentity(petId: string, issuedAt: string): string {
   return crypto.createHmac('sha256', QR_SECRET).update(`${petId}:${issuedAt}`).digest('hex');
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
+}
+
+type QrTokenStatus = 'valid' | 'tampered' | 'expired';
+
+function verifyQrToken(token: string): {
+  status: QrTokenStatus;
+  petId?: string;
+  issuedAt?: string;
+  expiresAt?: string;
+} {
+  const parts = token.split('.');
+  if (parts.length !== 3) return { status: 'tampered' };
+  const [petId, issuedAt, signature] = parts;
+  if (!petId || !issuedAt || !signature) return { status: 'tampered' };
+  if (!safeEqual(signature, signPetIdentity(petId, issuedAt))) return { status: 'tampered' };
+
+  const issuedMs = new Date(issuedAt).getTime();
+  if (Number.isNaN(issuedMs)) return { status: 'tampered' };
+
+  const expiresAt = new Date(issuedMs + QR_TOKEN_TTL_MS).toISOString();
+  if (Date.now() > issuedMs + QR_TOKEN_TTL_MS) return { status: 'expired', petId, issuedAt, expiresAt };
+  return { status: 'valid', petId, issuedAt, expiresAt };
+}
+
+function publicPetProfile(pet: StoredPet | DBPet) {
+  return {
+    id: pet.id,
+    name: pet.name,
+    species: pet.species,
+    breed: pet.breed,
+    photoUrl: 'photo_url' in pet ? pet.photo_url : (pet as StoredPet).photoUrl,
+    microchipId: 'microchip_id' in pet ? pet.microchip_id : (pet as StoredPet).microchipId,
+  };
 }
 
 function activeQrForPet(petId: string) {
@@ -98,7 +144,72 @@ function medicalToMobileRow(r: StoredMedicalRecord) {
   };
 }
 
-router.get('/identity/:token', async (req, res) => {
+type StoredAllergyEntry = {
+  id: string;
+  petId: string;
+  allergen: string;
+  reaction: string;
+  severity: 'mild' | 'moderate' | 'severe';
+  onsetDate: string;
+  source: 'owner' | 'vet' | 'import';
+  verificationStatus: 'unverified' | 'verified' | 'disputed';
+  verifiedBy?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type StoredAllergyCorrection = {
+  id: string;
+  petId: string;
+  allergyId: string;
+  requestedBy: string;
+  reason: string;
+  proposed?: Partial<Pick<StoredAllergyEntry, 'allergen' | 'reaction' | 'severity' | 'onsetDate'>>;
+  status: AllergyCorrectionStatus;
+  createdAt: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+};
+
+const allergyEntries = new Map<string, StoredAllergyEntry>();
+const allergyCorrections = new Map<string, StoredAllergyCorrection>();
+
+/** Joint owners of a pet (#1388). */
+function jointOwnersOf(petId: string) {
+  return [...store.petJointOwners.values()].filter((row) => row.petId === petId);
+}
+
+/** True when the user is the primary owner or a joint owner of the pet (#1388). */
+function isPetOwner(userId: string, pet: StoredPet): boolean {
+  return userId === pet.ownerId || store.petJointOwners.has(`${pet.id}:${userId}`);
+}
+
+function canAccessPet(user: AuthenticatedRequest['user'], pet: StoredPet): boolean {
+  if (!user) return false;
+  if (user.role === UserRole.ADMIN || user.role === UserRole.VET) return true;
+  return isPetOwner(user.id, pet);
+}
+
+async function findUserByEmail(email: string) {
+  const normalized = email.trim().toLowerCase();
+  const stored = [...store.users.values()].find(
+    (u) => !u.deletedAt && u.email.toLowerCase() === normalized,
+  );
+  if (stored) return { id: stored.id, name: stored.name, email: stored.email };
+  try {
+    const dbUser = await userRepository.findByEmail(normalized);
+    return dbUser ? { id: dbUser.id, name: dbUser.name, email: dbUser.email } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function canVerifyAllergy(user: AuthenticatedRequest['user']): boolean {
+  return !!user && (user.role === UserRole.ADMIN || user.role === UserRole.VET);
+}
+
+router.get('identity/:token', async (req, res) => {
   const identity = store.petQrIdentities.get(req.params.token);
   if (!identity || identity.revokedAt) {
     return sendError(res, 404, 'QR_NOT_FOUND', 'This pet identity code is invalid or expired');
@@ -108,7 +219,7 @@ router.get('/identity/:token', async (req, res) => {
   return res.json(ok({ pet: emergencyPetView(pet), issuedAt: identity.issuedAt }));
 });
 
-router.get('/identity/:token/view', async (req, res) => {
+router.get('identity/:token/view', async (req, res) => {
   const identity = store.petQrIdentities.get(req.params.token);
   if (!identity || identity.revokedAt) {
     return res.status(404).send('<h1>Pet identity code unavailable</h1>');
@@ -152,9 +263,53 @@ router.get('/owner/:ownerId', petsByOwnerCacheMiddleware(), (req: AuthenticatedR
   }
 
   const list = [...store.pets.values()]
-    .filter((p) => p.ownerId === req.params.ownerId)
+    .filter((p) => isPetOwner(req.params.ownerId, p))
     .map(toPetResponse);
   return res.json(ok(list));
+});
+
+router.post('/qr/validate', optionalAuth, async (req: AuthenticatedRequest, res) => {
+  const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+  if (!token) return sendError(res, 400, 'VALIDATION_ERROR', 'A QR token is required');
+
+  const result = verifyQrToken(token);
+
+  if (result.status === 'tampered') {
+    auditLogService.log({
+      actorId: req.user?.id ?? 'anonymous',
+      actorEmail: req.user?.email,
+      role: req.user?.role,
+      action: 'qr.token_tampered',
+      resourceType: 'qr_token',
+      resourceId: token.slice(0, 128),
+      meta: { reason: 'signature_mismatch' },
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+      outcome: 'denied',
+    });
+    return sendError(res, 400, 'QR_TAMPERED', 'QR token integrity check failed');
+  }
+
+  if (result.status === 'expired') {
+    return res.status(410).json({
+      ...errBody('QR_EXPIRED', 'QR token has expired', { expiresAt: result.expiresAt }),
+      status: 'expired',
+      expiresAt: result.expiresAt,
+    });
+  }
+
+  const pet =
+    (await petRepository.findById(result.petId!)) || store.pets.get(result.petId!) || undefined;
+  if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found for QR token');
+
+  return res.json(
+    ok({
+      status: 'valid',
+      expiresAt: result.expiresAt,
+      issuedAt: result.issuedAt,
+      pet: publicPetProfile(pet),
+    }),
+  );
 });
 
 router.get('/qr/:qrCode', async (req, res) => {
@@ -175,7 +330,7 @@ router.get('/qr/:qrCode', async (req, res) => {
 router.post('/:id/qr-identity', (req: AuthenticatedRequest, res) => {
   const pet = store.pets.get(req.params.id);
   if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
-  if (req.user!.role !== UserRole.ADMIN && req.user!.id !== pet.ownerId) {
+  if (req.user!.role !== UserRole.ADMIN && !isPetOwner(req.user!.id, pet)) {
     return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to generate this code');
   }
   const previous = activeQrForPet(pet.id);
@@ -202,7 +357,7 @@ router.get('/:petId/medical-records', (req: AuthenticatedRequest, res) => {
   if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
 
   // Only admin, vet, or the owner can see medical records
-  if (req.user!.role === UserRole.OWNER && req.user!.id !== pet.ownerId) {
+  if (req.user!.role === UserRole.OWNER && !isPetOwner(req.user!.id, pet)) {
     return sendError(
       res,
       403,
@@ -211,18 +366,46 @@ router.get('/:petId/medical-records', (req: AuthenticatedRequest, res) => {
     );
   }
 
-  const q = req.query as Record<string, string | undefined>;
+  const q = req.query as Record<string | undefined>;
   const type = q.type;
   const page = Math.max(1, Number(q.page) || 1);
-  const limit = Math.min(100, Math.max(1, Number(q.limit) || 20));
+  const limit = parseLimit(q.limit);
 
   let rows = [...store.medicalRecords.values()].filter((r) => r.petId === petId);
   if (type) rows = rows.filter((r) => r.type === type);
-  rows.sort((a, b) => new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime());
+  rows.sort(
+    (a, b) =>
+      new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime() ||
+      a.id.localeCompare(b.id),
+  );
   const total = rows.length;
+
+  // Cursor pagination (#1347); offset/page remains as a deprecated fallback.
+  if (typeof q.cursor === 'string' && q.cursor.length > 0) {
+    const cursor = decodeCursor(q.cursor);
+    if (!cursor) return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid cursor');
+    const pageResult = paginateByCursor(
+      rows,
+      cursor,
+      limit,
+      (r) => r.visitDate,
+      (r) => r.id,
+    );
+    return res.json({
+      data: pageResult.data.map(medicalToMobileRow),
+      total,
+      limit,
+      nextCursor: pageResult.nextCursor,
+      prevCursor: pageResult.prevCursor,
+      hasMore: pageResult.hasMore,
+    });
+  }
+
   const totalPages = Math.ceil(total / limit) || 1;
   const start = (page - 1) * limit;
   const slice = rows.slice(start, start + limit).map(medicalToMobileRow);
+  const last = rows[start + limit - 1];
+  const first = rows[start];
 
   return res.json({
     data: slice,
@@ -230,229 +413,146 @@ router.get('/:petId/medical-records', (req: AuthenticatedRequest, res) => {
     page,
     limit,
     totalPages,
+    nextCursor:
+      start + limit < total && last ? encodeCursor({ k: last.visitDate, id: last.id }) : null,
+    prevCursor: start > 0 && first ? encodeCursor({ k: first.visitDate, id: first.id }) : null,
+    pagination: { mode: 'offset', deprecated: true },
   });
 });
 
-router.get('/', petsByOwnerCacheMiddleware(), (req: AuthenticatedRequest, res) => {
-  const ownerId = (req.query as Record<string, string | undefined>).ownerId;
-
-  // If ownerId is provided, filter. Otherwise, only admin/vet can see all pets.
-  if (!ownerId && req.user!.role === UserRole.OWNER) {
-    return sendError(res, 403, 'FORBIDDEN', 'OwnerId parameter is required for pet owners');
-  }
-
-  if (ownerId && req.user!.role === UserRole.OWNER && req.user!.id !== ownerId) {
-    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to view these pets');
-  }
-
-  let list = [...store.pets.values()];
-  if (ownerId) list = list.filter((p) => p.ownerId === ownerId);
-  return res.json(ok(list.map(toPetResponse)));
-});
-
-router.get(
-  '/:id',
-  (req: AuthenticatedRequest, res, next) => {
-    const pet = store.pets.get(req.params.id);
-    if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
-    if (req.user!.role === UserRole.OWNER && req.user!.id !== pet.ownerId) {
-      return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to view this pet');
-    }
-    next();
-  },
-  petProfileCacheMiddleware(),
-  (req: AuthenticatedRequest, res) => {
-  const pet = store.pets.get(req.params.id);
+router.get('/:petId/allergies', (req: AuthenticatedRequest, res) => {
+  const { petId } = req.params;
+  const pet = store.pets.get(petId);
   if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
-
-  // Only admin, vet, or owner can see pet details
-  if (req.user!.role === UserRole.OWNER && req.user!.id !== pet.ownerId) {
-    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to view this pet');
+  if (!canAccessPet(req.user, pet)) {
+    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to view these allergies');
   }
 
-  return res.json(ok(toPetResponse(pet)));
-  },
-);
-
-router.post('/', async (req: AuthenticatedRequest, res) => {
-  const {
-    name,
-    species,
-    breed,
-    dateOfBirth,
-    weightKg,
-    microchipId,
-    photoUrl,
-    thumbnailUrl,
-    ownerId,
-  } = req.body as Partial<StoredPet & { thumbnailUrl?: string }>;
-  if (!name?.trim() || !species?.trim() || !ownerId?.trim()) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'name, species, and ownerId are required');
+  const q = req.query as Record<string | undefined>;
+  const page = Math.max(1, Number(q.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(q.limit) || 20));
+  const since = q.since ? new Date(q.since) : undefined;
+  if (q.since && Number.isNaN(since!.getTime())) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'since must be a valid ISO date');
   }
 
-  // Only admin or the owner themselves can create a pet for that owner
-  if (req.user!.role !== UserRole.ADMIN && req.user!.id !== ownerId) {
-    return sendError(
-      res,
-      403,
-      'FORBIDDEN',
-      'You do not have permission to create a pet for this owner',
-    );
-  }
+  let rows = [...allergyEntries.values()].filter((row) => row.petId === petId);
+  if (since) rows = rows.filter((row) => new Date(row.onsetDate).getTime() >= since.getTime());
+  rows.sort((a, b) => new Date(b.onsetDate).getTime() - new Date(a.onsetDate).getTime());
 
-  // Enforce free-tier pet limit (1 pet)
-  const activeSub = paymentService.getSubscription(ownerId.trim());
-  const isPremium = activeSub?.status === 'active' && activeSub.plan !== 'free';
-  if (!isPremium && req.user!.role !== UserRole.ADMIN) {
-    const existingPets = [...store.pets.values()].filter((p) => p.ownerId === ownerId.trim());
-    if (existingPets.length >= 1) {
-      return sendError(
-        res,
-        403,
-        'SUBSCRIPTION_REQUIRED',
-        'Free tier allows 1 pet. Upgrade to Premium for unlimited pets.',
-      );
-    }
-  }
+  const total = rows.length;
+  const totalPages = Math.ceil(total / limit) || 1;
+  const start = (page - 1) * limit;
+  const slice = rows.slice(start, start + limit);
 
-  if (!store.users.get(ownerId.trim())) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'ownerId must reference an existing user');
-  }
-
-  const id = store.newId();
-  const pet = await petRepository.create({
-    id,
-    name: name.trim(),
-    species: species.trim(),
-    breed: breed?.trim(),
-    date_of_birth: dateOfBirth ? new Date(dateOfBirth) : undefined,
-    weight_kg: typeof weightKg === 'number' ? weightKg : undefined,
-    microchip_id: microchipId?.trim(),
-    photo_url: photoUrl?.trim(),
-    thumbnail_url: thumbnailUrl?.trim(),
-    owner_id: ownerId.trim(),
+  return res.json({
+    data: slice,
+    total,
+    page,
+    limit,
+    totalPages,
+    serverTime: new Date().toISOString(),
   });
-
-  void logAuditTrail({
-    req,
-    entityType: 'pet',
-    entityId: pet.id,
-    action: 'CREATE',
-    before: null,
-    after: await toPetResponse(pet),
-  });
-
-  await invalidatePet(pet.id, pet.owner_id);
-
-  // Issue Stellar pet identity NFT
-  try {
-    const sourceSeed = process.env.STELLAR_SOURCE_SEED;
-    const issuerSeed = process.env.STELLAR_ISSUER_SEED;
-    if (sourceSeed && issuerSeed) {
-      await issuePetAsset(pet.id, sourceSeed, issuerSeed);
-    }
-  } catch (err) {
-    console.error('[Stellar] Failed to issue pet asset:', err);
-  }
-  return res.status(201).json(ok(await toPetResponse(pet), 'Pet created'));
 });
 
-router.put('/:id', async (req: AuthenticatedRequest, res) => {
-  const pet = store.pets.get(req.params.id);
-  if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
+// ── Joint ownership (#1388) ──────────────────────────────────────────────
 
-  // Only admin or the owner can update the pet
-  if (req.user!.role !== UserRole.ADMIN && req.user!.id !== pet.ownerId) {
-    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to update this pet');
-  }
-
-  const body = req.body as Partial<StoredPet>;
-  const t = new Date().toISOString();
-  const next: StoredPet = {
-    ...pet,
-    ...(body.name !== undefined ? { name: String(body.name) } : {}),
-    ...(body.species !== undefined ? { species: String(body.species) } : {}),
-    ...(body.breed !== undefined ? { breed: body.breed ? String(body.breed) : undefined } : {}),
-    ...(body.dateOfBirth !== undefined
-      ? { dateOfBirth: body.dateOfBirth ? String(body.dateOfBirth) : undefined }
-      : {}),
-    ...(body.weightKg !== undefined ? { weightKg: body.weightKg } : {}),
-    ...(body.microchipId !== undefined
-      ? { microchipId: body.microchipId ? String(body.microchipId) : undefined }
-      : {}),
-    ...(body.photoUrl !== undefined
-      ? { photoUrl: body.photoUrl ? String(body.photoUrl) : undefined }
-      : {}),
-    ...(body.thumbnailUrl !== undefined
-      ? { thumbnailUrl: body.thumbnailUrl ? String(body.thumbnailUrl) : undefined }
-      : {}),
-    // Only admin can change owner
-    ...(body.ownerId !== undefined && req.user!.role === UserRole.ADMIN
-      ? { ownerId: String(body.ownerId) }
-      : {}),
-    // Allow owners to update pet metadata (step goals, custom config)
-    ...(body.metadata !== undefined
-      ? { metadata: { ...(pet.metadata ?? {}), ...body.metadata } }
-      : {}),
-    updatedAt: t,
+function ownersView(pet: StoredPet) {
+  return {
+    petId: pet.id,
+    primaryOwnerId: pet.ownerId,
+    jointOwners: jointOwnersOf(pet.id).map(({ userId, name, email, addedBy, addedAt }) => ({
+      userId,
+      name,
+      email,
+      addedBy,
+      addedAt,
+    })),
   };
-  if (
-    body.ownerId !== undefined &&
-    req.user!.role === UserRole.ADMIN &&
-    String(body.ownerId) !== pet.ownerId
-  ) {
-    const previous = activeQrForPet(pet.id);
-    if (previous) store.petQrIdentities.set(previous.token, { ...previous, revokedAt: t });
+}
 
-    // Transfer Stellar pet identity NFT to new owner
-    try {
-      const assetCode = `PET${pet.id.substring(0, 9).toUpperCase()}`;
-      const issuerPublicKey = process.env.STELLAR_ISSUER_PUBLIC_KEY;
-      const currentOwnerSeed = process.env.STELLAR_SOURCE_SEED;
-      const newOwnerUser = await userRepository.findById(body.ownerId);
-      const newOwnerPublicKey = newOwnerUser?.stellar_public_key;
+function canManageOwners(user: AuthenticatedRequest['user'], pet: StoredPet): boolean {
+  if (!user) return false;
+  return user.role === UserRole.ADMIN || isPetOwner(user.id, pet);
+}
 
-      if (issuerPublicKey && currentOwnerSeed && newOwnerPublicKey) {
-        await transferPetAsset(assetCode, issuerPublicKey, currentOwnerSeed, newOwnerPublicKey);
-      }
-    } catch (err) {
-      console.error('[Stellar] Failed to transfer pet asset:', err);
-    }
+// POST /api/pets/:id/owners — add a joint owner by email
+router.post('/:id/owners', async (req: AuthenticatedRequest, res) => {
+  const pet = store.pets.get(req.params.id);
+  if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
+  if (!canManageOwners(req.user, pet)) {
+    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to manage owners of this pet');
   }
-  store.pets.set(pet.id, next);
-  void logAuditTrail({
+
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'A valid email is required');
+  }
+
+  const user = await findUserByEmail(email);
+  if (!user) return sendError(res, 404, 'USER_NOT_FOUND', 'No user found with that email');
+  if (isPetOwner(user.id, pet)) {
+    return sendError(res, 409, 'ALREADY_OWNER', 'User is already an owner of this pet');
+  }
+
+  const before = jointOwnersOf(pet.id).map((row) => row.userId);
+  store.petJointOwners.set(`${pet.id}:${user.id}`, {
+    petId: pet.id,
+    userId: user.id,
+    email: user.email,
+    name: user.name,
+    addedBy: req.user!.id,
+    addedAt: new Date().toISOString(),
+  });
+
+  await logAuditTrail({
     req,
     entityType: 'pet',
     entityId: pet.id,
     action: 'UPDATE',
-    before: pet,
-    after: next,
+    before: { jointOwners: before },
+    after: { jointOwners: [...before, user.id] },
   });
-  return res.json(ok(await toPetResponse(next), 'Pet updated'));
+  await invalidatePet(pet.id, user.id);
+
+  return res.status(201).json(ok(ownersView(pet)));
 });
 
-router.delete('/:id', (req: AuthenticatedRequest, res) => {
+// DELETE /api/pets/:id/owners/:userId — remove a joint owner
+router.delete('/:id/owners/:userId', async (req: AuthenticatedRequest, res) => {
   const pet = store.pets.get(req.params.id);
   if (!pet) return sendError(res, 404, 'NOT_FOUND', 'Pet not found');
-
-  // Only admin or the owner can delete the pet
-  if (req.user!.role !== UserRole.ADMIN && req.user!.id !== pet.ownerId) {
-    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to delete this pet');
+  if (!canManageOwners(req.user, pet)) {
+    return sendError(res, 403, 'FORBIDDEN', 'You do not have permission to manage owners of this pet');
   }
 
-  store.pets.delete(req.params.id);
-  for (const u of store.users.values()) {
-    u.pets = u.pets.filter((p) => p.id !== req.params.id);
+  const { userId } = req.params;
+  if (userId === req.user!.id) {
+    return sendError(res, 400, 'SELF_REMOVAL', 'You cannot remove yourself as an owner');
   }
-  void logAuditTrail({
+  if (userId === pet.ownerId) {
+    return sendError(res, 400, 'PRIMARY_OWNER', 'The primary owner cannot be removed');
+  }
+
+  const key = `${pet.id}:${userId}`;
+  if (!store.petJointOwners.has(key)) {
+    return sendError(res, 404, 'NOT_FOUND', 'User is not a joint owner of this pet');
+  }
+
+  const before = jointOwnersOf(pet.id).map((row) => row.userId);
+  store.petJointOwners.delete(key);
+
+  await logAuditTrail({
     req,
     entityType: 'pet',
     entityId: pet.id,
-    action: 'DELETE',
-    before: pet,
-    after: null,
+    action: 'UPDATE',
+    before: { jointOwners: before },
+    after: { jointOwners: before.filter((id) => id !== userId) },
   });
-  return res.json(ok(null, 'Pet deleted'));
+  await invalidatePet(pet.id, userId);
+
+  return res.json(ok(ownersView(pet)));
 });
 
 export default router;

@@ -414,6 +414,70 @@ async function reconcileOne(
   }
 }
 
+// ── Fiat on-ramp (SEP-24) records (#1380) ──────────────────────────────────
+
+export type FiatOnRampStatus =
+  | 'pending_user_transfer_start'
+  | 'pending_external'
+  | 'pending_anchor'
+  | 'pending_stellar'
+  | 'completed'
+  | 'error'
+  | 'refunded';
+
+export interface FiatOnRampTransaction {
+  /** Anchor deposit id — the idempotency key for this record. */
+  depositId: string;
+  walletAddress: string;
+  currency: string;
+  assetCode: string;
+  status: FiatOnRampStatus;
+  amountIn?: string;
+  amountOut?: string;
+  /** Stellar transaction hash, once the anchor has submitted it. */
+  stellarTxId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const ONRAMP_STORAGE_KEY = storageKeys.stellar.fiatOnRampTransactions;
+const MAX_ONRAMP_STORED = 50;
+
+async function readOnRamp(): Promise<FiatOnRampTransaction[]> {
+  try {
+    const raw = await AsyncStorage.getItem(ONRAMP_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as FiatOnRampTransaction[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Record (or update) a fiat on-ramp transaction. Keyed by deposit id, so
+ * repeated polls update the same record rather than appending duplicates.
+ */
+export async function recordFiatOnRampTransaction(
+  record: FiatOnRampTransaction,
+): Promise<void> {
+  const records = await readOnRamp();
+  const index = records.findIndex((r) => r.depositId === record.depositId);
+  if (index >= 0) records[index] = record;
+  else records.unshift(record);
+  await AsyncStorage.setItem(ONRAMP_STORAGE_KEY, JSON.stringify(records.slice(0, MAX_ONRAMP_STORED)));
+}
+
+export async function getFiatOnRampTransactions(): Promise<FiatOnRampTransaction[]> {
+  return readOnRamp();
+}
+
+export async function getFiatOnRampTransaction(
+  depositId: string,
+): Promise<FiatOnRampTransaction | undefined> {
+  return (await readOnRamp()).find((r) => r.depositId === depositId);
+}
+
 /**
  * Resolve every unresolved transaction against Horizon (#947).
  *

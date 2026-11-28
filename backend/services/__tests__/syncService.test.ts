@@ -6,6 +6,8 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
   setItem: jest.fn(),
   removeItem: jest.fn(),
+  getAllKeys: jest.fn(),
+  multiRemove: jest.fn(),
 }));
 
 describe('backend SyncService', () => {
@@ -98,4 +100,4 @@ describe('backend SyncService', () => {
       expect(AsyncStorage.setItem).toHaveBeenCalledWith('@sync_conflicts', '[]');
     });
   });
-});
+})

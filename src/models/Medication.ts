@@ -56,6 +56,29 @@ export interface ReminderSchedule {
  */
 export type RefillStatus = 'ok' | 'warning' | 'urgent' | 'out' | 'unknown';
 
+/**
+ * Lifecycle of a medication refill request (#1346):
+ *
+ *   pending ──approve──▶ approved ──dispense──▶ dispensed
+ *      └────reject────▶ rejected
+ */
+export type RefillRequestStatus = 'pending' | 'approved' | 'rejected' | 'dispensed';
+
+export interface RefillRequest {
+  id: string;
+  medicationId: string;
+  petId: string;
+  status: RefillRequestStatus;
+  requestedAt: string; // ISO string
+  updatedAt: string; // ISO string
+  /** Free-form note supplied by the owner when requesting. */
+  note?: string;
+  /** Reason supplied by the vet when rejecting. */
+  rejectionReason?: string;
+  /** ISO date of the medication cycle created when the request was approved. */
+  nextCycleStartDate?: string;
+}
+
 export interface Medication {
   id: string;
   petId: string;
@@ -96,6 +119,10 @@ export interface Medication {
   estimatedRunOutDate?: string;
   /** IDs of the scheduled refill-reminder push notifications for this medication. */
   refillNotificationIds?: string[];
+  /** Recorded on-hand count at or below which a refill reminder should fire. */
+  refillThreshold?: number;
+  /** Threshold value for which the current low-supply reminder was already sent. */
+  refillThresholdNotifiedAt?: number;
 
   // ── Vet approval tracking ────────────────────────────────────────────────────
   /** Indicates if this dosage is pending vet approval. */

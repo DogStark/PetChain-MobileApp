@@ -1,4 +1,4 @@
-/**
+/*
  * Supported medication frequency values used by the backend API.
  */
 export enum MedicationFrequency {
@@ -18,6 +18,25 @@ export enum MedicationStatus {
   PAUSED = 'paused',
   COMPLETED = 'completed',
   DISCONTINUED = 'discontinued',
+}
+
+/**
+ * Outcome of a scheduled medication administration event.
+ */
+export enum MedicationAdministrationOutcome {
+  FULL = 'full',
+  PARTIAL = 'partial',
+  REFUSED = 'refused',
+  NOT_GIVEN = 'not_given',
+}
+
+/**
+ * Who recorded the administration outcome.
+ */
+export interface MedicationAdministrationActor {
+  id: string;
+  displayName?: string;
+  role?: 'owner' | 'veterinarian' | 'caregiver' | 'system';
 }
 
 /**
@@ -65,4 +84,50 @@ export interface UpdateMedicationInput {
   endDate?: string;
   status?: MedicationStatus;
   instructions?: string;
+}
+
+/**
+ * A scheduled dose event for a medication plan. The original schedule is
+ * preserved even when an administration outcome is recorded against it.
+ */
+export interface MedicationScheduledDoseEvent {
+  id: string;
+  medicationId: string;
+  petId: string;
+  scheduledAt: string;
+  doseAmount?: string;
+  createdAt: string;
+}
+
+/**
+ * Recorded outcome for a scheduled dose event. Optional reason and actor
+ * are preserved for partial, refused, and not-given outcomes.
+ */
+export interface MedicationAdministration {
+  id: string;
+  scheduledDoseEventId: string;
+  medicationId: string;
+  petId: string;
+  outcome: MedicationAdministrationOutcome;
+  administeredAt: string;
+  administeredDose?: string;
+  reason?: string;
+  actor?: MedicationAdministrationActor;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Payload used to record an administration outcome against a scheduled
+ * dose event. The scheduled event is referenced by id and never mutated.
+ */
+export interface RecordMedicationAdministrationInput {
+  scheduledDoseEventId: string;
+  outcome: MedicationAdministrationOutcome;
+  administeredAt?: string;
+  administeredDose?: string;
+  reason?: string;
+  actor?: MedicationAdministrationActor;
+  // Optional client-generated idempotency key for offline retry safety.
+  clientRequestId?: string;
 }

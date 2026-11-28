@@ -18,14 +18,23 @@ router.use(authenticateJWT);
 const REPORT_EXPIRY_DAYS = 30;
 const DEFAULT_ALERT_RADIUS_KM = 30;
 const USER_LOCATION_STALE_MS = 24 * 60 * 60 * 1000;
+/** Accuracy in meters above which a sighting is considered low-confidence. */
+const LAWQ_CONFIDENCE_ACCURACY_METERS = 500;
+/** Sightings older than this are considered stale. */
+const STALE_SIGHTING_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface StoredLostFoundReport extends LostFoundReport {
   ownerId: string;
   expiresAt?: string;
+  /** ISO timestamp of when the location was recorded on the device. */
+  locationTimestamp?: string;
+  /** Reported GPS accuracy in meters. */
+  accuracy?: number;
 }
 
 interface StoredUserLocation extends LostFoundLocation {
   updatedAt: string;
+  accuracy?: number;
 }
 
 const reports = new Map<string, StoredLostFoundReport>();
@@ -59,7 +68,40 @@ function parseLocation(value: unknown): LostFoundLocation | undefined {
   return undefined;
 }
 
+/** Parse an optional non-negative numeric accuracy value (meters). */
+function parseAccuracy(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const num = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(num) || num < 0) return undefined;
+  return num;
+}
+
+/** Parse an optional ISO timestamp, rejecting invalid or future values. */
+function parseTimestamp(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Date.parse(trimmed);
+  if (!Number.isFinite(parsed)) return undefined;
+  // Tolerate small clock skew (5 minutes) but reject clearly future timestamps.
+  if (parsed > Date.now() + 5 * 60 * 1000) return undefined;
+  return new Date(parsed).toISOString();
+}
+
+function isStaleSighting(report: StoredLostFoundReport): boolean {
+  const reference = report.locationTimestamp ?? report.createdAt;
+  const parsed = Date.parse(reference);
+  if (!Number.isFinite(parsed)) return true;
+  return Date.now() - parsed > STALE_SIGHTING_MS;
+}
+
+function isLowConfidence(report: StoredLostFoundReport): boolean {
+  return typeof report.accuracy === 'number' && report.accuracy > LAWQ_CONFIDENCE_ACCURACY_METERS;
+}
+
 function reportResponse(report: StoredLostFoundReport) {
+  const stale = isStaleSighting(report);
+  const lowConfidence = isLowConfidence(report);
   return {
     id: report.id,
     type: report.type,
@@ -69,6 +111,11 @@ function reportResponse(report: StoredLostFoundReport) {
     breed: report.breed,
     photoUrl: report.photoUrl,
     location: report.location,
+    // Accuracy and timestamp are surfaced so the mobile map can render confidence.
+    accuracy: report.accuracy,
+    locationTimestamp: report.locationTimestamp ?? report.createdAt,
+    stale,
+    lowConfidence,
     ownerId: report.ownerId,
     createdAt: report.createdAt,
     updatedAt: report.updatedAt,
@@ -84,8 +131,8 @@ async function broadcastLostReport(report: StoredLostFoundReport, radiusKm: numb
       if (now - Date.parse(location.updatedAt) > USER_LOCATION_STALE_MS) return false;
       const latDelta = location.latitude - report.location.latitude;
       const lonDelta = location.longitude - report.location.longitude;
-      const approxKm = Math.sqrt(latDelta * latDelta + lonDelta * lonDelta) * 111;
-      return approxKm <= radiusKm;
+      const approxkm = Math.sqrt(latDelta * latDelta + lonDelta * lonDelta) * 111;
+      return approxkm <= radiusKm;
     })
     .map(([userId]) => userId);
 
@@ -134,8 +181,8 @@ router.get('/reports', (req, res) => {
     result = result.filter((report) => {
       const latDelta = report.location.latitude - latitude;
       const lonDelta = report.location.longitude - longitude;
-      const approxKm = Math.sqrt(latDelta * latDelta + lonDelta * lonDelta) * 111;
-      return approxKm <= radiusKm;
+      const approxkm = Math.sqrt(latDelta * latDelta + lonDelta * lonDelta) * 111;
+      return approxkm <= radiusKm;
     });
   }
 
@@ -178,6 +225,8 @@ router.post('/reports', async (req: AuthenticatedRequest, res) => {
     breed: rawBreed,
     photoUrl: rawPhotoUrl,
     location: rawLocation,
+    accuracy: rawAccuracy,
+    locationTimestamp: rawLocationTimestamp,
   } = req.body as Record<string, unknown>;
 
   const type = normalizeReportType(rawType);
@@ -191,9 +240,19 @@ router.post('/reports', async (req: AuthenticatedRequest, res) => {
   const breed = typeof rawBreed === 'string' ? rawBreed.trim() : undefined;
   const photoUrl = typeof rawPhotoUrl === 'string' ? rawPhotoUrl.trim() : undefined;
   const location = parseLocation(rawLocation);
+  const accuracy = parseAccuracy(rawAccuracy);
+  const locationTimestamp = parseTimestamp(rawLocationTimestamp);
 
   if (!title || !species || !location) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'title, species, and location are required');
+  }
+
+  if (rawAccuracy !== undefined && accuracy === undefined) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'accuracy must be a non-negative number');
+  }
+
+  if (rawLocationTimestamp !== undefined && locationTimestamp === undefined) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'locationTimestamp must be a valid ISO date');
   }
 
   const id = randomUUID();
@@ -207,6 +266,8 @@ router.post('/reports', async (req: AuthenticatedRequest, res) => {
     breed,
     photoUrl,
     location,
+    accuracy,
+    locationTimestamp: locationTimestamp ?? now,
     ownerId: req.user!.id,
     createdAt: now,
     updatedAt: now,
@@ -230,7 +291,12 @@ router.post('/location', (req: AuthenticatedRequest, res) => {
   if (!location) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'latitude and longitude are required');
   }
-  userLocations.set(req.user!.id, { ...location, updatedAt: new Date().toISOString() });
+  const accuracy = parseAccuracy((req.body as { accuracy?: unknown }).accuracy);
+  userLocations.set(req.user!.id, {
+    ...location,
+    accuracy,
+    updatedAt: new Date().toISOString(),
+  });
   return res.status(201).json(ok({ data: { updated: true } }));
 });
 

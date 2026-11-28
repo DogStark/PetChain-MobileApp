@@ -24,7 +24,20 @@ interface SetupData {
   secret: string;
 }
 
-export default function TwoFactorSetupScreen() {
+interface TwoFactorSetupScreenProps {
+  /**
+   * Set when 2FA is mandatory for this account (vet policy, #1394): the ISO
+   * date after which API access is blocked until setup is complete.
+   */
+  requiredBy?: string;
+  /** Called when the user continues after finishing setup. */
+  onComplete?: () => void;
+}
+
+export default function TwoFactorSetupScreen({
+  requiredBy,
+  onComplete,
+}: TwoFactorSetupScreenProps = {}) {
   const [step, setStep] = useState<Step>('idle');
   const [loading, setLoading] = useState(false);
   const [setupData, setSetupData] = useState<SetupData | null>(null);
@@ -139,6 +152,15 @@ export default function TwoFactorSetupScreen() {
       <Text style={styles.title} accessibilityRole="header">
         Two-Factor Authentication
       </Text>
+
+      {requiredBy ? (
+        <View style={styles.policyNotice} accessibilityRole="alert">
+          <Text style={styles.policyNoticeText}>
+            Two-factor authentication is required for vet accounts. Set it up before{' '}
+            {new Date(requiredBy).toLocaleDateString()} to keep access to medical records.
+          </Text>
+        </View>
+      ) : null}
 
       {step === 'idle' && (
         <View>
@@ -262,6 +284,16 @@ export default function TwoFactorSetupScreen() {
               <Text style={styles.buttonText}>Regenerate Codes</Text>
             )}
           </TouchableOpacity>
+          {onComplete ? (
+            <TouchableOpacity
+              style={styles.button}
+              onPress={onComplete}
+              accessibilityRole="button"
+              accessibilityLabel="Continue to PetChain"
+            >
+              <Text style={styles.buttonText}>Continue</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       )}
 
@@ -281,6 +313,13 @@ export default function TwoFactorSetupScreen() {
 }
 
 const styles = StyleSheet.create({
+  policyNotice: {
+    backgroundColor: '#FEF3C7',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  policyNoticeText: { color: '#92400E', fontSize: 14, lineHeight: 20 },
   container: { flexGrow: 1, padding: 24, backgroundColor: '#fff' },
   title: { fontSize: 22, fontWeight: '700', marginBottom: 16, color: '#1a1a1a' },
   body: { fontSize: 15, color: '#444', marginBottom: 20, lineHeight: 22 },

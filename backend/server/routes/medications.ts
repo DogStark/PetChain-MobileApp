@@ -305,4 +305,149 @@ router.post(
   },
 );
 
+// ── Medication Administration Outcome Routes ─────────────────────────────────
+
+type AdministrationOutcome = 'given' | 'partial' | 'refused' | 'not_given';
+
+interface MedicationAdministrationRecord {
+  id: string;
+  medicationId: string;
+  petId: string;
+  scheduledDoseEventId: string;
+  outcome: AdministrationOutcome;
+  administeredDose?: string;
+  reason?: string;
+  actorId: string;
+  recordedAt: string;
+}
+
+const administrationRecords = new Map<string, MedicationAdministrationRecord>();
+
+const VALID_OUTCOMES: AdministrationOutcome[] = ['given', 'partial', 'refused', 'not_given'];
+
+router.post('/:id/administrations', (req: AuthenticatedRequest, res) => {
+  const medication = store.medications.get(req.params.id);
+  if (!medication) {
+    return sendError(res, 404, 'NOT_FOUND', 'Medication not found');
+  }
+
+  const pet = store.pets.get(medication.petId);
+  if (pet && req.user!.role === UserRole.OWNER && req.user!.id !== pet.ownerId) {
+    return sendError(
+      res,
+      403,
+      'FORBIDDEN',
+      'You do not have permission to record administrations for this medication',
+    );
+  }
+
+  const body = req.body as {
+    scheduledDoseEventId?: string;
+    outcome?: string;
+    administeredDose?: string;
+    reason?: string;
+  };
+
+  if (!body.scheduledDoseEventId?.trim()) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      'scheduledDoseEventId is required',
+    );
+  }
+
+  if (!body.outcome || !VALID_OUTCOMES.includes(body.outcome as AdministrationOutcome)) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      'outcome must be one of: given, partial, refused, not_given',
+    );
+  }
+
+  const outcome = body.outcome as AdministrationOutcome;
+
+  if (outcome === 'partial' && !body.administeredDose?.trim()) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      'administeredDose is required for partial administrations',
+    );
+  }
+
+  if (outcome !== 'given' && outcome !== 'partial' && !body.reason?.trim()) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      'reason is required for refused or not_given administrations',
+    );
+  }
+
+  const scheduledDoseEventId = body.scheduledDoseEventId.trim();
+  const existing = [...administrationRecords.values()].find(
+    (r) => r.medicationId === medication.id && r.scheduledDoseEventId === scheduledDoseEventId,
+  );
+  if (existing) {
+    return sendError(
+      res,
+      409,
+      'CONFLICT',
+      'An administration outcome has already been recorded for this scheduled dose event',
+    );
+  }
+
+  const id = store.newId();
+  const record: MedicationAdministrationRecord = {
+    id,
+    medicationId: medication.id,
+    petId: medication.petId,
+    scheduledDoseEventId,
+    outcome,
+    ...(body.administeredDose?.trim()
+      ? { administeredDose: body.administeredDose.trim() }
+      : {}),
+    ...(body.reason?.trim() ? { reason: body.reason.trim() } : {}),
+    actorId: req.user!.id,
+    recordedAt: new Date().toISOString(),
+  };
+
+  administrationRecords.set(id, record);
+
+  void logAuditTrail({
+    req,
+    entityType: 'medication_administration',
+    entityId: id,
+    action: 'CREATE',
+    before: null,
+    after: record,
+  });
+
+  return res.status(201).json(ok(record, 'Administration recorded'));
+});
+
+router.get('/:id/administrations', (req: AuthenticatedRequest, res) => {
+  const medication = store.medications.get(req.params.id);
+  if (!medication) {
+    return sendError(res, 404, 'NOT_FOUND', 'Medication not found');
+  }
+
+  const pet = store.pets.get(medication.petId);
+  if (pet && req.user!.role === UserRole.OWNER && req.user!.id !== pet.ownerId) {
+    return sendError(
+      res,
+      403,
+      'FORBIDDEN',
+      'You do not have permission to view administrations for this medication',
+    );
+  }
+
+  const list = [...administrationRecords.values()].filter(
+    (r) => r.medicationId === medication.id,
+  );
+  return res.json(ok(list));
+});
+
 export default router;

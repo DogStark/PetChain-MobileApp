@@ -1,5 +1,6 @@
 import * as Notifications from 'expo-notifications';
 
+import apiClient from '../apiClient';
 import { getItem, setItem } from '../localDB';
 import {
   requestPermissions,
@@ -7,6 +8,7 @@ import {
   getPreferences,
   savePreferences,
   scheduleMedicationReminder,
+  syncRefillThresholdNotification,
   scheduleAppointmentNotification,
   scheduleVaccinationReminder,
   cancelEntityNotification,
@@ -32,6 +34,11 @@ jest.mock('expo-notifications', () => ({
   scheduleNotificationAsync: jest.fn(),
   cancelScheduledNotificationAsync: jest.fn(),
   getAllScheduledNotificationsAsync: jest.fn(),
+}));
+
+jest.mock('../apiClient', () => ({
+  __esModule: true,
+  default: { get: jest.fn() },
 }));
 
 describe('notificationService', () => {
@@ -111,6 +118,96 @@ describe('notificationService', () => {
       await scheduleMedicationReminder(mockMedication);
 
       expect(Notifications.cancelScheduledNotificationAsync).toHaveBeenCalledWith('old-id');
+    });
+  });
+
+  describe('refill threshold notifications', () => {
+    const medication = {
+      id: 'med-threshold-1',
+      currentSupply: 3,
+      refillThreshold: 3,
+      status: 'active',
+    };
+    const enabledPreferences = {
+      enabled: true,
+      topics: {
+        medication_reminders: true,
+        appointment_alerts: true,
+        sos_notifications: true,
+        health_tips: true,
+      },
+    };
+
+    beforeEach(() => {
+      (getItem as jest.Mock).mockResolvedValue(null);
+      (apiClient.get as jest.Mock).mockResolvedValue({ data: { data: enabledPreferences } });
+      (Notifications.getPermissionsAsync as jest.Mock).mockResolvedValue({ status: 'granted' });
+      (Notifications.scheduleNotificationAsync as jest.Mock).mockResolvedValue('threshold-id');
+    });
+
+    it('schedules a generic private alert when recorded supply reaches the threshold', async () => {
+      const result = await syncRefillThresholdNotification(medication);
+
+      expect(result).toEqual({ status: 'scheduled' });
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.objectContaining({
+            title: 'Refill reminder',
+            body: expect.not.stringMatching(/med-threshold-1|pharmacy|available/i),
+            data: { type: 'medication', category: 'medication' },
+          }),
+          trigger: null,
+        }),
+      );
+    });
+
+    it('does not alert above the threshold or when supply is unknown', async () => {
+      await expect(
+        syncRefillThresholdNotification({ ...medication, currentSupply: 4 }),
+      ).resolves.toEqual({ status: 'not-applicable' });
+      await expect(
+        syncRefillThresholdNotification({ ...medication, currentSupply: undefined }),
+      ).resolves.toEqual({ status: 'not-applicable' });
+      expect(apiClient.get).not.toHaveBeenCalled();
+      expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+    });
+
+    it('does not schedule when server preferences or device permission deny alerts', async () => {
+      (apiClient.get as jest.Mock).mockResolvedValueOnce({
+        data: { data: { ...enabledPreferences, topics: { ...enabledPreferences.topics, medication_reminders: false } } },
+      });
+      await expect(syncRefillThresholdNotification(medication)).resolves.toEqual({
+        status: 'permission-denied',
+      });
+
+      (apiClient.get as jest.Mock).mockResolvedValueOnce({ data: { data: enabledPreferences } });
+      (Notifications.getPermissionsAsync as jest.Mock).mockResolvedValueOnce({ status: 'denied' });
+      await expect(syncRefillThresholdNotification(medication)).resolves.toEqual({
+        status: 'permission-denied',
+      });
+      expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+    });
+
+    it('fails closed on stale server state and retries successfully after reconnect', async () => {
+      (apiClient.get as jest.Mock)
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValueOnce({ data: { data: enabledPreferences } });
+
+      await expect(syncRefillThresholdNotification(medication)).resolves.toEqual({
+        status: 'unavailable',
+      });
+      expect(Notifications.cancelScheduledNotificationAsync).not.toHaveBeenCalled();
+      await expect(syncRefillThresholdNotification(medication)).resolves.toEqual({
+        status: 'scheduled',
+      });
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not repeat an alert already sent for the same threshold', async () => {
+      await expect(
+        syncRefillThresholdNotification({ ...medication, refillThresholdNotifiedAt: 3 }),
+      ).resolves.toEqual({ status: 'already-notified' });
+      expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
     });
   });
 

@@ -2,7 +2,9 @@ import http from 'http';
 
 import { createApp, setReadiness } from './app';
 import { checkDatabaseConnection, runMigrations } from '../config/database';
+import { getRedisClient } from '../config/redis';
 import apiKeyService from '../services/apiKeyService';
+import { startDataRetentionJob } from '../services/dataRetentionService';
 import { startReceiptCheckJob, startScheduledProcessor } from '../services/pushService';
 import { ensureIndices } from '../services/searchService';
 import { startPaymentIdempotencyCleanupJob } from '../services/stellarPaymentService';
@@ -41,16 +43,8 @@ async function start(): Promise<void> {
 
   await runMigrations();
 
-  if (process.env.ELASTICSEARCH_URL) {
-    try {
-      await ensureIndices();
-      logger.info('[server] Elasticsearch indices initialized.');
-    } catch (error) {
-      logger.warn('[server] Elasticsearch unavailable; PostgreSQL fallback enabled.', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
+  // Per-API-key rate limits are counted in Redis, separate from IP-based limits.
+  apiKeyService.setRateLimitRedis(getRedisClient());
 
   const app = createApp();
   const server = http.createServer(app);
@@ -78,6 +72,9 @@ async function start(): Promise<void> {
 
     const scheduledProcessor = startScheduledProcessor();
     scheduledProcessor.unref();
+
+    // Inactive-account retention policy (#1400); runs only when DATA_RETENTION_ENABLED=true.
+    startDataRetentionJob()?.unref();
 
     if (process.send) process.send('ready');
   });

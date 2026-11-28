@@ -140,6 +140,16 @@ const PendingCoSignScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const handleApprove = useCallback(async () => {
     if (!verification?.valid) return;
+    // Re-verify at approval time: the request may have expired or gone stale
+    // while the review screen was open, and must not reach the signer.
+    const recheck = verifyCoSignPayload(payload, expectedSequence);
+    if (!recheck.valid) {
+      setVerification(recheck);
+      AccessibilityInfo.announceForAccessibility(
+        t('pendingCoSign.verificationFailed', { error: recheck.error ?? '' }),
+      );
+      return;
+    }
     setApproving(true);
     try {
       // Approval is handled by the caller via navigation param callback
@@ -150,7 +160,7 @@ const PendingCoSignScreen: React.FC<Props> = ({ route, navigation }) => {
     } finally {
       setApproving(false);
     }
-  }, [verification, payload, route.params, navigation, t]);
+  }, [verification, payload, expectedSequence, route.params, navigation, t]);
 
   const handleReject = useCallback(() => {
     Alert.alert(t('pendingCoSign.rejectTitle'), t('pendingCoSign.rejectConfirm'), [

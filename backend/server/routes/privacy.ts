@@ -25,6 +25,11 @@ router.get('/export', (req: AuthenticatedRequest, res) => {
   return res.json(data);
 });
 
+// GET /api/privacy/export/permission — confirm the authenticated user may export their own data
+router.get('/export/permission', (req: AuthenticatedRequest, res) => {
+  return res.json(ok({ canExport: true, confirmedAt: new Date().toISOString() }));
+});
+
 // POST /api/privacy/export — queue data export request (GDPR Article 20)
 router.post('/export', (req: AuthenticatedRequest, res) => {
   const user = req.user!;

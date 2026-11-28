@@ -10,8 +10,76 @@ router.use(authenticateJWT);
 const VALID_TYPES = ['weight', 'temperature', 'heart_rate', 'activity_level'] as const;
 type VitalType = (typeof VALID_TYPES)[number];
 
+const VITAL_UNITS: Record<VitalType, string> = {
+  weight: 'kg',
+  temperature: 'C',
+  heart_rate: 'bpm',
+  activity_level: 'score',
+};
+
 function isValidType(t: unknown): t is VitalType {
   return VALID_TYPES.includes(t as VitalType);
+}
+
+/**
+ * Builds a plain-text, screen-reader friendly summary of a vitals series.
+ * Trends are expressed in words (not color) and values carry units and dates.
+ */
+function buildAccessibleSummary(
+  type: VitalType,
+  rows: Array<{ recorded_at: string | Date; value: number | string; unit: string }>,
+) {
+  if (rows.length === 0) {
+    return {
+      vitalType: type,
+      count: 0,
+      summary: `No ${type.replace('_', ' ')} readings are recorded for this period.`,
+      trend: 'none' as const,
+      table: [] as Array<{ date: string; value: string; unit: string }>,
+    };
+  }
+
+  // Rows arrive newest-first; compute trend chronologically.
+  const chronological = [...rows].sort(
+    (a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime(),
+  );
+  const first = Number(chronological[0].value);
+  const last = Number(chronological[chronological.length - 1].value);
+  const unit = rows[0].unit;
+  const label = type.replace('_', ' ');
+
+  const delta = last - first;
+  const threshold = Math.max(Math.abs(first) * 0.02, 0.0001);
+  let trend: 'rising' | 'falling' | 'stable' | 'none';
+  if (chronological.length < 2) trend = 'none';
+  else if (delta > threshold) trend = 'rising';
+  else if (delta < -threshold) trend = 'falling';
+  else trend = 'stable';
+
+  const trendText =
+    trend === 'none'
+      ? 'Only one reading is available, so no trend can be determined.'
+      : trend === 'stable'
+        ? 'The trend is stable.'
+        : `The trend is ${trend}, changing by ${Math.abs(delta).toFixed(2)} ${unit} overall.`;
+
+  const latest = rows[0];
+  const latestDate = new Date(latest.recorded_at).toISOString().slice(0, 10);
+  const summary =
+    `${rows.length} ${label} reading${rows.length === 1 ? '' : 's'}. ` +
+    `Latest is ${latest.value} ${unit} on ${latestDate}. ${trendText}`;
+
+  return {
+    vitalType: type,
+    count: rows.length,
+    summary,
+    trend,
+    table: rows.map((r) => ({
+      date: new Date(r.recorded_at).toISOString().slice(0, 10),
+      value: String(r.value),
+      unit: r.unit,
+    })),
+  };
 }
 
 /** GET /api/vitals?petId=&type=&limit=&from=&to= */
@@ -50,6 +118,44 @@ router.get('/', async (req: AuthenticatedRequest, res) => {
 
   const result = await query(sql, params);
   return res.json(ok(result.rows));
+});
+
+/**
+ * GET /api/vitals/summary?petId=&type=&from=&to=
+ * Accessible chart summary: text description, trend in words, and a data table
+ * with units and dates. Does not rely on color.
+ */
+router.get('/summary', async (req: AuthenticatedRequest, res) => {
+  const { petId, type, from, to } = req.query as Record<string, string | undefined>;
+
+  if (!petId) return sendError(res, 400, 'VALIDATION_ERROR', 'petId is required');
+  if (!type || !isValidType(type)) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'A valid type is required');
+  }
+
+  const params: unknown[] = [petId, type];
+  const conditions: string[] = ['pet_id = $1', 'vital_type = $2'];
+  if (from) {
+    params.push(from);
+    conditions.push(`recorded_at >= $${params.length}`);
+  }
+  if (to) {
+    params.push(to);
+    conditions.push(`recorded_at <= $${params.length}`);
+  }
+
+  const result = await query(
+    `SELECT recorded_at, value, unit FROM vitals
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY recorded_at DESC
+     LIMIT 1000`,
+    params,
+  );
+
+  const rows = result.rows as Array<{ recorded_at: string; value: number | string; unit: string }>;
+  const payload = buildAccessibleSummary(type, rows);
+  if (rows.length === 0) payload.table = [];
+  return res.json(ok({ ...payload, defaultUnit: VITAL_UNITS[type] }));
 });
 
 /** POST /api/vitals */

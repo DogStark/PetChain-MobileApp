@@ -143,6 +143,23 @@ const PUBLIC_CONFIG = validateConfig(APP_ENV);
 // Version codes: dev=1, staging=2, prod=3
 const VERSION_CODE = { development: 1, staging: 2, production: 3 }[APP_ENV] ?? 1;
 const APP_VERSION = '1.0.0';
+const STATIC_EXPO_PLUGINS = [
+  [
+    '@sentry/react-native/expo',
+    { organization: 'petchain', project: 'mobile-app' },
+  ],
+  [
+    'expo-screen-capture',
+    {
+      sensitiveScreens: ['MedicalRecords', 'WalletSecrets', 'EmergencyDetails'],
+      publicScreens: ['QRVerification'],
+    },
+  ],
+  [
+    'expo-background-fetch',
+    { minimumInterval: 900, stopOnTerminate: false, startOnBoot: true },
+  ],
+];
 
 const APP_NAME_MAP = {
   development: 'PetChain (Dev)',
@@ -287,6 +304,7 @@ const MIGRATION_POLICY = {
   // Non-sensitive support code surfaced to the user instead of raw DB errors.
   // The runtime appends the migration version and app version to this prefix.
   supportCodePrefix: 'MIG',
+};
 
 // ─── Android notification-channel policy (issue #1066) ─────────────────────
 //
@@ -391,7 +409,6 @@ const NOTIFICATION_CHANNEL_POLICY = {
   retiredChannelIds: RETIRED_CHANNEL_IDS,
   migrations: NOTIFICATION_CHANNEL_MIGRATIONS,
   disabledUx: NOTIFICATION_CHANNEL_DISABLED_UX,
-};
 };
 
 // ─── Deep / universal link policy (issue #1029) ─────────────────────────────
@@ -559,6 +576,17 @@ module.exports = {
         },
       ],
     },
+    plugins: [
+      ...STATIC_EXPO_PLUGINS,
+      [
+        './expoWidgetPlugin',
+        {
+          android: {
+            widgetName: 'PetChainWidget',
+          },
+        },
+      ],
+    ],
     web: {
       favicon: './assets/favicon.png',
     },

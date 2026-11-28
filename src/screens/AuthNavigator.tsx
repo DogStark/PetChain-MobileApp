@@ -4,10 +4,11 @@ import EmailVerificationScreen from './EmailVerificationScreen';
 import ForgotPasswordScreen from './ForgotPasswordScreen';
 import LoginScreen from './LoginScreen';
 import RegisterScreen from './RegisterScreen';
+import TwoFactorSetupScreen from './TwoFactorSetupScreen';
 import ErrorBoundary from '../components/ErrorBoundary';
 import type { AuthSession } from '../services/authService';
 
-type Screen = 'login' | 'register' | 'forgot' | 'verify';
+type Screen = 'login' | 'register' | 'forgot' | 'verify' | 'twoFactorSetup';
 
 interface Props {
   /** Called when the user is fully authenticated (and verified). */
@@ -24,7 +25,8 @@ const AuthNavigator: React.FC<Props> = ({ onAuthenticated }) => {
 
   const handleAuthSuccess = (session: AuthSession) => {
     setPendingSession(session);
-    setScreen('verify');
+    // Vets without 2FA are redirected to 2FA setup first (#1394).
+    setScreen(session.twoFactorSetupRequired ? 'twoFactorSetup' : 'verify');
   };
 
   const handleVerified = () => {
@@ -56,6 +58,15 @@ const AuthNavigator: React.FC<Props> = ({ onAuthenticated }) => {
       return (
         <ErrorBoundary>
           <ForgotPasswordScreen onBack={() => setScreen('login')} />
+        </ErrorBoundary>
+      );
+    case 'twoFactorSetup':
+      return (
+        <ErrorBoundary>
+          <TwoFactorSetupScreen
+            requiredBy={pendingSession?.twoFactorDeadline}
+            onComplete={() => setScreen('verify')}
+          />
         </ErrorBoundary>
       );
     case 'verify':

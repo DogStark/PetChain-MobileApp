@@ -26,6 +26,9 @@ import wearableService, {
   type HistoricalPoint,
   type WearableStatus,
 } from '../services/wearableService';
+import { formatLocalDateTime } from '../utils/dateLocale';
+import { formatLocaleNumber, parseLocaleNumber } from '../utils/localeValues';
+import { getLocaleTag } from '../utils/locale';
 import { useSecureScreen } from '../utils/secureScreen';
 
 // ---------------------------------------------------------------------------
@@ -49,14 +52,7 @@ interface Props {
 function shortDateLabel(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '?';
-  return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
-}
-
-function parseOptionalFloat(raw: string): number | undefined {
-  const t = raw.trim();
-  if (!t) return undefined;
-  const n = Number(t.replace(',', '.'));
-  return Number.isFinite(n) ? n : undefined;
+  return d.toLocaleDateString(getLocaleTag(), { month: 'numeric', day: 'numeric' });
 }
 
 function historicalToChartPoints(data: HistoricalPoint[]): ChartPoint[] {
@@ -372,8 +368,17 @@ const PetHealthMetricsScreen: React.FC<Props> = ({
   };
 
   const handleSave = async () => {
-    const weightKg = parseOptionalFloat(weightInput);
-    const temperatureC = parseOptionalFloat(tempInput);
+    const weightRaw = weightInput.trim();
+    const tempRaw = tempInput.trim();
+    const weightKg = weightRaw ? parseLocaleNumber(weightRaw) : undefined;
+    const temperatureC = tempRaw ? parseLocaleNumber(tempRaw) : undefined;
+    if (weightKg === null || temperatureC === null) {
+      Alert.alert(
+        'Invalid number',
+        'Enter weight and temperature as numbers using the decimal separator for your language.',
+      );
+      return;
+    }
     if (weightKg === undefined && temperatureC === undefined && activity === undefined) {
       Alert.alert('Validation', 'Enter at least weight, temperature, or activity level.');
       return;
@@ -468,13 +473,13 @@ const PetHealthMetricsScreen: React.FC<Props> = ({
     ({ item }: { item: HealthMetricEntry }) => (
       <View style={styles.rowCard}>
         <View style={styles.rowMain}>
-          <Text style={styles.rowDate}>{new Date(item.recordedAt).toLocaleString()}</Text>
+          <Text style={styles.rowDate}>{formatLocalDateTime(item.recordedAt)}</Text>
           <Text style={styles.rowValues}>
-            {item.weightKg !== undefined ? `${item.weightKg} kg` : ''}
+            {item.weightKg !== undefined ? `${formatLocaleNumber(item.weightKg)} kg` : ''}
             {item.weightKg !== undefined && (item.temperatureC !== undefined || item.activityLevel)
               ? ' · '
               : ''}
-            {item.temperatureC !== undefined ? `${item.temperatureC} °C` : ''}
+            {item.temperatureC !== undefined ? `${formatLocaleNumber(item.temperatureC)} °C` : ''}
             {item.temperatureC !== undefined && item.activityLevel ? ' · ' : ''}
             {item.activityLevel ? `Activity: ${item.activityLevel}` : ''}
           </Text>

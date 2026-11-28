@@ -1,5 +1,6 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   View,
   Text,
   Image,
@@ -7,6 +8,7 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
+  findNodeHandle,
 } from 'react-native';
 import { launchCamera, launchImageLibrary } from 'react-native-image-picker';
 
@@ -89,10 +91,22 @@ export default function ProfilePhotoPicker({
 }: ProfilePhotoPickerProps) {
   const [currentUri, setCurrentUri] = useState<string | null>(photoUri ?? null);
   const [loading, setLoading] = useState(false);
+  const triggerRef = useRef<View>(null);
+  const cameraButtonRef = useRef<View>(null);
+  const galleryButtonRef = useRef<View>(null);
+
+  // The native picker takes accessibility focus away; hand it back to the button that opened it.
+  const restoreFocus = useCallback(() => {
+    setTimeout(() => {
+      const node = triggerRef.current ? findNodeHandle(triggerRef.current) : null;
+      if (node) AccessibilityInfo.setAccessibilityFocus(node);
+    }, 50);
+  }, []);
 
   const handleResult = useCallback(
     (result: any) => {
       setLoading(false);
+      restoreFocus();
       if (result?.didCancel) {
         // Cancel leaves the prior photo unchanged.
         return;
@@ -110,15 +124,17 @@ export default function ProfilePhotoPicker({
       setCurrentUri(asset.uri);
       onPhotoSelected?.(asset.uri);
     },
-    [onPhotoSelected],
+    [onPhotoSelected, restoreFocus],
   );
 
   const openCamera = useCallback(() => {
+    triggerRef.current = cameraButtonRef.current;
     setLoading(true);
     launchCamera(sharedPickerOptions, handleResult);
   }, [handleResult]);
 
   const openGallery = useCallback(() => {
+    triggerRef.current = galleryButtonRef.current;
     setLoading(true);
     launchImageLibrary(sharedPickerOptions, handleResult);
   }, [handleResult]);
@@ -142,6 +158,7 @@ export default function ProfilePhotoPicker({
 
       <View style={styles.actions}>
         <TouchableOpacity
+          ref={cameraButtonRef as never}
           style={styles.button}
           onPress={openCamera}
           disabled={loading}
@@ -149,6 +166,7 @@ export default function ProfilePhotoPicker({
           <Text style={styles.buttonText}>Camera</Text>
         </TouchableOpacity>
         <TouchableOpacity
+          ref={galleryButtonRef as never}
           style={styles.button}
           onPress={openGallery}
           disabled={loading}

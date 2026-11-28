@@ -1,5 +1,12 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
+import {
+  formatFallbackUsage,
+  getTranslationGaps,
+  type TranslationBundle,
+} from './diagnostics';
+
+declare const __DEV__: boolean;
 
 export const SUPPORTED_LANGUAGES = [
   { code: 'en', label: 'English', rtl: false },
@@ -66,10 +73,21 @@ function ensureRoutineCalendarStrings(lang: string): void {
   i18n.addResourceBundle(lang, 'translation', { routineCalendar: withCalendar }, true, true);
 }
 
+/** Dev-only: warn about keys the active locale does not translate. */
+function reportFallbackUsage(lang: string): void {
+  if (!__DEV__ || lang === 'en') return;
+
+  const base = (i18n.getResourceBundle('en', 'translation') ?? {}) as TranslationBundle;
+  const bundle = (i18n.getResourceBundle(lang, 'translation') ?? {}) as TranslationBundle;
+  const message = formatFallbackUsage(lang, getTranslationGaps(base, bundle));
+  if (message) console.warn(message);
+}
+
 /** Change language, lazy-loading the bundle first, then applying RTL. */
 export async function changeLanguage(lang: LanguageCode): Promise<void> {
   await loadLocale(lang);
   ensureRoutineCalendarStrings(lang);
+  reportFallbackUsage(lang);
   await i18n.changeLanguage(lang);
 }
 
