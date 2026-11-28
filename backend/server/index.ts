@@ -6,6 +6,7 @@ import { getRedisClient } from '../config/redis';
 import apiKeyService from '../services/apiKeyService';
 import { startDataRetentionJob } from '../services/dataRetentionService';
 import { startReceiptCheckJob, startScheduledProcessor } from '../services/pushService';
+import { ensureIndices } from '../services/searchService';
 import { startPaymentIdempotencyCleanupJob } from '../services/stellarPaymentService';
 import logger from '../utils/logger';
 
